@@ -29,7 +29,7 @@ GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST   = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 # Optional: name of the EXE asset in GitHub Releases if you want auto-download
-UPDATE_ASSET_NAME = "Vertex.exe"
+UPDATE_ASSET_NAME = "vertex.exe"
 
 # pages
 from functions.pages.dashboard_page import DashboardPage
@@ -476,32 +476,35 @@ def _is_newer_version(latest: str, current: str) -> bool:
 def check_for_updates(parent: tk.Misc | None = None):
     """
     Check GitHub Releases for a newer version.
-    If newer:
-      - If running as EXE: try to download the latest EXE into the app folder
-        as '<basename>-LATEST.exe' and tell user to restart using that.
-      - Otherwise: offer to open the Releases page in a browser.
-    Never touches DATA_ROOT.
+    - If no releases exist yet: show a friendly message, NOT a failure.
+    - If newer exists:
+        * When running as EXE, download a new EXE next to the current one as -LATEST.exe
+        * When running from source, just open the Releases page.
+    Never touches DATA_ROOT / data/ folder.
     """
-    if "YOUR_GITHUB_USERNAME" in GITHUB_REPO:
-        messagebox.showinfo(
-            "Updates",
-            "Update checking is not configured.\n\n"
-            "Set GITHUB_REPO in client_manager.py to your GitHub repo."
-        )
-        return
-
-    # --- fetch latest tag + assets from GitHub ----------------------
+    # --- call GitHub API for latest release ---
     try:
         req = urllib.request.Request(
             GITHUB_API_LATEST,
             headers={"User-Agent": APP_NAME},
         )
         ctx = ssl.create_default_context()
-        with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Most likely: 404 = no releases yet
+        if e.code == 404:
+            messagebox.showinfo(
+                "Updates",
+                "No releases found on GitHub yet.\n\n"
+                "Once you create a release for this app, "
+                "the update checker will compare versions."
+            )
+            return
+        messagebox.showerror("Update Check Failed", f"HTTP error from GitHub:\n{e}")
+        return
     except Exception as e:
-        LOG.warning("Update check failed: %s", e)
-        messagebox.showerror("Update Check Failed", f"Could not contact GitHub.\n\n{e}")
+        messagebox.showerror("Update Check Failed", f"Could not contact GitHub:\n{e}")
         return
 
     tag = str(data.get("tag_name") or "").strip()
@@ -509,17 +512,21 @@ def check_for_updates(parent: tk.Misc | None = None):
         tag = tag[1:]
 
     if not tag:
-        messagebox.showinfo("Update Check", "Could not determine the latest version on GitHub.")
+        messagebox.showinfo(
+            "Updates",
+            "Latest release has no tag_name.\n"
+            "Use tags like v0.1.0 on GitHub releases."
+        )
         return
 
     if not _is_newer_version(tag, APP_VERSION):
         messagebox.showinfo(
             "Up to date",
-            f"You are running {APP_VERSION}, which is the latest release."
+            f"You are running version {APP_VERSION}, which is the latest release."
         )
         return
 
-    # Newer version exists
+    # --- Newer version exists ---
     if not getattr(sys, "frozen", False):
         # Running from source: just open Releases page
         if messagebox.askyesno(
@@ -530,15 +537,17 @@ def check_for_updates(parent: tk.Misc | None = None):
             webbrowser.open(GITHUB_RELEASES_URL)
         return
 
-    # Running as EXE: try to download asset
+    # Running as EXE: try to download a new EXE next to the current one
     assets = data.get("assets") or []
     exe_name = os.path.basename(sys.executable)
-    # Prefer an asset that matches our exe name; fallback to UPDATE_ASSET_NAME
     url = None
+
+    # Prefer asset that matches our exe name
     for a in assets:
         if a.get("name") == exe_name:
             url = a.get("browser_download_url")
             break
+    # Or fallback to UPDATE_ASSET_NAME
     if not url and UPDATE_ASSET_NAME:
         for a in assets:
             if a.get("name") == UPDATE_ASSET_NAME:
@@ -546,17 +555,18 @@ def check_for_updates(parent: tk.Misc | None = None):
                 break
 
     if not url:
-        # Can't auto-download this release
+        # No downloadable EXE found; just send user to Releases page
         if messagebox.askyesno(
             "Update available",
             f"Current version: {APP_VERSION}\nLatest version: {tag}\n\n"
-            "No matching EXE asset found.\nOpen the Releases page instead?"
+            "No EXE asset found in the release.\n"
+            "Open Releases page in your browser?"
         ):
             webbrowser.open(GITHUB_RELEASES_URL)
         return
 
     app_folder = Path(sys.executable).resolve().parent
-    dest = app_folder / f"{exe_name.rsplit('.',1)[0]}-LATEST.exe"
+    dest = app_folder / f"{exe_name.rsplit('.', 1)[0]}-LATEST.exe"
 
     try:
         with urllib.request.urlopen(url, context=ssl.create_default_context(), timeout=30) as resp:
@@ -568,7 +578,6 @@ def check_for_updates(parent: tk.Misc | None = None):
                         break
                     f.write(chunk)
     except Exception as e:
-        LOG.warning("Failed to download update: %s", e)
         messagebox.showerror(
             "Update Download Failed",
             f"Could not download the latest EXE.\n\n{e}"
@@ -579,7 +588,7 @@ def check_for_updates(parent: tk.Misc | None = None):
         "Update downloaded",
         f"Downloaded latest version to:\n{dest}\n\n"
         "Close this app and run the new EXE.\n"
-        "Your data folder is not modified."
+        "Your data folder (data/) was not modified."
     )
 
 
