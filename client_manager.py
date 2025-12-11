@@ -756,7 +756,7 @@ def check_for_updates(parent: tk.Misc | None = None):
         return
 
     app_folder = Path(sys.executable).resolve().parent
-    dest = app_folder / f"{exe_name.rsplit('.', 1)[0]}-LATEST.exe"
+    dest = app_folder / f"{exe_name}.new"
 
     try:
         with urllib.request.urlopen(url, context=ssl.create_default_context(), timeout=30) as resp:
@@ -773,15 +773,40 @@ def check_for_updates(parent: tk.Misc | None = None):
             f"Could not download the latest EXE.\n\n{e}"
         )
         return
+    
+    # --- launch updater to replace running exe ---
+    updater = app_folder / "update_vertex.cmd"
 
-    messagebox.showinfo(
-        "Update downloaded",
-        f"Downloaded latest version to:\n{dest}\n\n"
-        "Close this app and run the new EXE.\n"
-        "Your data folder (data/) was not modified."
+    cmd = f"""@echo off
+    echo Updating Vertex...
+    timeout /t 2 > nul
+
+    :waitloop
+    tasklist | find /i "{exe_name}" > nul
+    if not errorlevel 1 (
+        timeout /t 1 > nul
+        goto waitloop
     )
 
+    del "{exe_name}"
+    rename "{exe_name}.new" "{exe_name}"
+    start "" "{exe_name}"
+    del "%~f0"
+    """
 
+    try:
+        updater.write_text(cmd, encoding="utf-8")
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(updater)],
+            cwd=str(app_folder),
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+    except Exception as e:
+        messagebox.showerror("Update Failed", f"Updater error:\n{e}")
+        return
+
+    sys.exit(0)
+    
 def show_about_dialog(parent: tk.Misc | None = None):
     msg = (
         f"{APP_NAME}\n"
