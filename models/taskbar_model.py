@@ -107,7 +107,7 @@ class TaskbarModel:
         m_help = tk.Menu(self._menu, tearoff=False)
         m_help.add_command(label="Check for Updates...", command=self._do_check_updates)
         m_help.add_separator()
-        m_help.add_command(label="About LineUp Client Manager", command=self._do_about)
+        m_help.add_command(label="About Vertex", command=self._do_about)
         self._menu.add_cascade(label="Help", menu=m_help)
 
     def _accel_ctrl(self) -> bool:

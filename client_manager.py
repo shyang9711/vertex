@@ -24,7 +24,7 @@ APP_VERSION = "0.1.0"
 
 # 🔗 set this to your real GitHub repo once you create it,
 # e.g. "seunghyunyang/lineup-client-manager"
-GITHUB_REPO = "YOUR_GITHUB_USERNAME/YOUR_REPO_NAME"
+GITHUB_REPO = "shyang9711/vertex"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST   = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
