@@ -8,10 +8,6 @@ __pycache__/
 env/
 venv/
 
-# IDE/editor configs
-.idea/
-.vscode/
-
 # OS junk
 .DS_Store
 
