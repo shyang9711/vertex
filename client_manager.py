@@ -23,7 +23,6 @@ APP_NAME = "Vertex"
 APP_VERSION = "0.1.1"
 
 # 🔗 set this to your real GitHub repo once you create it,
-# e.g. "seunghyunyang/lineup-client-manager"
 GITHUB_REPO = "shyang9711/vertex"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST   = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
