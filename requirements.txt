@@ -1,0 +1,7 @@
+pandas>=2.0
+openpyxl>=3.1
+xlrd>=2.0
+PyMuPDF>=1.23
+colorama>=0.4
+sv-ttk>=2.6
+numpy>=1.26
