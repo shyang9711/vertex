@@ -20,7 +20,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -1376,9 +1376,7 @@ class App(ttk.Frame):
             if not self._ac or not self._ac.winfo_exists() or not self._ac.winfo_viewable():
                 return
             w = e.widget
-            # Is the click inside the popup?
             in_popup = str(w).startswith(str(self._ac))
-            # Is the click on the entry (keep it open if the user clicks back into the entry)?
             on_entry = (w is self.search_entry) or str(w).startswith(str(self.search_entry))
             if not (in_popup or on_entry):
                 self._ac.hide()
@@ -1473,7 +1471,7 @@ class App(ttk.Frame):
         self.update_sales_tax_rates_if_due()
 
         # --- Manager filter state
-        self._mgr_filter_active = set()   # set of selected manager names (exact-case)
+        self._mgr_filter_active = set()
         self._mgr_menu = None
 
     # Updating Software    
@@ -1532,28 +1530,20 @@ class App(ttk.Frame):
         """Create a readonly Combobox of account managers; returns (combobox, StringVar)."""
         v = tk.StringVar(value=initial_name or "")
         cb = ttk.Combobox(parent, textvariable=v, state="readonly", values=self._account_manager_names(), width=30)
-        # Allow typing-to-search without committing invalid text
         cb.configure(state="normal")
         cb["values"] = self._account_manager_names()
         def _validate_and_lock(event=None):
             names = self._account_manager_names()
             cur = (v.get() or "").strip()
             if cur:
-                # If not already in roster, add it and SAVE immediately
                 exists_ci = any(n.casefold() == cur.casefold() for n in names)
                 if not exists_ci:
-                    # Append to in-memory roster
                     am = getattr(self, "account_managers", []) or []
                     am.append({"name": cur})
                     self.account_managers = self._normalize_acct_mgr_list(am)
-                    # WRITE TO clients/account_managers.json now
                     self._save_account_managers(self.account_managers)
-                    # Refresh dropdown values everywhere
                     cb["values"] = self._account_manager_names()
-                    # If you have a Managers ▾ filter menu open, its labels can be rebuilt on next open
-                    # (optional) self._refresh_mgr_menu_checks()
                 else:
-                    # Snap to the canonical cased name
                     for n in names:
                         if n.casefold() == cur.casefold():
                             v.set(n)
@@ -1608,7 +1598,6 @@ class App(ttk.Frame):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(lst, f, ensure_ascii=False, indent=2)
             try:
-                # optional status line update if you have self.status (StringVar)
                 if hasattr(self, "status"):
                     self.status.set(f"Saved {len(lst)} account manager(s) → {path}")
             except Exception:
@@ -1627,11 +1616,9 @@ class App(ttk.Frame):
         else          -> toggle a specific manager name
         """
         if name is None:
-            # 'All' means clear specific selections
             if self._mgr_filter_active:
                 self._mgr_filter_active.clear()
             else:
-                # If nothing is selected, selecting All is also a no-op (empty set = All)
                 pass
         else:
             if name in self._mgr_filter_active:
