@@ -29,10 +29,10 @@ jobs:
 
       - name: Build EXE (PyInstaller spec)
         run: |
-          pyinstaller vertex.spec
+          pyinstaller --onefile --noconsole --icon=logo.ico --name vertex client_manager.py
 
       - name: Upload EXE to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/vertex/vertex.exe
+            dist/vertex.exe
