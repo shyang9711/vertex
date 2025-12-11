@@ -1,0 +1,20 @@
+{
+    "pos_parse.py": {
+        "name": "Extract Payroll POS"
+    },
+    "match_company_name.py": {
+        "name": "Check Paycheck Company Name"
+    },
+    "validate_tax_payments.py": {
+        "name": "Tax Payment Checker"
+    },
+    "vendor_match.py": {
+        "name": "Match Excel Vendors"
+    },
+    "de9c_to_csv.py": {
+        "name": "DE9C to CSV"
+    },
+    "client_manager.py": {
+        "name": "Manage Clients"
+    }
+}
