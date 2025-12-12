@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.10"
+APP_VERSION = "0.1.11"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -813,38 +813,43 @@ def check_for_updates(parent: tk.Misc | None = None):
         setlocal
         echo Updating Vertex...
 
-        REM Always run from the script folder (UNC-safe: pushd maps to temp drive)
+        REM Always run from the script directory (safe for UNC too)
         set "DIR=%~dp0"
-        pushd "%DIR%" || goto :fail
+        pushd "%DIR%" >nul 2>&1 || goto :fail
 
-        REM Wait for the app to exit
-        timeout /t 2 /nobreak >nul
-
-        :waitloop
-        tasklist | find /i "{exe_name}" >nul
-        if not errorlevel 1 (
-          timeout /t 1 /nobreak >nul
-          goto waitloop
-        )
-
-        REM Replace EXE (use absolute paths based on script location)
         set "EXE={exe_name}"
         set "NEW={exe_name}.new"
 
-        if not exist "%DIR%%NEW%" goto :fail
+        REM Wait until the process is gone
+        :waitproc
+        tasklist | find /i "%EXE%" >nul
+        if not errorlevel 1 (
+        timeout /t 1 /nobreak >nul
+        goto waitproc
+        )
 
-        del /f /q "%DIR%%EXE%" >nul 2>nul
-        ren "%DIR%%NEW%" "%EXE%"
+        REM Retry delete/rename for up to ~30 seconds
+        for /l %%i in (1,1,30) do (
+        if exist "%EXE%" del /f /q "%EXE%" >nul 2>&1
+        if exist "%NEW%" (
+            ren "%NEW%" "%EXE%" >nul 2>&1
+        )
+        if exist "%EXE%" if not exist "%NEW%" goto :run
+        timeout /t 1 /nobreak >nul
+        )
 
+        goto :fail
+
+        :run
         start "" "%DIR%%EXE%"
-
         popd
         del "%~f0"
         exit /b 0
 
         :fail
         popd
-        echo Update failed. Missing: "%DIR%{exe_name}.new"
+        echo Update failed.
+        echo (Tip) If you see this, run update_vertex.cmd manually.
         pause
         exit /b 1
     """).strip() + "\n"
@@ -853,7 +858,7 @@ def check_for_updates(parent: tk.Misc | None = None):
         updater.write_text(cmd, encoding="utf-8")
         # IMPORTANT: do NOT set cwd here (UNC cwd breaks cmd.exe)
         subprocess.Popen(
-            ["cmd.exe", "/c", f'"{str(updater)}"'],
+            ["cmd.exe", "/c", "call", str(updater)],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
     except Exception as e:
