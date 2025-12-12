@@ -25,17 +25,17 @@ try:
     from functions.utils.app_logging import get_logger
 
 except ModuleNotFoundError:
-    from ..models.tasks_model import (
+    from models.tasks_model import (
         TasksStore,
         adjust_if_weekend_or_holiday,
         DUE_DATE,
         calc_tags_for_occurrence,
         display_date_for
     )
-    from ..pages.checklist_page import ChecklistPage
-    from ..pages.reports_page import ReportsPage
+    from pages.checklist_page import ChecklistPage
+    from pages.reports_page import ReportsPage
 
-    from ..utils.app_logging import get_logger
+    from utils.app_logging import get_logger
 LOG = get_logger("dashboard")
 
 # --- Theme ---

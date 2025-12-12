@@ -11,7 +11,7 @@ from tkinter import ttk, messagebox, simpledialog
 try:
     from functions.utils.app_logging import get_logger
 except ModuleNotFoundError:
-    from ..utils.app_logging import get_logger
+    from utils.app_logging import get_logger
 
 class TaskbarModel:
     """

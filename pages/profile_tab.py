@@ -25,7 +25,7 @@ try:
     from functions.utils.app_logging import get_logger
     
 except ModuleNotFoundError:
-    from ..models.tasks_model import (
+    from models.tasks_model import (
         adjust_if_weekend_or_holiday,
         next_monthly_on_or_after,
         next_semi_monthly_on_or_after,
@@ -34,7 +34,7 @@ except ModuleNotFoundError:
         calc_tags_for_occurrence,
         display_date_for,
     )
-    from ..utils.app_logging import get_logger
+    from utils.app_logging import get_logger
 LOG = get_logger("profile")
 
 
