@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.11"
+APP_VERSION = "0.1.12"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -93,24 +93,30 @@ US_STATES = [
 ]
 
 # -------------------- Storage paths --------------------
-def app_dir() -> Path:
-    """
-    Base directory for the app:
-    - When frozen (PyInstaller EXE): folder containing the EXE
-    - When running from source: folder containing client_manager.py
-    """
+def portable_root() -> Path:
+    # For EXE: folder that contains vertex.exe (NOT _MEI)
     if getattr(sys, "frozen", False):
-        # PyInstaller onefile / onedir
         return Path(sys.executable).resolve().parent
+    # For source run
     try:
-        return Path(__file__).parent.resolve()
+        return Path(__file__).resolve().parent
     except NameError:
         return Path(os.getcwd()).resolve()
 
+def appdata_root() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
+    return Path(base) / "Vertex"
 
-APP_DIR = app_dir()
+# Prefer a sibling "data" folder next to the EXE (portable install),
+# but if it doesn't exist and can't be created, fall back to AppData.
+_PORTABLE = portable_root() / "data"
+try:
+    _PORTABLE.mkdir(parents=True, exist_ok=True)
+    DATA_ROOT = _PORTABLE
+except Exception:
+    DATA_ROOT = appdata_root() / "data"
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
-DATA_ROOT        = APP_DIR / "data"
 CLIENTS_DIR      = DATA_ROOT / "clients"
 TASKS_DIR        = DATA_ROOT / "tasks"
 MATCH_RULES_DIR  = DATA_ROOT / "match_rules"
@@ -120,15 +126,14 @@ VENDOR_LISTS_DIR = DATA_ROOT / "vendor_lists"
 for _p in (CLIENTS_DIR, TASKS_DIR, MATCH_RULES_DIR, MONTHLY_DATA_DIR, VENDOR_LISTS_DIR):
     _p.mkdir(parents=True, exist_ok=True)
 
-# Keep backward-compatible names used throughout this file
 DATA_DIR  = CLIENTS_DIR
 DATA_FILE = CLIENTS_DIR / "clients.json"
 
-# Other program data files
 ACCOUNT_MANAGERS_FILE = CLIENTS_DIR / "account_managers.json"
 TASKS_FILE            = TASKS_DIR / "tasks.json"
 MONTHLY_STATE_FILE    = MONTHLY_DATA_DIR / "monthly_state.json"
 COMPANY_LIST_FILE     = MATCH_RULES_DIR / "company_list.json"
+
 
 # -------------------- System Fault Handler -----------
 import faulthandler, sys, os, tempfile
