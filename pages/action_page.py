@@ -14,9 +14,10 @@ from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
 try:
     from functions.utils.app_logging import get_logger
+    from styles.new_ui import NewUI
 except ModuleNotFoundError:
-    from utils.app_logging import get_logger
-from styles.new_ui import NewUI
+    from ..utils.app_logging import get_logger
+    from ..styles.new_ui import NewUI
 LOG = get_logger("actions")
 
 @dataclass

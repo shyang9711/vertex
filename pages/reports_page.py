@@ -13,7 +13,7 @@ try:
     from functions.utils.app_logging import get_logger
     
 except ModuleNotFoundError:
-    from utils.app_logging import get_logger
+    from ..utils.app_logging import get_logger
 LOG = get_logger("reports")
 
 # (Optional) use NewUI tag names if available

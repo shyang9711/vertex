@@ -25,17 +25,17 @@ try:
     from functions.utils.app_logging import get_logger
 
 except ModuleNotFoundError:
-    from models.tasks_model import (
+    from ..models.tasks_model import (
         TasksStore,
         adjust_if_weekend_or_holiday,
         DUE_DATE,
         calc_tags_for_occurrence,
         display_date_for
     )
-    from pages.checklist_page import ChecklistPage
-    from pages.reports_page import ReportsPage
+    from ..pages.checklist_page import ChecklistPage
+    from ..pages.reports_page import ReportsPage
 
-    from utils.app_logging import get_logger
+    from ..utils.app_logging import get_logger
 LOG = get_logger("dashboard")
 
 # --- Theme ---
@@ -87,14 +87,23 @@ class DashboardPage:
         self.app = app
         self.frame = None
         self.log = get_logger("dashboard")
-        pages_dir     = Path(__file__).resolve().parent
-        functions_dir = pages_dir.parent
-        data_dir      = functions_dir / "data" / "tasks"
+        data_dir = None
+        try:
+            data_dir = getattr(app, "TASKS_DIR", None)
+            data_dir = Path(data_dir) if data_dir else None
+        except Exception:
+            data_dir = None
+
+        if not data_dir:
+            # Fallback for dev mode
+            pages_dir     = Path(__file__).resolve().parent
+            functions_dir = pages_dir.parent
+            data_dir      = functions_dir / "data" / "tasks"
 
         data_dir.mkdir(parents=True, exist_ok=True)
 
-        self._data_dir    = data_dir
-        self.store = TasksStore(self._data_dir)
+        self._data_dir = data_dir
+        self.store = TasksStore(self._data_dir, app=self.app)
         self._row_tags = {}
 
         self._cal_year = None
@@ -137,6 +146,16 @@ class DashboardPage:
         except Exception:
             # Fallback if after() isn't available for some reason
             self._refresh_todo_feed(); self._draw_calendar()
+
+    # --- Import data ---
+    def reload_from_disk(self):
+        # Re-read tasks.json from disk and refresh visible widgets
+        self.store = TasksStore(self._data_dir)
+        try:
+            self._refresh_todo_feed()
+            self._draw_calendar()
+        except Exception:
+            pass
 
     # -------- build UI --------
     def _build_ui(self, root):

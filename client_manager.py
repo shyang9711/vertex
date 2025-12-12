@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.13"
+APP_VERSION = "0.1.14"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -1549,6 +1549,14 @@ class App(ttk.Frame):
         self._mgr_filter_active = set()
         self._mgr_menu = None
 
+        # Data Import
+        self.DATA_ROOT = DATA_ROOT
+        self.CLIENTS_DIR = CLIENTS_DIR
+        self.TASKS_DIR = TASKS_DIR
+        self.MATCH_RULES_DIR = MATCH_RULES_DIR
+        self.MONTHLY_DATA_DIR = MONTHLY_DATA_DIR
+        self.VENDOR_LISTS_DIR = VENDOR_LISTS_DIR
+
     # Updating Software    
     def _check_for_updates(self):
         check_for_updates(self.winfo_toplevel())
@@ -2069,6 +2077,13 @@ class App(ttk.Frame):
         self.log.info("Importing data from %s", path)
 
         stats = import_all_from_json(path, self.items)
+
+        # Refresh dashboard tasks immediately (no restart needed)
+        try:
+            if hasattr(self, "dashboard") and self.dashboard:
+                self.dashboard.reload_from_disk()
+        except Exception:
+            pass
 
         # always persist clients list if any were added
         if stats.get("clients_added", 0):

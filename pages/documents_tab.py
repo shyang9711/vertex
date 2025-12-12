@@ -14,7 +14,7 @@ try:
     from functions.utils.app_logging import get_logger
     
 except ModuleNotFoundError:
-    from utils.app_logging import get_logger
+    from ..utils.app_logging import get_logger
 
 ALLOWED_EXTS = {".pdf", ".jpg", ".jpeg", ".png"}
 LOG = get_logger("documents")
