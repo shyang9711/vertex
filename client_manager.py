@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.18"
+APP_VERSION = "0.1.19"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -2926,6 +2926,26 @@ def main():
     log = get_logger("launcher")
     log.info("Launching Client Manager main()")
     root = tk.Tk()
+
+    def resource_path(rel: str) -> str:
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        return str(base / rel)
+
+    # Must be set early in the process on Windows for consistent taskbar identity/icon
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vertex.Vertex")
+        except Exception:
+            pass
+
+    # After root is created:
+    try:
+        ico = resource_path("logo.ico")
+        root.iconbitmap(default=ico)   # top-left window icon (and often taskbar grouping icon)
+    except Exception:
+        pass
+
     root.title("Client Manager")
     root.geometry("1280x800")
     root.minsize(1920, 720)
