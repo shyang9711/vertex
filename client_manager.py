@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.12"
+APP_VERSION = "0.1.13"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -440,246 +440,230 @@ def _deep_merge_no_overwrite(dst, src):
         return dst
     return dst
 
-def export_all_to_json(path: Path, clients: List[Dict[str, Any]]) -> None:
+def export_all_to_json(out_path: Path, clients: list[dict]):
     """
-    Export ALL program data to a single JSON file chosen by the user.
-
+    Export ALL program data into a single JSON file.
     Includes:
-      - clients (in-memory)
-      - account_managers.json
-      - tasks.json
-      - monthly_state.json
-      - match_rules/*.json (including company_list.json)
+      - clients + account_managers
+      - tasks + monthly_state
+      - match_rules/*.json (including vendor_rules_*.json, accounts_*.json, company_list.json)
       - vendor_lists/*.csv
     """
-    # Read non-client data from disk
-    acct_mgrs = _read_json_file(ACCOUNT_MANAGERS_FILE, [])
-    tasks     = _read_json_file(TASKS_FILE, [])
-    monthly   = _read_json_file(MONTHLY_STATE_FILE, {})
-    company_list = _read_json_file(COMPANY_LIST_FILE, [])
+    out_path = Path(out_path)
 
-    # All match_rules JSON files (store by filename)
-    match_rules_files: Dict[str, Any] = {}
-    try:
-        for fp in MATCH_RULES_DIR.glob("*.json"):
-            match_rules_files[fp.name] = _read_json_file(fp, {})
-    except Exception:
-        match_rules_files = {}
+    def _read_text(p: Path) -> str:
+        return p.read_text(encoding="utf-8", errors="replace")
 
-    # All vendor list CSV files (store raw text by filename)
-    vendor_lists: Dict[str, str] = {}
-    try:
-        for fp in list(VENDOR_LISTS_DIR.glob("*.csv")) + list(VENDOR_LISTS_DIR.glob("*.CSV")):
-            try:
-                vendor_lists[fp.name] = fp.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                # fallback: store bytes repr-ish if something weird happens
-                vendor_lists[fp.name] = fp.read_bytes().decode("utf-8", errors="ignore")
-    except Exception:
-        vendor_lists = {}
-
-    payload: Dict[str, Any] = {
-        "version": APP_VERSION,
-        "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
-        "clients": _normalize_clients_for_io(clients),
-        "account_managers": acct_mgrs if isinstance(acct_mgrs, list) else [],
-        "tasks": tasks if isinstance(tasks, list) else [],
-        "monthly_state": monthly if isinstance(monthly, dict) else {},
-        "company_list": company_list if isinstance(company_list, list) else [],
-        "match_rules_files": match_rules_files,
-        "vendor_lists": vendor_lists,
+    payload = {
+        "version": 1,
+        "clients": clients,
+        "account_managers": [],
+        "tasks": [],
+        "monthly_state": {},
+        "match_rules": {},    # filename -> parsed json
+        "vendor_lists": {},   # filename -> csv text
     }
 
-    try:
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
-        LOG.exception("Error exporting data: %s", e)
-        messagebox.showerror("Export Error", f"Couldn't export data:\n{e}")
+    # account managers
+    if ACCOUNT_MANAGERS_FILE.exists():
+        payload["account_managers"] = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
 
-def import_all_from_json(path: Path, clients: List[Dict[str, Any]]) -> int:
+    # tasks
+    if TASKS_FILE.exists():
+        payload["tasks"] = _read_json_file(TASKS_FILE, default=[])
+
+    # monthly state
+    if MONTHLY_STATE_FILE.exists():
+        payload["monthly_state"] = _read_json_file(MONTHLY_STATE_FILE, default={})
+
+    # match_rules/*.json
+    if MATCH_RULES_DIR.exists():
+        for p in MATCH_RULES_DIR.glob("*.json"):
+            try:
+                payload["match_rules"][p.name] = _read_json_file(p, default={})
+            except Exception:
+                # If any file is malformed, still export something rather than failing the whole export
+                payload["match_rules"][p.name] = {"__raw__": _read_text(p)}
+
+    # vendor_lists/*.csv
+    if VENDOR_LISTS_DIR.exists():
+        for p in VENDOR_LISTS_DIR.glob("*.csv"):
+            payload["vendor_lists"][p.name] = _read_text(p)
+
+        # some of your files are .CSV uppercase
+        for p in VENDOR_LISTS_DIR.glob("*.CSV"):
+            payload["vendor_lists"][p.name] = _read_text(p)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
     """
-    Import data from JSON and merge into the program.
+    Import ALL data from a single export JSON.
 
     Rules:
-      - Clients: do NOT overwrite existing; skip if EIN already exists (by digits)
-      - Tasks: do NOT overwrite existing; skip if id already exists
-      - Account managers: do NOT overwrite existing; skip if name already exists
-      - Match rules JSON files: do NOT overwrite existing files
-      - Monthly state + company list: merge WITHOUT overwriting existing keys/items
-      - Vendor lists: OVERWRITE allowed
-    Returns: number of new clients added (keeps existing UI behavior).
+      - clients: do NOT duplicate if EIN or id already exists
+      - account_managers: do NOT duplicate if id already exists
+      - tasks: do NOT duplicate if id already exists
+              AND remap company_idx using company_name against current clients list
+      - match_rules: do NOT overwrite existing json files
+      - vendor_lists: overwrite
     """
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        LOG.exception("Error reading import file: %s", e)
-        messagebox.showerror("Import Error", f"Couldn't read file:\n{e}")
-        return 0
+    in_path = Path(in_path)
+    data = _read_json_file(in_path, default={})
+    if not isinstance(data, dict):
+        return {"clients_added": 0, "account_managers_added": 0, "tasks_added": 0,
+                "match_rules_added": 0, "vendor_lists_written": 0}
 
-    # Accept either modern dict payload or legacy bare list = clients
-    if isinstance(data, dict):
-        raw_clients = data.get("clients", [])
-        raw_tasks = data.get("tasks", [])
-        raw_mgrs = data.get("account_managers", [])
-        raw_monthly = data.get("monthly_state", {})
-        raw_company_list = data.get("company_list", [])
-        raw_match_rules_files = data.get("match_rules_files", {})
-        raw_vendor_lists = data.get("vendor_lists", {})
-    elif isinstance(data, list):
-        raw_clients = data
-        raw_tasks = []
-        raw_mgrs = []
-        raw_monthly = {}
-        raw_company_list = []
-        raw_match_rules_files = {}
-        raw_vendor_lists = {}
-    else:
-        messagebox.showerror("Import Error", "Unrecognized data format in JSON.")
-        return 0
+    # --- helpers ---
+    def _norm_ein(x: str) -> str:
+        return normalize_ein_digits(str(x or ""))
 
-    # ---------- CLIENTS (in-memory merge, no overwrite) ----------
-    existing_ein_digits = set()
+    def _norm_name(x: str) -> str:
+        return " ".join(tokenize(str(x or "")))
+
+    # --- existing client keys (id/ein) ---
+    existing_client_ids = set()
+    existing_client_eins = set()
     for c in clients:
-        ein_d = normalize_ein_digits((c.get("ein") or "").strip())
-        if ein_d:
-            existing_ein_digits.add(ein_d)
+        if isinstance(c, dict):
+            cid = str(c.get("id", "")).strip()
+            if cid:
+                existing_client_ids.add(cid)
+            ein = _norm_ein(c.get("ein", ""))
+            if ein:
+                existing_client_eins.add(ein)
 
-    added_clients = 0
-    if isinstance(raw_clients, list):
-        for raw in raw_clients:
-            if not isinstance(raw, dict):
+    # --- import clients ---
+    clients_added = 0
+    incoming_clients = data.get("clients", [])
+    if isinstance(incoming_clients, list):
+        for c in incoming_clients:
+            if not isinstance(c, dict):
                 continue
-            ein_raw = (raw.get("ein") or "").strip()
-            ein_d = normalize_ein_digits(ein_raw)
-            if not ein_d:
-                continue
-            if ein_d in existing_ein_digits:
-                continue  # do NOT overwrite
+            cid = str(c.get("id", "")).strip()
+            ein = _norm_ein(c.get("ein", ""))
 
-            c = dict(raw)
-            # basic normalization like load_clients
-            c.setdefault("name", "")
-            c.setdefault("dba", "")
-            c.setdefault("ein", ein_raw)
-            c.setdefault("file_location", "")
-            c.setdefault("memo", "")
-            c.setdefault("addr1", "")
-            c.setdefault("addr2", "")
-            c.setdefault("city", "")
-            c.setdefault("state", "")
-            c.setdefault("zip", "")
-            c.setdefault("acct_mgr", "")
-            c.setdefault("edd_number", "")
-            c.setdefault("sales_tax_account", "")
-            c.setdefault("entity_type", "")
-            c.setdefault("ui_rate", "")
-            c.setdefault("sales_tax_rate", "")
-            c.setdefault("other_tax_rates", "")
-            c.setdefault("tax_rates_last_checked", "")
-            c.setdefault("logs", [])
-            c.setdefault("officers", [])
-            c.setdefault("employees", [])
-            c["officers"] = [ensure_officer_dict(o) for o in c.get("officers", [])]
-            c["employees"] = [ensure_officer_dict(o) for o in c.get("employees", [])]
+            if cid and cid in existing_client_ids:
+                continue
+            if ein and ein in existing_client_eins:
+                continue
 
             clients.append(c)
-            existing_ein_digits.add(ein_d)
-            added_clients += 1
+            clients_added += 1
+            if cid:
+                existing_client_ids.add(cid)
+            if ein:
+                existing_client_eins.add(ein)
 
-    # ---------- ACCOUNT MANAGERS (disk merge, no overwrite) ----------
-    existing_mgrs = _read_json_file(ACCOUNT_MANAGERS_FILE, [])
-    if not isinstance(existing_mgrs, list):
-        existing_mgrs = []
-    existing_mgr_names = {str(m.get("name", "")).strip().lower() for m in existing_mgrs if isinstance(m, dict)}
+    # Build name->idx map AFTER possibly adding clients
+    name_to_idx = {}
+    for idx, c in enumerate(clients):
+        nm = _norm_name(c.get("name", ""))
+        if nm and nm not in name_to_idx:
+            name_to_idx[nm] = idx
 
-    added_mgrs = 0
-    if isinstance(raw_mgrs, list):
-        for m in raw_mgrs:
-            if not isinstance(m, dict):
+    # --- import account managers (no overwrite by id) ---
+    am_added = 0
+    if isinstance(data.get("account_managers"), list):
+        existing_ams = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
+        if not isinstance(existing_ams, list):
+            existing_ams = []
+        existing_am_ids = {str(x.get("id", "")).strip() for x in existing_ams if isinstance(x, dict)}
+
+        for am in data["account_managers"]:
+            if not isinstance(am, dict):
                 continue
-            name = str(m.get("name", "")).strip()
-            key = name.lower()
-            if not name or key in existing_mgr_names:
+            amid = str(am.get("id", "")).strip()
+            if amid and amid in existing_am_ids:
                 continue
-            existing_mgrs.append(dict(m))
-            existing_mgr_names.add(key)
-            added_mgrs += 1
-    _write_json_file(ACCOUNT_MANAGERS_FILE, existing_mgrs)
+            existing_ams.append(am)
+            am_added += 1
+            if amid:
+                existing_am_ids.add(amid)
 
-    # ---------- TASKS (disk merge, no overwrite) ----------
-    existing_tasks = _read_json_file(TASKS_FILE, [])
-    if not isinstance(existing_tasks, list):
-        existing_tasks = []
-    existing_task_ids = {str(t.get("id", "")).strip() for t in existing_tasks if isinstance(t, dict) and str(t.get("id", "")).strip()}
+        ACCOUNT_MANAGERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ACCOUNT_MANAGERS_FILE.write_text(json.dumps(existing_ams, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    added_tasks = 0
-    if isinstance(raw_tasks, list):
-        for t in raw_tasks:
+    # --- import monthly_state (safe: write if file missing; else keep existing) ---
+    if isinstance(data.get("monthly_state"), dict):
+        if not MONTHLY_STATE_FILE.exists():
+            MONTHLY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MONTHLY_STATE_FILE.write_text(json.dumps(data["monthly_state"], indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # --- import match_rules (do NOT overwrite existing files) ---
+    mr_added = 0
+    match_rules = data.get("match_rules", {})
+    if isinstance(match_rules, dict):
+        MATCH_RULES_DIR.mkdir(parents=True, exist_ok=True)
+        for fname, contents in match_rules.items():
+            try:
+                fname = str(fname)
+                if not fname.lower().endswith(".json"):
+                    continue
+                dest = MATCH_RULES_DIR / fname
+                if dest.exists():
+                    continue  # do not overwrite
+                # contents can be dict/list/etc.
+                dest.write_text(json.dumps(contents, indent=2, ensure_ascii=False), encoding="utf-8")
+                mr_added += 1
+            except Exception:
+                pass
+
+    # --- import vendor_lists (OVERWRITE) ---
+    vl_written = 0
+    vendor_lists = data.get("vendor_lists", {})
+    if isinstance(vendor_lists, dict):
+        VENDOR_LISTS_DIR.mkdir(parents=True, exist_ok=True)
+        for fname, text in vendor_lists.items():
+            try:
+                fname = str(fname)
+                if not (fname.lower().endswith(".csv")):
+                    continue
+                dest = VENDOR_LISTS_DIR / fname
+                dest.write_text(str(text), encoding="utf-8", errors="replace")
+                vl_written += 1
+            except Exception:
+                pass
+
+    # --- import tasks (no dup by id, AND remap company_idx) ---
+    tasks_added = 0
+    incoming_tasks = data.get("tasks", [])
+    if isinstance(incoming_tasks, list):
+        existing_tasks = _read_json_file(TASKS_FILE, default=[])
+        if not isinstance(existing_tasks, list):
+            existing_tasks = []
+        existing_task_ids = {str(t.get("id", "")).strip() for t in existing_tasks if isinstance(t, dict)}
+
+        for t in incoming_tasks:
             if not isinstance(t, dict):
                 continue
             tid = str(t.get("id", "")).strip()
-            if not tid:
+            if tid and tid in existing_task_ids:
                 continue
-            if tid in existing_task_ids:
-                continue  # do NOT overwrite
-            existing_tasks.append(dict(t))
-            existing_task_ids.add(tid)
-            added_tasks += 1
-    _write_json_file(TASKS_FILE, existing_tasks)
 
-    # ---------- MONTHLY STATE (disk merge, no overwrite) ----------
-    existing_monthly = _read_json_file(MONTHLY_STATE_FILE, {})
-    if not isinstance(existing_monthly, dict):
-        existing_monthly = {}
-    if isinstance(raw_monthly, dict):
-        _deep_merge_no_overwrite(existing_monthly, raw_monthly)
-    _write_json_file(MONTHLY_STATE_FILE, existing_monthly)
+            # remap company_idx based on company_name (so tasks show under correct company)
+            cname = _norm_name(t.get("company_name", ""))
+            if cname and cname in name_to_idx:
+                t["company_idx"] = name_to_idx[cname]
 
-    # ---------- COMPANY LIST (disk merge, no overwrite) ----------
-    existing_companies = _read_json_file(COMPANY_LIST_FILE, [])
-    if not isinstance(existing_companies, list):
-        existing_companies = []
-    if isinstance(raw_company_list, list):
-        for item in raw_company_list:
-            if item not in existing_companies:
-                existing_companies.append(item)
-    _write_json_file(COMPANY_LIST_FILE, existing_companies)
+            existing_tasks.append(t)
+            tasks_added += 1
+            if tid:
+                existing_task_ids.add(tid)
 
-    # ---------- MATCH RULES FILES (do NOT overwrite existing files) ----------
-    if isinstance(raw_match_rules_files, dict):
-        for fname, fdata in raw_match_rules_files.items():
-            if not isinstance(fname, str) or not fname.lower().endswith(".json"):
-                continue
-            # company_list handled above (merge). Don't overwrite it here.
-            if fname == "company_list.json":
-                continue
-            dest = MATCH_RULES_DIR / fname
-            if dest.exists():
-                continue  # do NOT overwrite
-            try:
-                _write_json_file(dest, fdata)
-            except Exception:
-                pass
+        TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TASKS_FILE.write_text(json.dumps(existing_tasks, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # ---------- VENDOR LISTS (OVERWRITE allowed) ----------
-    if isinstance(raw_vendor_lists, dict):
-        for fname, text in raw_vendor_lists.items():
-            if not isinstance(fname, str):
-                continue
-            if not (fname.lower().endswith(".csv")):
-                continue
-            dest = VENDOR_LISTS_DIR / fname
-            try:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(str(text), encoding="utf-8", errors="ignore")
-            except Exception:
-                pass
+    return {
+        "clients_added": clients_added,
+        "account_managers_added": am_added,
+        "tasks_added": tasks_added,
+        "match_rules_added": mr_added,
+        "vendor_lists_written": vl_written,
+    }
 
-    LOG.info(
-        "Import summary: clients +%d, account_managers +%d, tasks +%d (vendor_lists overwrite OK).",
-        added_clients, added_mgrs, added_tasks
-    )
-    return added_clients
 
 def _parse_version(s: str) -> tuple[int, int, int]:
     """
@@ -2074,7 +2058,6 @@ class App(ttk.Frame):
             self.status.set(f"Saved {len(self.items)} client(s).")
 
     def _import_data_dialog(self):
-        """Import data from a JSON file and merge in any new clients (by EIN)."""
         path_str = filedialog.askopenfilename(
             title="Import Data (JSON)",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
@@ -2084,12 +2067,27 @@ class App(ttk.Frame):
 
         path = Path(path_str)
         self.log.info("Importing data from %s", path)
-        added_clients = import_all_from_json(path, self.items)
-        if added_clients:
+
+        stats = import_all_from_json(path, self.items)
+
+        # always persist clients list if any were added
+        if stats.get("clients_added", 0):
             save_clients(self.items)
-            self.populate()  # refresh search/dashboard
+
+        # refresh UI (clients + suggestions). Tasks pages read from TASKS_FILE, but remap above makes them consistent.
+        self.populate()
+        self._update_suggestions()
+
         if hasattr(self, "status"):
-            self.status.set(f"Imported {added_clients} new client(s) from {path.name}")
+            self.status.set(
+                f"Imported from {path.name} | "
+                f"clients +{stats.get('clients_added',0)}, "
+                f"AM +{stats.get('account_managers_added',0)}, "
+                f"tasks +{stats.get('tasks_added',0)}, "
+                f"rules +{stats.get('match_rules_added',0)}, "
+                f"vendor_lists {stats.get('vendor_lists_written',0)}"
+            )
+
 
     def _export_all_dialog(self):
         """Export ALL data (currently clients) to a JSON file chosen by the user."""
