@@ -3,8 +3,6 @@ from __future__ import annotations
 import sys, pathlib, types
 
 # Make imports work in BOTH layouts:
-# 1) Old layout: <Scripts>/functions/client_manager.py  (functions is a folder under Scripts)
-# 2) New layout: repo root is functions/ (client_manager.py sits directly inside it)
 _BASE = pathlib.Path(__file__).resolve().parent
 
 # Ensure "functions" is importable even when the repo root IS the functions folder
@@ -36,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.19"
+APP_VERSION = "0.1.20"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -2942,11 +2940,11 @@ def main():
     # After root is created:
     try:
         ico = resource_path("logo.ico")
-        root.iconbitmap(default=ico)   # top-left window icon (and often taskbar grouping icon)
+        root.iconbitmap(default=ico)
     except Exception:
         pass
 
-    root.title("Client Manager")
+    root.title("Vertex")
     root.geometry("1280x800")
     root.minsize(1920, 720)
 
