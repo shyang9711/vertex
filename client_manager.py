@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.8"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -791,67 +791,64 @@ def check_for_updates(parent: tk.Misc | None = None):
         return
     
     # --- launch updater to replace running exe ---
+    import textwrap
+
     updater = app_folder / "update_vertex.cmd"
 
-    cmd = f"""
+    cmd = textwrap.dedent(f"""\
         @echo off
         setlocal
-
         echo Updating Vertex...
 
-        REM Directory where this script lives (works even on UNC)
+        REM Always run from the script folder (UNC-safe: pushd maps to temp drive)
         set "DIR=%~dp0"
-
-        REM Map UNC to a temp drive letter & cd there
         pushd "%DIR%" || goto :fail
 
         REM Wait for the app to exit
         timeout /t 2 /nobreak >nul
 
-        REM Wait until the process is gone (optional but safer)
         :waitloop
-        tasklist | find /i "vertex.exe" >nul
+        tasklist | find /i "{exe_name}" >nul
         if not errorlevel 1 (
-        timeout /t 1 >nul
-        goto waitloop
+          timeout /t 1 /nobreak >nul
+          goto waitloop
         )
 
-        REM Replace executable using absolute paths
-        if exist "%DIR%vertex.exe" del /f /q "%DIR%vertex.exe"
-        if exist "%DIR%vertex.exe.new" (
-        ren "%DIR%vertex.exe.new" "vertex.exe"
-        ) else (
-        echo Missing new exe: "%DIR%vertex.exe.new"
-        goto :fail
-        )
+        REM Replace EXE (use absolute paths based on script location)
+        set "EXE={exe_name}"
+        set "NEW={exe_name}.new"
 
-        REM Restart app
-        start "" "%DIR%vertex.exe"
+        if not exist "%DIR%%NEW%" goto :fail
 
-        REM Cleanup
+        del /f /q "%DIR%%EXE%" >nul 2>nul
+        ren "%DIR%%NEW%" "%EXE%"
+
+        start "" "%DIR%%EXE%"
+
         popd
         del "%~f0"
         exit /b 0
 
         :fail
-        echo Update failed.
         popd
+        echo Update failed. Missing: "%DIR%{exe_name}.new"
         pause
         exit /b 1
-
-    """
+    """).strip() + "\n"
 
     try:
         updater.write_text(cmd, encoding="utf-8")
+        # IMPORTANT: do NOT set cwd here (UNC cwd breaks cmd.exe)
         subprocess.Popen(
             ["cmd.exe", "/c", f'"{str(updater)}"'],
-            creationflags=subprocess.CREATE_NEW_CONSOLE
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
     except Exception as e:
         messagebox.showerror("Update Failed", f"Updater error:\n{e}")
         return
 
     sys.exit(0)
+
     
 def show_about_dialog(parent: tk.Misc | None = None):
     msg = (
