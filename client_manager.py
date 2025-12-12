@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.8"
+APP_VERSION = "0.1.9"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -47,16 +47,31 @@ GITHUB_API_LATEST   = f"https://api.github.com/repos/{GITHUB_REPO}/releases/late
 UPDATE_ASSET_NAME = "vertex.exe"
 
 # pages
-from functions.pages.dashboard_page import DashboardPage
-from functions.pages.profile_tab import init_profile_tab
-from functions.pages.documents_tab import init_documents_tab
-from functions.pages.logs_tab import init_logs_tab
-from functions.pages.checklist_page import ChecklistPage
-from functions.pages.action_page import ActionRunnerPage
-from functions.pages.reports_page import ReportsPage
+try:
+    # Old layout: <Scripts>/functions/... (functions is a real package folder)
+    from functions.pages.dashboard_page import DashboardPage
+    from functions.pages.profile_tab import init_profile_tab
+    from functions.pages.documents_tab import init_documents_tab
+    from functions.pages.logs_tab import init_logs_tab
+    from functions.pages.checklist_page import ChecklistPage
+    from functions.pages.action_page import ActionRunnerPage
+    from functions.pages.reports_page import ReportsPage
 
-from functions.models.taskbar_model import TaskbarModel
-from functions.utils.app_logging import get_logger
+    from functions.models.taskbar_model import TaskbarModel
+    from functions.utils.app_logging import get_logger
+
+except ModuleNotFoundError:
+    # New layout: repo root IS "functions" (no inner functions/ package)
+    from pages.dashboard_page import DashboardPage
+    from pages.profile_tab import init_profile_tab
+    from pages.documents_tab import init_documents_tab
+    from pages.logs_tab import init_logs_tab
+    from pages.checklist_page import ChecklistPage
+    from pages.action_page import ActionRunnerPage
+    from pages.reports_page import ReportsPage
+
+    from models.taskbar_model import TaskbarModel
+    from utils.app_logging import get_logger
 
 # NewUI preference from styles/, fallback to functions/
 try:
