@@ -26,6 +26,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+          
+      - name: Debug icon file
+        run: |
+          dir
+          dir logo.ico
 
       - name: Build EXE (PyInstaller spec)
         run: |
