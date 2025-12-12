@@ -1,4 +1,3 @@
-# functions/pages/reports_page.py
 from __future__ import annotations
 
 import sys, pathlib
@@ -10,7 +9,11 @@ if __package__ in (None, ""):
 import tkinter as tk
 from tkinter import ttk
 
-from functions.utils.app_logging import get_logger
+try:
+    from functions.utils.app_logging import get_logger
+    
+except ModuleNotFoundError:
+    from utils.app_logging import get_logger
 LOG = get_logger("reports")
 
 # (Optional) use NewUI tag names if available

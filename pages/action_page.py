@@ -12,7 +12,10 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
-from functions.utils.app_logging import get_logger
+try:
+    from functions.utils.app_logging import get_logger
+except ModuleNotFoundError:
+    from utils.app_logging import get_logger
 from styles.new_ui import NewUI
 LOG = get_logger("actions")
 

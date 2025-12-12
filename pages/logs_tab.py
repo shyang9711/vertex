@@ -10,7 +10,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
 import datetime
-from functions.utils.app_logging import get_logger
+try:
+    from functions.utils.app_logging import get_logger
+    
+except ModuleNotFoundError:
+    from utils.app_logging import get_logger
 
 LOG = get_logger("logs")
 

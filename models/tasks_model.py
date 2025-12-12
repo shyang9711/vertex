@@ -10,7 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import datetime as _dt, json, uuid, calendar as _cal
 from typing import Iterable, Iterator, Tuple, List, Dict, Any
-from functions.utils.app_logging import get_logger
+try:
+    from functions.utils.app_logging import get_logger
+except ModuleNotFoundError:
+    from utils.app_logging import get_logger
 
 WEEKDAY_NAMES = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 WD_NAME_TO_INT = {name: i for i, name in enumerate(WEEKDAY_NAMES)}

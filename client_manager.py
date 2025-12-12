@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.9"
+APP_VERSION = "0.1.10"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -48,7 +48,6 @@ UPDATE_ASSET_NAME = "vertex.exe"
 
 # pages
 try:
-    # Old layout: <Scripts>/functions/... (functions is a real package folder)
     from functions.pages.dashboard_page import DashboardPage
     from functions.pages.profile_tab import init_profile_tab
     from functions.pages.documents_tab import init_documents_tab
@@ -61,7 +60,6 @@ try:
     from functions.utils.app_logging import get_logger
 
 except ModuleNotFoundError:
-    # New layout: repo root IS "functions" (no inner functions/ package)
     from pages.dashboard_page import DashboardPage
     from pages.profile_tab import init_profile_tab
     from pages.documents_tab import init_documents_tab

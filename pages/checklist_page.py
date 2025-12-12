@@ -13,7 +13,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import re, unicodedata
 
-from functions.utils.app_logging import get_logger
+try:
+    from functions.utils.app_logging import get_logger
+except ModuleNotFoundError:
+    from utils.app_logging import get_logger
 LOG = get_logger("checklist")
 
 try:

@@ -12,16 +12,29 @@ from tkinter.scrolledtext import ScrolledText
 import json
 import calendar as _cal
 import datetime as _dt
-from functions.models.tasks_model import (
-    adjust_if_weekend_or_holiday,
-    next_monthly_on_or_after,
-    next_semi_monthly_on_or_after,
-    next_quarterly_on_or_after,
-    DUE_DATE,
-    calc_tags_for_occurrence,
-    display_date_for,
-)
-from functions.utils.app_logging import get_logger
+try:
+    from functions.models.tasks_model import (
+        adjust_if_weekend_or_holiday,
+        next_monthly_on_or_after,
+        next_semi_monthly_on_or_after,
+        next_quarterly_on_or_after,
+        DUE_DATE,
+        calc_tags_for_occurrence,
+        display_date_for,
+    )
+    from functions.utils.app_logging import get_logger
+    
+except ModuleNotFoundError:
+    from models.tasks_model import (
+        adjust_if_weekend_or_holiday,
+        next_monthly_on_or_after,
+        next_semi_monthly_on_or_after,
+        next_quarterly_on_or_after,
+        DUE_DATE,
+        calc_tags_for_occurrence,
+        display_date_for,
+    )
+    from utils.app_logging import get_logger
 LOG = get_logger("profile")
 
 

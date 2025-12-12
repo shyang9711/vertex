@@ -8,7 +8,10 @@ if __package__ in (None, ""):
         
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
-from functions.utils.app_logging import get_logger
+try:
+    from functions.utils.app_logging import get_logger
+except ModuleNotFoundError:
+    from utils.app_logging import get_logger
 
 class TaskbarModel:
     """
