@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.15"
+APP_VERSION = "0.1.16"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -1438,6 +1438,15 @@ class App(ttk.Frame):
         self.page_host = ttk.Frame(self)
         self.page_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(6,0))
 
+
+        # Data Import
+        self.DATA_ROOT = DATA_ROOT
+        self.CLIENTS_DIR = CLIENTS_DIR
+        self.TASKS_DIR = TASKS_DIR
+        self.MATCH_RULES_DIR = MATCH_RULES_DIR
+        self.MONTHLY_DATA_DIR = MONTHLY_DATA_DIR
+        self.VENDOR_LISTS_DIR = VENDOR_LISTS_DIR
+
         self.dashboard = DashboardPage(self)
 
         # Main page
@@ -1549,14 +1558,6 @@ class App(ttk.Frame):
         self._mgr_filter_active = set()
         self._mgr_menu = None
 
-        # Data Import
-        self.DATA_ROOT = DATA_ROOT
-        self.CLIENTS_DIR = CLIENTS_DIR
-        self.TASKS_DIR = TASKS_DIR
-        self.MATCH_RULES_DIR = MATCH_RULES_DIR
-        self.MONTHLY_DATA_DIR = MONTHLY_DATA_DIR
-        self.VENDOR_LISTS_DIR = VENDOR_LISTS_DIR
-
     # Updating Software    
     def _check_for_updates(self):
         check_for_updates(self.winfo_toplevel())
@@ -1583,8 +1584,10 @@ class App(ttk.Frame):
         os.makedirs(p1, exist_ok=True)
         return p1
 
-    def _account_managers_path(self) -> str:
-        return os.path.join(self._clients_folder(), "account_managers.json")
+    def _account_managers_path(self) -> Path:
+        p = Path(self.CLIENTS_DIR) / "account_managers.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
     
     def _account_manager_names(self):
         """Return list[str] of manager names for dropdown."""
