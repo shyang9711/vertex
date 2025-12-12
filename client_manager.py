@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.6"
+APP_VERSION = "0.1.7"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -795,38 +795,57 @@ def check_for_updates(parent: tk.Misc | None = None):
 
     cmd = f"""
         @echo off
+        setlocal
+
         echo Updating Vertex...
 
-        REM Move to the folder where this script is located (fixes UNC paths)
-        pushd "%~dp0"
+        REM Directory where this script lives (works even on UNC)
+        set "DIR=%~dp0"
 
-        REM Wait a moment for the app to exit
+        REM Map UNC to a temp drive letter & cd there
+        pushd "%DIR%" || goto :fail
+
+        REM Wait for the app to exit
         timeout /t 2 /nobreak >nul
 
-        REM Wait until vertex.exe is no longer running
+        REM Wait until the process is gone (optional but safer)
         :waitloop
         tasklist | find /i "vertex.exe" >nul
         if not errorlevel 1 (
-            timeout /t 1 >nul
-            goto waitloop
+        timeout /t 1 >nul
+        goto waitloop
         )
 
-        REM Replace executable
-        del "vertex.exe"
-        rename "vertex.exe.new" "vertex.exe"
+        REM Replace executable using absolute paths
+        if exist "%DIR%vertex.exe" del /f /q "%DIR%vertex.exe"
+        if exist "%DIR%vertex.exe.new" (
+        ren "%DIR%vertex.exe.new" "vertex.exe"
+        ) else (
+        echo Missing new exe: "%DIR%vertex.exe.new"
+        goto :fail
+        )
 
         REM Restart app
-        start "" "vertex.exe"
+        start "" "%DIR%vertex.exe"
 
-        REM Cleanup updater
+        REM Cleanup
+        popd
         del "%~f0"
+        exit /b 0
+
+        :fail
+        echo Update failed.
+        popd
+        pause
+        exit /b 1
+
     """
 
     try:
         updater.write_text(cmd, encoding="utf-8")
         subprocess.Popen(
-            ["cmd.exe", "/c", str(updater)],
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            ["cmd.exe", "/c", f'"{str(updater)}"'],
+            creationflags=subprocess.CREATE_NEW_CONSOLE
         )
     except Exception as e:
         messagebox.showerror("Update Failed", f"Updater error:\n{e}")
