@@ -36,7 +36,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.6"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -793,28 +793,39 @@ def check_for_updates(parent: tk.Misc | None = None):
     # --- launch updater to replace running exe ---
     updater = app_folder / "update_vertex.cmd"
 
-    cmd = f"""@echo off
-    echo Updating Vertex...
-    timeout /t 2 > nul
+    cmd = f"""
+        @echo off
+        echo Updating Vertex...
 
-    :waitloop
-    tasklist | find /i "{exe_name}" > nul
-    if not errorlevel 1 (
-        timeout /t 1 > nul
-        goto waitloop
-    )
+        REM Move to the folder where this script is located (fixes UNC paths)
+        pushd "%~dp0"
 
-    del "{exe_name}"
-    rename "{exe_name}.new" "{exe_name}"
-    start "" "{exe_name}"
-    del "%~f0"
+        REM Wait a moment for the app to exit
+        timeout /t 2 /nobreak >nul
+
+        REM Wait until vertex.exe is no longer running
+        :waitloop
+        tasklist | find /i "vertex.exe" >nul
+        if not errorlevel 1 (
+            timeout /t 1 >nul
+            goto waitloop
+        )
+
+        REM Replace executable
+        del "vertex.exe"
+        rename "vertex.exe.new" "vertex.exe"
+
+        REM Restart app
+        start "" "vertex.exe"
+
+        REM Cleanup updater
+        del "%~f0"
     """
 
     try:
         updater.write_text(cmd, encoding="utf-8")
         subprocess.Popen(
             ["cmd.exe", "/c", str(updater)],
-            cwd=str(app_folder),
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
     except Exception as e:
