@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.29"
+APP_VERSION = "0.1.30"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -940,7 +940,7 @@ def check_for_updates(parent: tk.Misc | None = None):
         for /l %%j in (1,1,5) do (
             echo Starting %%j/5.
             start "" /d "%DIR%" "%EXE%"
-            timeout /t 2 /nobreak >nul
+            timeout /t 8 /nobreak >nul
 
             REM Check whether process is running
             tasklist | find /i "%EXE%" >nul
@@ -3163,4 +3163,29 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
+    # Tool-runner mode for PyInstaller builds:
+    # We spawn the same EXE with "--run-tool <script.py>" so tools run with the bundled Python/pandas.
+    if "--run-tool" in sys.argv:
+        import runpy
+        from pathlib import Path
+
+        try:
+            i = sys.argv.index("--run-tool")
+            script_name = sys.argv[i + 1]
+        except Exception:
+            # Bad invocation → fail fast with a clear message
+            raise SystemExit("Usage: vertex.exe --run-tool <script.py> [args...]")
+
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        tool_path = base / script_name
+        if not tool_path.exists():
+            raise SystemExit(f"Tool not found: {tool_path}")
+
+        # Rebuild argv so the tool feels like it was launched directly
+        sys.argv = [str(tool_path)] + sys.argv[i + 2 :]
+
+        # Run the tool as __main__
+        runpy.run_path(str(tool_path), run_name="__main__")
+        raise SystemExit(0)
+
     main()

@@ -163,12 +163,15 @@ class ActionRunnerPage:
             return
 
         env = os.environ.copy()
-        for k in list(env.keys()):
-            if k.startswith("_PYI_") or k.startswith("PYI_") or k.startswith("_MEI"):
-                env.pop(k, None)
 
-        for k in ("PYTHONHOME", "PYTHONPATH"):
-            env.pop(k, None)
+        # Only scrub PyInstaller-related vars if we're launching an external interpreter.
+        # In frozen mode we are spawning THIS exe, so keep them intact.
+        if not getattr(sys, "frozen", False):
+            for k in list(env.keys()):
+                if k.startswith("_PYI_") or k.startswith("PYI_") or k.startswith("_MEI"):
+                    env.pop(k, None)
+            for k in ("PYTHONHOME", "PYTHONPATH"):
+                env.pop(k, None)
 
         env["PYTHONIOENCODING"] = "utf-8"
 
@@ -188,13 +191,7 @@ class ActionRunnerPage:
         # - Dev: use the current Python
         # - Frozen: try system Python (python / python3)
         if getattr(sys, "frozen", False):
-            # Prefer py launcher (more reliable than Windows Store 'python')
-            python_cmd = shutil.which("py")
-            if python_cmd:
-                cmd = [python_cmd, "-3.11", str(tool_path)]
-            else:
-                python_cmd = shutil.which("python") or shutil.which("python3") or "python"
-                cmd = [python_cmd, str(tool_path)]
+            cmd = [sys.executable, "--run-tool", tool.script]
         else:
             cmd = [sys.executable, str(tool_path)]
 
@@ -213,7 +210,7 @@ class ActionRunnerPage:
                     tool_path = tool_copy  # run the copied script instead
         except Exception:
             pass
-        
+
         _path_parts = [p for p in (env.get("PATH", "").split(os.pathsep)) if "_MEI" not in p and "_PYI" not in p]
         env["PATH"] = os.pathsep.join(_path_parts)
 
