@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.30"
+APP_VERSION = "0.1.31"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -907,6 +907,12 @@ def check_for_updates(parent: tk.Misc | None = None):
         REM Always run from the script directory (safe for UNC too)
         set "DIR=%~dp0"
         pushd "%DIR%" >nul 2>&1 || goto :fail
+                          
+        REM Force PyInstaller onefile extraction to a stable folder (avoid %TEMP% cleanup/AV race)
+        set "RUNTIME_TMP=%DIR%_runtime_tmp"
+        if not exist "%RUNTIME_TMP%" mkdir "%RUNTIME_TMP%" >nul 2>&1
+        set "TMP=%RUNTIME_TMP%"
+        set "TEMP=%RUNTIME_TMP%"
 
         set "EXE={exe_name}"
         set "NEW={exe_name}.new"
