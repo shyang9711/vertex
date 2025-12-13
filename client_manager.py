@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.27"
+APP_VERSION = "0.1.28"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -926,14 +926,14 @@ def check_for_updates(parent: tk.Misc | None = None):
             ren "%NEW%" "%EXE%" >nul 2>&1
         )
         if exist "%EXE%" if not exist "%NEW%" goto :run
-        timeout /t 1 /nobreak >nul
+        timeout /t 3 /nobreak >nul
         )
 
         goto :fail
 
         :run
-        REM Give Windows/AV time to release/scan the new EXE
-        timeout /t 5 /nobreak >nul
+        REM Give Windows/AV time to release/scan the new EXE (PyInstaller onefile can fail if launched too fast)
+        timeout /t 12 /nobreak >nul
 
         REM Try to start the app; if it fails immediately, retry a few times
         set "OK=0"

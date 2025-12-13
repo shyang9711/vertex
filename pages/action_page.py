@@ -204,10 +204,13 @@ class ActionRunnerPage:
         except Exception:
             work_dir = Path.home()
 
+        _path_parts = [p for p in (env.get("PATH", "").split(os.pathsep)) if "_MEI" not in p and "_PYI" not in p]
+        env["PATH"] = os.pathsep.join(_path_parts)
+        
         try:
             self._proc = subprocess.Popen(
                 cmd,
-            cwd=str(work_dir),
+                cwd=str(work_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
