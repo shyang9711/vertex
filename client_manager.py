@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.24"
+APP_VERSION = "0.1.25"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -806,17 +806,20 @@ def check_for_updates(parent: tk.Misc | None = None):
     assets = data.get("assets") or []
     exe_name = os.path.basename(sys.executable)
     url = None
+    expected_size = None
 
     # Prefer asset that matches our exe name
     for a in assets:
         if a.get("name") == exe_name:
             url = a.get("browser_download_url")
+            expected_size = a.get("size")
             break
     # Or fallback to UPDATE_ASSET_NAME
     if not url and UPDATE_ASSET_NAME:
         for a in assets:
             if a.get("name") == UPDATE_ASSET_NAME:
                 url = a.get("browser_download_url")
+                expected_size = a.get("size")
                 break
 
     if not url:
@@ -834,7 +837,9 @@ def check_for_updates(parent: tk.Misc | None = None):
     dest = app_folder / f"{exe_name}.new"
 
     try:
-        with urllib.request.urlopen(url, context=ssl.create_default_context(), timeout=30) as resp:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(url, headers={"User-Agent": "Vertex-Updater"})
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
             chunk_size = 1024 * 64
             with open(dest, "wb") as f:
                 while True:
@@ -842,7 +847,45 @@ def check_for_updates(parent: tk.Misc | None = None):
                     if not chunk:
                         break
                     f.write(chunk)
+                    
+        # --- Verify download (prevents corrupted/partial exe causing python DLL errors) ---
+        actual_size = dest.stat().st_size
+
+        # 1) Compare to GitHub asset size if available
+        if expected_size is not None and actual_size != int(expected_size):
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            messagebox.showerror(
+                "Update Download Failed",
+                f"Downloaded file size mismatch.\n\n"
+                f"Expected: {expected_size} bytes\n"
+                f"Got: {actual_size} bytes\n\n"
+                "Please try Update again."
+            )
+            return
+
+        # 2) Sanity-check Windows EXE header
+        with open(dest, "rb") as f:
+            sig = f.read(2)
+        if sig != b"MZ":
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            messagebox.showerror(
+                "Update Download Failed",
+                "Downloaded file is not a valid Windows executable.\n\n"
+                "Please try Update again."
+            )
+            return
+
     except Exception as e:
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
         messagebox.showerror(
             "Update Download Failed",
             f"Could not download the latest EXE.\n\n{e}"
