@@ -105,7 +105,11 @@ class ActionRunnerPage:
         """
         self.log.info("Loading scripts.json for tool labels")
         try:
-            functions_dir = Path(__file__).resolve().parent.parent
+            # In onefile builds, bundled resources live under sys._MEIPASS
+            if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+                functions_dir = Path(sys._MEIPASS)
+            else:
+                functions_dir = Path(__file__).resolve().parent.parent
             scripts_json = functions_dir / "scripts.json"
             mapping = {}
             if scripts_json.exists():

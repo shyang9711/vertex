@@ -23,7 +23,7 @@ if str(_PARENT) not in sys.path:
 import os, sys, json, re, webbrowser, subprocess, datetime, urllib.request, urllib.error, ssl, urllib.parse
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import date
+from datetime import date, datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from tkinter.scrolledtext import ScrolledText
@@ -491,6 +491,65 @@ def export_all_to_json(out_path: Path, clients: list[dict]):
         # some of your files are .CSV uppercase
         for p in VENDOR_LISTS_DIR.glob("*.CSV"):
             payload["vendor_lists"][p.name] = _read_text(p)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+def export_selected_to_json(out_path: Path, clients: list[dict], selections: dict):
+    """
+    Export selected program data into a single JSON file.
+
+    selections keys (bool):
+      - clients
+      - match_rules
+      - monthly_data
+      - tasks
+      - vendor_lists
+    Notes:
+      - "clients" includes account_managers.json too.
+      - vendor_lists are stored as filename -> csv text.
+      - match_rules are stored as filename -> json content.
+    """
+    out_path = Path(out_path)
+
+    payload = {
+        "version": 1,
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "includes": {k: bool(v) for k, v in selections.items()},
+    }
+
+    # Clients (+ account managers)
+    if selections.get("clients"):
+        payload["clients"] = clients
+
+        if ACCOUNT_MANAGERS_FILE.exists():
+            payload["account_managers"] = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
+        else:
+            payload["account_managers"] = []
+
+    # Tasks
+    if selections.get("tasks"):
+        payload["tasks"] = _read_json_file(TASKS_FILE, default=[]) if TASKS_FILE.exists() else []
+
+    # Monthly data
+    if selections.get("monthly_data"):
+        payload["monthly_state"] = _read_json_file(MONTHLY_STATE_FILE, default={}) if MONTHLY_STATE_FILE.exists() else {}
+
+    # Match rules (all *.json under match_rules/)
+    if selections.get("match_rules"):
+        rules = {}
+        if MATCH_RULES_DIR.exists():
+            for p in MATCH_RULES_DIR.glob("*.json"):
+                rules[p.name] = _read_json_file(p, default={})
+        payload["match_rules"] = rules
+
+    # Vendor lists (all *.csv or *.CSV under vendor_lists/)
+    if selections.get("vendor_lists"):
+        vendor_lists = {}
+        if VENDOR_LISTS_DIR.exists():
+            for p in list(VENDOR_LISTS_DIR.glob("*.csv")) + list(VENDOR_LISTS_DIR.glob("*.CSV")):
+                vendor_lists[p.name] = p.read_text(encoding="utf-8", errors="replace")
+        payload["vendor_lists"] = vendor_lists
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1409,7 +1468,7 @@ class App(ttk.Frame):
             # File → Save / Import / Export
             on_save_data=self._save_all_data,
             on_import_data=self._import_data_dialog,
-            on_export_data=self._export_data_dialog,
+            on_export_data=self._export_selected_dialog,
 
             # Update
             on_check_updates=self._check_for_updates,
@@ -2110,29 +2169,105 @@ class App(ttk.Frame):
                 f"vendor_lists {stats.get('vendor_lists_written',0)}"
             )
 
+    def _export_selected_dialog(self):
+        win = tk.Toplevel(self)
+        win.title("Export Data")
+        win.transient(self)
+        win.grab_set()
 
-    def _export_all_dialog(self):
-        """Export ALL data (currently clients) to a JSON file chosen by the user."""
-        path_str = filedialog.asksaveasfilename(
-            title="Export All Data (JSON)",
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-        )
-        if not path_str:
-            return
+        # --- state ---
+        var_all = tk.BooleanVar(value=True)
+        var_clients = tk.BooleanVar(value=True)
+        var_rules = tk.BooleanVar(value=True)
+        var_monthly = tk.BooleanVar(value=True)
+        var_tasks = tk.BooleanVar(value=True)
+        var_vendors = tk.BooleanVar(value=True)
 
-        path = Path(path_str)
-        self.log.info("Exporting all data to %s", path)
-        export_all_to_json(path, self.items)
-        if hasattr(self, "status"):
-            self.status.set(f"Exported all data to {path}")
-            
-    def _export_data_dialog(self):
-        """
-        Compatibility wrapper for TaskbarModel's on_export_data hook.
-        Currently just calls _export_all_dialog().
-        """
-        return self._export_all_dialog()
+        folder_var = tk.StringVar(value="")
+
+        def set_children(state: bool):
+            var_clients.set(state)
+            var_rules.set(state)
+            var_monthly.set(state)
+            var_tasks.set(state)
+            var_vendors.set(state)
+
+        def on_all_toggle():
+            set_children(var_all.get())
+
+        def on_child_toggle():
+            # If any child unchecked -> All becomes false. If all checked -> All true.
+            all_on = all([
+                var_clients.get(),
+                var_rules.get(),
+                var_monthly.get(),
+                var_tasks.get(),
+                var_vendors.get(),
+            ])
+            var_all.set(all_on)
+
+        def choose_folder():
+            folder = filedialog.askdirectory(title="Choose export folder")
+            if folder:
+                folder_var.set(folder)
+
+        # --- UI ---
+        frm = tk.Frame(win, padx=12, pady=12)
+        frm.pack(fill="both", expand=True)
+
+        tk.Label(frm, text="Choose what to export:").pack(anchor="w")
+
+        tk.Checkbutton(frm, text="All", variable=var_all, command=on_all_toggle).pack(anchor="w", pady=(6, 0))
+
+        tk.Checkbutton(frm, text="Clients (includes Account Managers)", variable=var_clients, command=on_child_toggle).pack(anchor="w")
+        tk.Checkbutton(frm, text="Match Rules", variable=var_rules, command=on_child_toggle).pack(anchor="w")
+        tk.Checkbutton(frm, text="Monthly Data", variable=var_monthly, command=on_child_toggle).pack(anchor="w")
+        tk.Checkbutton(frm, text="Tasks", variable=var_tasks, command=on_child_toggle).pack(anchor="w")
+        tk.Checkbutton(frm, text="Vendor Lists (CSV)", variable=var_vendors, command=on_child_toggle).pack(anchor="w")
+
+        sep = tk.Frame(frm, height=10)
+        sep.pack()
+
+        row = tk.Frame(frm)
+        row.pack(fill="x")
+        tk.Button(row, text="Choose Folder…", command=choose_folder).pack(side="left")
+        tk.Label(row, textvariable=folder_var).pack(side="left", padx=8)
+
+        btns = tk.Frame(frm)
+        btns.pack(fill="x", pady=(12, 0))
+
+        def do_export():
+            folder = folder_var.get().strip()
+            if not folder:
+                messagebox.showwarning("Export", "Please choose an export folder.")
+                return
+
+            selections = {
+                "clients": var_clients.get(),
+                "match_rules": var_rules.get(),
+                "monthly_data": var_monthly.get(),
+                "tasks": var_tasks.get(),
+                "vendor_lists": var_vendors.get(),
+            }
+            if not any(selections.values()):
+                messagebox.showwarning("Export", "Please select at least one item to export.")
+                return
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = Path(folder) / f"Vertex_Export_{ts}.json"
+
+            try:
+                export_selected_to_json(out_path, self.items, selections)
+                messagebox.showinfo("Export", f"Exported successfully to:\n{out_path}")
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Export Failed", f"{e}")
+
+        tk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
+        tk.Button(btns, text="Export", command=do_export).pack(side="right", padx=(0, 8))
+
+        # default: All checked
+        on_all_toggle()
 
     # ---------- Misc ----------
     def _show_context_menu(self, event):
