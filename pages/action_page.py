@@ -162,6 +162,11 @@ class ActionRunnerPage:
             return
 
         env = os.environ.copy()
+        for k in list(env.keys()):
+            if k.startswith("_PYI_") or k in ("_MEIPASS2", "PYTHONHOME", "PYTHONPATH"):
+                env.pop(k, None)
+
+        env["PYTHONIOENCODING"] = "utf-8"
 
         functions_dir = _tool_root()
         tool_path = functions_dir / tool.script
