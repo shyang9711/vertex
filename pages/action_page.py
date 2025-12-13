@@ -9,6 +9,7 @@ if __package__ in (None, ""):
 import os, json, threading, subprocess, signal
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -22,9 +23,17 @@ LOG = get_logger("actions")
 
 @dataclass
 class ToolSpec:
-    key: str          # e.g., "pos_parse"
-    label: str        # friendly name from scripts.json
-    script: str       # e.g., "pos_parse.py"
+    key: str
+    label: str
+    script: str
+
+def _tool_root() -> Path:
+    """Return the directory where our tool scripts & scripts.json live."""
+    # In PyInstaller onefile, --add-data files go under sys._MEIPASS
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    # Dev / normal Python: functions root (same as before)
+    return Path(__file__).resolve().parent.parent
 
 class ActionRunnerPage:
     """
@@ -109,7 +118,7 @@ class ActionRunnerPage:
             if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
                 functions_dir = Path(sys._MEIPASS)
             else:
-                functions_dir = Path(__file__).resolve().parent.parent
+                functions_dir = _tool_root()
             scripts_json = functions_dir / "scripts.json"
             mapping = {}
             if scripts_json.exists():
@@ -154,7 +163,7 @@ class ActionRunnerPage:
 
         env = os.environ.copy()
 
-        functions_dir = Path(__file__).resolve().parent.parent
+        functions_dir = _tool_root()
         tool_path = functions_dir / tool.script
         if not tool_path.exists():
             messagebox.showerror("Actions", f"Tool not found: {tool_path}")
@@ -166,9 +175,17 @@ class ActionRunnerPage:
         self._current_tool = tool
         self._stop_flag = False
 
+        # Choose interpreter:
+        # - Dev: use the current Python
+        # - Frozen: try system Python (python / python3)
+        if getattr(sys, "frozen", False):
+            python_cmd = shutil.which("python") or shutil.which("python3") or "python"
+        else:
+            python_cmd = sys.executable
+
         try:
             self._proc = subprocess.Popen(
-                [sys.executable, str(tool_path)],
+                [python_cmd, str(tool_path)],
                 cwd=str(functions_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -181,6 +198,7 @@ class ActionRunnerPage:
             self._log(f"[ERROR] Failed to start: {e}\n")
             self.status.set("Failed to start.")
             return
+
 
         # Stream output in a background thread
         self.btn_run.config(state="disabled")
