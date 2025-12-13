@@ -32,16 +32,18 @@ jobs:
           dir
           dir logo.ico
 
-      - name: Build EXE (PyInstaller spec)
-        run: |
-          pyinstaller --onefile --noconsole --icon=logo.ico --add-data "logo.ico;."--name vertex ^
-          --add-data "scripts.json;." ^
-          --add-data "pos_parse.py;." ^
-          --add-data "validate_tax_payments.py;." ^
-          --add-data "vendor_match.py;." ^
-          --add-data "de9c_to_csv.py;." ^
+      - name: Build EXE
+        run: >
+          pyinstaller --onefile --noconsole --icon=logo.ico
+          --add-data "logo.ico;."
+          --add-data "scripts.json;."
+          --add-data "pos_parse.py;."
+          --add-data "validate_tax_payments.py;."
+          --add-data "vendor_match.py;."
+          --add-data "de9c_to_csv.py;."
+          --name vertex
           client_manager.py
-
+          
       - name: Upload EXE to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
