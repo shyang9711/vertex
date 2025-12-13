@@ -204,9 +204,19 @@ class ActionRunnerPage:
         except Exception:
             work_dir = Path.home()
 
+        try:
+            if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+                mei_root = Path(sys._MEIPASS)
+                if mei_root in tool_path.resolve().parents:
+                    tool_copy = work_dir / tool_path.name
+                    shutil.copy2(tool_path, tool_copy)
+                    tool_path = tool_copy  # run the copied script instead
+        except Exception:
+            pass
+        
         _path_parts = [p for p in (env.get("PATH", "").split(os.pathsep)) if "_MEI" not in p and "_PYI" not in p]
         env["PATH"] = os.pathsep.join(_path_parts)
-        
+
         try:
             self._proc = subprocess.Popen(
                 cmd,
