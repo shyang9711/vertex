@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.25"
+APP_VERSION = "0.1.26"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -847,6 +847,8 @@ def check_for_updates(parent: tk.Misc | None = None):
                     if not chunk:
                         break
                     f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
                     
         # --- Verify download (prevents corrupted/partial exe causing python DLL errors) ---
         actual_size = dest.stat().st_size
@@ -930,7 +932,24 @@ def check_for_updates(parent: tk.Misc | None = None):
         goto :fail
 
         :run
-        start "" "%DIR%%EXE%"
+        REM Try to start the app; if it fails immediately, retry a few times
+        set "OK=0"
+        for /l %%j in (1,1,5) do (
+            echo Starting %%j/5...
+            start "" "%DIR%%EXE%"
+            timeout /t 2 /nobreak >nul
+
+            REM Check whether process is running
+            tasklist | find /i "%EXE%" >nul
+            if not errorlevel 1 (
+                set "OK=1"
+                goto :cleanup
+            )
+        )
+
+        goto :fail
+
+        :cleanup
         popd
         del "%~f0"
         exit /b 0

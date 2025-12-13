@@ -163,8 +163,11 @@ class ActionRunnerPage:
 
         env = os.environ.copy()
         for k in list(env.keys()):
-            if k.startswith("_PYI_") or k in ("_MEIPASS2", "PYTHONHOME", "PYTHONPATH"):
+            if k.startswith("_PYI_") or k.startswith("PYI_") or k.startswith("_MEI"):
                 env.pop(k, None)
+
+        for k in ("PYTHONHOME", "PYTHONPATH"):
+            env.pop(k, None)
 
         env["PYTHONIOENCODING"] = "utf-8"
 
@@ -184,13 +187,19 @@ class ActionRunnerPage:
         # - Dev: use the current Python
         # - Frozen: try system Python (python / python3)
         if getattr(sys, "frozen", False):
-            python_cmd = shutil.which("python") or shutil.which("python3") or "python"
+            # Prefer py launcher (more reliable than Windows Store 'python')
+            python_cmd = shutil.which("py")
+            if python_cmd:
+                cmd = [python_cmd, "-3", str(tool_path)]
+            else:
+                python_cmd = shutil.which("python") or shutil.which("python3") or "python"
+                cmd = [python_cmd, str(tool_path)]
         else:
-            python_cmd = sys.executable
+            cmd = [sys.executable, str(tool_path)]
 
         try:
             self._proc = subprocess.Popen(
-                [python_cmd, str(tool_path)],
+                cmd,
                 cwd=str(functions_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
