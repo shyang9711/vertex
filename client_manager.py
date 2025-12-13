@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.26"
+APP_VERSION = "0.1.27"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -932,11 +932,14 @@ def check_for_updates(parent: tk.Misc | None = None):
         goto :fail
 
         :run
+        REM Give Windows/AV time to release/scan the new EXE
+        timeout /t 5 /nobreak >nul
+
         REM Try to start the app; if it fails immediately, retry a few times
         set "OK=0"
         for /l %%j in (1,1,5) do (
-            echo Starting %%j/5...
-            start "" "%DIR%%EXE%"
+            echo Starting %%j/5.
+            start "" /d "%DIR%" "%EXE%"
             timeout /t 2 /nobreak >nul
 
             REM Check whether process is running

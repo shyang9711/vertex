@@ -10,6 +10,7 @@ import os, json, threading, subprocess, signal
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
+import tempfile
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -190,17 +191,23 @@ class ActionRunnerPage:
             # Prefer py launcher (more reliable than Windows Store 'python')
             python_cmd = shutil.which("py")
             if python_cmd:
-                cmd = [python_cmd, "-3", str(tool_path)]
+                cmd = [python_cmd, "-3.11", str(tool_path)]
             else:
                 python_cmd = shutil.which("python") or shutil.which("python3") or "python"
                 cmd = [python_cmd, str(tool_path)]
         else:
             cmd = [sys.executable, str(tool_path)]
 
+        work_dir = Path(tempfile.gettempdir()) / "VertexToolWork"
+        try:
+            work_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            work_dir = Path.home()
+
         try:
             self._proc = subprocess.Popen(
                 cmd,
-                cwd=str(functions_dir),
+            cwd=str(work_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
