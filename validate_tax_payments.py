@@ -5,7 +5,14 @@ from io import StringIO
 from collections import Counter
 from datetime import datetime
 from tkinter import Tk, Toplevel, Text, Scrollbar, Button, END, RIGHT, Y, LEFT, BOTH, messagebox, filedialog, StringVar, OptionMenu, Label
-from colorama import init, Fore, Style
+try:
+    from colorama import init, Fore, Style
+    init(autoreset=True)
+except Exception:
+    class _Dummy:
+        def __getattr__(self, _): return ""
+    Fore = Style = _Dummy()
+
 init(autoreset=True)  # Reset color after each print
 
 # Auto-install required packages

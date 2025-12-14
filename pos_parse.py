@@ -1,9 +1,16 @@
-import fitz  # PyMuPDF
+import fitz
 import pandas as pd
 import re
 import os
+import sys
 from datetime import datetime
 from tkinter import Tk, filedialog, simpledialog, messagebox
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # Hide Tkinter root
 root = Tk()
@@ -42,7 +49,7 @@ pdf_path = filedialog.askopenfilename(
     filetypes=[("PDF Files", "*.pdf")]
 )
 if not pdf_path:
-    print("❌ No file selected. Exiting...")
+    print("[X] No file selected. Exiting...")
     exit()
 
 # Load PDF

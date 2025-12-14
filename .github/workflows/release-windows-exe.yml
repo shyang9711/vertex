@@ -37,6 +37,10 @@ jobs:
           pyinstaller --onefile --noconsole --icon=logo.ico
           --hidden-import=fitz
           --hidden-import=pymupdf
+          --hidden-import colorama `
+          --hidden-import PyPDF2 `
+          --hidden-import pdfminer `
+          --hidden-import pdfminer.six `
           --collect-all=pymupdf
           --add-data "logo.ico;."
           --add-data "scripts.json;."
