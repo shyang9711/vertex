@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.33"
+APP_VERSION = "0.1.34"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -922,8 +922,8 @@ def check_for_updates(parent: tk.Misc | None = None):
         :waitproc
         tasklist | find /i "%EXE%" >nul
         if not errorlevel 1 (
-        timeout /t 1 /nobreak >nul
-        goto waitproc
+            timeout /t 1 /nobreak >nul
+            goto waitproc
         )
 
         REM Retry delete/rename for up to ~30 seconds
