@@ -531,9 +531,15 @@ class App(tk.Tk):
 
     def convert(self):
         pdf_path = Path(self.path_var.get().strip() or "")
-        if not pdf_path.exists():
-            messagebox.showerror("Error", "Please choose a valid PDF file.")
+        
+        if not pdf_path.is_file():
+            messagebox.showerror("Error", "Please choose a valid PDF file (a .pdf file, not a folder).")
             return
+
+        if pdf_path.suffix.lower() != ".pdf":
+            messagebox.showerror("Error", "Selected file is not a .pdf.")
+            return
+        
         try:
             text = extract_text_from_pdf(pdf_path)
             rows, dbg = parse_de9c_text_with_debug(text)
@@ -572,7 +578,7 @@ if __name__ == "__main__":
         except Exception:
             print("Usage: python de9c_to_csv.py --debug --pdf <PDF_PATH>")  # noqa
             sys.exit(2)
-        if not pdf_path.exists():
+        if not pdf_path.is_file():
             print(f"PDF not found: {pdf_path}")
             sys.exit(2)
         _print_debug_to_console(pdf_path)

@@ -33,7 +33,7 @@ if include_split:
     )
     if mode not in (1, 2):
         messagebox.showerror("Invalid Choice", "You must enter 1 or 2.")
-        exit()
+        sys.exit(1)
 
     if mode == 2:
         threshold_hours = simpledialog.askfloat(
@@ -42,7 +42,7 @@ if include_split:
         )
         if threshold_hours is None or threshold_hours <= 0:
             messagebox.showerror("Invalid Threshold", "Must be greater than 0.")
-            exit()
+            sys.exit(1)
 
 pdf_path = filedialog.askopenfilename(
     title="Select PDF File",
@@ -50,7 +50,7 @@ pdf_path = filedialog.askopenfilename(
 )
 if not pdf_path:
     print("[X] No file selected. Exiting...")
-    exit()
+    sys.exit(0)
 
 # Load PDF
 doc = fitz.open(pdf_path)
