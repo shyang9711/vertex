@@ -5,7 +5,14 @@ from io import StringIO
 from collections import Counter
 from datetime import datetime
 from tkinter import Tk, Toplevel, Text, Scrollbar, Button, END, RIGHT, Y, LEFT, BOTH, messagebox, filedialog, StringVar, OptionMenu, Label
-from colorama import init, Fore, Style
+try:
+    from colorama import init, Fore, Style
+    init(autoreset=True)
+except Exception:
+    class _Dummy:
+        def __getattr__(self, _): return ""
+    Fore = Style = _Dummy()
+
 init(autoreset=True)  # Reset color after each print
 
 # Auto-install required packages
@@ -122,13 +129,13 @@ current_year = datetime.now().year
 if int(tax_year) > current_year:
     print(f"{RED}❌ Tax year {tax_year} is in the future. Exiting...{RESET}")
     root.destroy()
-    exit()
+    sys.exit(1)
 
 excel_text = get_excel_input()
 
 if not excel_text:
     print("No input provided. Exiting.")
-    exit()
+    sys.exit(0)
 
 # --- Step 2: Load EFTPS and EDD PDFs using a file dialog ---
 Tk().withdraw()  # Hide root window
@@ -175,7 +182,7 @@ excel_df["Date"] = pd.to_datetime(excel_df["Date"], errors='coerce')
 if excel_df["Date"].isnull().any():
     print("❌ Some dates couldn't be parsed. Please check your input.")
     print(excel_df[excel_df["Date"].isnull()])
-    exit()
+    sys.exit(1)
 
 # --- Step 4: Parse EFTPS PDF ---
 def parse_eftps(pdf_path, tax_year, tax_quarter):
@@ -225,11 +232,11 @@ def parse_edd(pdf_path):
 eftps_df = parse_eftps(eftps_path, tax_year, tax_quarter)
 if eftps_df.empty:
     print(f"\n{RED}❌ No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
-    exit()
+    sys.exit(1)
 edd_payments = parse_edd(edd_path)
 if not edd_payments:
     print(f"\n{RED}❌ No EDD records found for {tax_year} {tax_quarter}.{RESET}")
-    exit()
+    sys.exit(1)
 
 # --- Step 6: Validation ---
 eftps_flags = []

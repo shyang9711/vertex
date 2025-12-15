@@ -28,7 +28,6 @@ from tkinter import Tk, filedialog, messagebox
 import os
 
 # --------------- helpers ----------------
-
 def pick_fs_and_cards():
     root = Tk()
     root.withdraw()

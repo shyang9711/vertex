@@ -9,6 +9,8 @@ if __package__ in (None, ""):
 import os, json, threading, subprocess, signal
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
+import tempfile
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -22,9 +24,17 @@ LOG = get_logger("actions")
 
 @dataclass
 class ToolSpec:
-    key: str          # e.g., "pos_parse"
-    label: str        # friendly name from scripts.json
-    script: str       # e.g., "pos_parse.py"
+    key: str
+    label: str
+    script: str
+
+def _tool_root() -> Path:
+    """Return the directory where our tool scripts & scripts.json live."""
+    # In PyInstaller onefile, --add-data files go under sys._MEIPASS
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    # Dev / normal Python: functions root (same as before)
+    return Path(__file__).resolve().parent.parent
 
 class ActionRunnerPage:
     """
@@ -109,7 +119,7 @@ class ActionRunnerPage:
             if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
                 functions_dir = Path(sys._MEIPASS)
             else:
-                functions_dir = Path(__file__).resolve().parent.parent
+                functions_dir = _tool_root()
             scripts_json = functions_dir / "scripts.json"
             mapping = {}
             if scripts_json.exists():
@@ -154,7 +164,18 @@ class ActionRunnerPage:
 
         env = os.environ.copy()
 
-        functions_dir = Path(__file__).resolve().parent.parent
+        # Only scrub PyInstaller-related vars if we're launching an external interpreter.
+        # In frozen mode we are spawning THIS exe, so keep them intact.
+        if not getattr(sys, "frozen", False):
+            for k in list(env.keys()):
+                if k.startswith("_PYI_") or k.startswith("PYI_") or k.startswith("_MEI"):
+                    env.pop(k, None)
+            for k in ("PYTHONHOME", "PYTHONPATH"):
+                env.pop(k, None)
+
+        env["PYTHONIOENCODING"] = "utf-8"
+
+        functions_dir = _tool_root()
         tool_path = functions_dir / tool.script
         if not tool_path.exists():
             messagebox.showerror("Actions", f"Tool not found: {tool_path}")
@@ -166,10 +187,37 @@ class ActionRunnerPage:
         self._current_tool = tool
         self._stop_flag = False
 
+        # Choose interpreter:
+        # - Dev: use the current Python
+        # - Frozen: try system Python (python / python3)
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--run-tool", tool.script]
+        else:
+            cmd = [sys.executable, str(tool_path)]
+
+        work_dir = Path(tempfile.gettempdir()) / "VertexToolWork"
+        try:
+            work_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            work_dir = Path.home()
+
+        try:
+            if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+                mei_root = Path(sys._MEIPASS)
+                if mei_root in tool_path.resolve().parents:
+                    tool_copy = work_dir / tool_path.name
+                    shutil.copy2(tool_path, tool_copy)
+                    tool_path = tool_copy  # run the copied script instead
+        except Exception:
+            pass
+
+        _path_parts = [p for p in (env.get("PATH", "").split(os.pathsep)) if "_MEI" not in p and "_PYI" not in p]
+        env["PATH"] = os.pathsep.join(_path_parts)
+
         try:
             self._proc = subprocess.Popen(
-                [sys.executable, str(tool_path)],
-                cwd=str(functions_dir),
+                cmd,
+                cwd=str(work_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -181,6 +229,7 @@ class ActionRunnerPage:
             self._log(f"[ERROR] Failed to start: {e}\n")
             self.status.set("Failed to start.")
             return
+
 
         # Stream output in a background thread
         self.btn_run.config(state="disabled")

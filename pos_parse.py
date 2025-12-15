@@ -1,9 +1,16 @@
-import fitz  # PyMuPDF
+import fitz
 import pandas as pd
 import re
 import os
+import sys
 from datetime import datetime
 from tkinter import Tk, filedialog, simpledialog, messagebox
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # Hide Tkinter root
 root = Tk()
@@ -26,7 +33,7 @@ if include_split:
     )
     if mode not in (1, 2):
         messagebox.showerror("Invalid Choice", "You must enter 1 or 2.")
-        exit()
+        sys.exit(1)
 
     if mode == 2:
         threshold_hours = simpledialog.askfloat(
@@ -35,15 +42,15 @@ if include_split:
         )
         if threshold_hours is None or threshold_hours <= 0:
             messagebox.showerror("Invalid Threshold", "Must be greater than 0.")
-            exit()
+            sys.exit(1)
 
 pdf_path = filedialog.askopenfilename(
     title="Select PDF File",
     filetypes=[("PDF Files", "*.pdf")]
 )
 if not pdf_path:
-    print("❌ No file selected. Exiting...")
-    exit()
+    print("[X] No file selected. Exiting...")
+    sys.exit(0)
 
 # Load PDF
 doc = fitz.open(pdf_path)

@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.36"
+APP_VERSION = "0.1.35"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -806,17 +806,20 @@ def check_for_updates(parent: tk.Misc | None = None):
     assets = data.get("assets") or []
     exe_name = os.path.basename(sys.executable)
     url = None
+    expected_size = None
 
     # Prefer asset that matches our exe name
     for a in assets:
         if a.get("name") == exe_name:
             url = a.get("browser_download_url")
+            expected_size = a.get("size")
             break
     # Or fallback to UPDATE_ASSET_NAME
     if not url and UPDATE_ASSET_NAME:
         for a in assets:
             if a.get("name") == UPDATE_ASSET_NAME:
                 url = a.get("browser_download_url")
+                expected_size = a.get("size")
                 break
 
     if not url:
@@ -834,7 +837,9 @@ def check_for_updates(parent: tk.Misc | None = None):
     dest = app_folder / f"{exe_name}.new"
 
     try:
-        with urllib.request.urlopen(url, context=ssl.create_default_context(), timeout=30) as resp:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(url, headers={"User-Agent": "Vertex-Updater"})
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
             chunk_size = 1024 * 64
             with open(dest, "wb") as f:
                 while True:
@@ -842,7 +847,47 @@ def check_for_updates(parent: tk.Misc | None = None):
                     if not chunk:
                         break
                     f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+                    
+        # --- Verify download (prevents corrupted/partial exe causing python DLL errors) ---
+        actual_size = dest.stat().st_size
+
+        # 1) Compare to GitHub asset size if available
+        if expected_size is not None and actual_size != int(expected_size):
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            messagebox.showerror(
+                "Update Download Failed",
+                f"Downloaded file size mismatch.\n\n"
+                f"Expected: {expected_size} bytes\n"
+                f"Got: {actual_size} bytes\n\n"
+                "Please try Update again."
+            )
+            return
+
+        # 2) Sanity-check Windows EXE header
+        with open(dest, "rb") as f:
+            sig = f.read(2)
+        if sig != b"MZ":
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            messagebox.showerror(
+                "Update Download Failed",
+                "Downloaded file is not a valid Windows executable.\n\n"
+                "Please try Update again."
+            )
+            return
+
     except Exception as e:
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
         messagebox.showerror(
             "Update Download Failed",
             f"Could not download the latest EXE.\n\n{e}"
@@ -862,6 +907,13 @@ def check_for_updates(parent: tk.Misc | None = None):
         REM Always run from the script directory (safe for UNC too)
         set "DIR=%~dp0"
         pushd "%DIR%" >nul 2>&1 || goto :fail
+                          
+        REM Force PyInstaller onefile extraction to a stable *writable* folder
+        set "RUNTIME_TMP=%LOCALAPPDATA%\Vertex\_runtime_tmp"
+        if not exist "%RUNTIME_TMP%" mkdir "%RUNTIME_TMP%" >nul 2>&1
+        set "TMP=%RUNTIME_TMP%"
+        set "TEMP=%RUNTIME_TMP%"
+
 
         set "EXE={exe_name}"
         set "NEW={exe_name}.new"
@@ -870,8 +922,8 @@ def check_for_updates(parent: tk.Misc | None = None):
         :waitproc
         tasklist | find /i "%EXE%" >nul
         if not errorlevel 1 (
-        timeout /t 1 /nobreak >nul
-        goto waitproc
+            timeout /t 1 /nobreak >nul
+            goto waitproc
         )
 
         REM Retry delete/rename for up to ~30 seconds
@@ -881,13 +933,33 @@ def check_for_updates(parent: tk.Misc | None = None):
             ren "%NEW%" "%EXE%" >nul 2>&1
         )
         if exist "%EXE%" if not exist "%NEW%" goto :run
-        timeout /t 1 /nobreak >nul
+        timeout /t 3 /nobreak >nul
         )
 
         goto :fail
 
         :run
-        start "" "%DIR%%EXE%"
+        REM Give Windows/AV time to release/scan the new EXE (PyInstaller onefile can fail if launched too fast)
+        timeout /t 12 /nobreak >nul
+
+        REM Try to start the app; if it fails immediately, retry a few times
+        set "OK=0"
+        for /l %%j in (1,1,5) do (
+            echo Starting %%j/5.
+            start "" /d "%DIR%" "%EXE%"
+            timeout /t 8 /nobreak >nul
+
+            REM Check whether process is running
+            tasklist | find /i "%EXE%" >nul
+            if not errorlevel 1 (
+                set "OK=1"
+                goto :cleanup
+            )
+        )
+
+        goto :fail
+
+        :cleanup
         popd
         del "%~f0"
         exit /b 0
@@ -3112,4 +3184,29 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
+    # Tool-runner mode for PyInstaller builds:
+    # We spawn the same EXE with "--run-tool <script.py>" so tools run with the bundled Python/pandas.
+    if "--run-tool" in sys.argv:
+        import runpy
+        from pathlib import Path
+
+        try:
+            i = sys.argv.index("--run-tool")
+            script_name = sys.argv[i + 1]
+        except Exception:
+            # Bad invocation → fail fast with a clear message
+            raise SystemExit("Usage: vertex.exe --run-tool <script.py> [args...]")
+
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        tool_path = base / script_name
+        if not tool_path.exists():
+            raise SystemExit(f"Tool not found: {tool_path}")
+
+        # Rebuild argv so the tool feels like it was launched directly
+        sys.argv = [str(tool_path)] + sys.argv[i + 2 :]
+
+        # Run the tool as __main__
+        runpy.run_path(str(tool_path), run_name="__main__")
+        raise SystemExit(0)
+
     main()

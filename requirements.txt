@@ -7,3 +7,7 @@ sv-ttk>=2.6
 numpy>=1.26
 reportlab
 python-docx
+colorama
+PyMuPDF
+PyPDF2
+pdfminer.six
