@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.35"
+APP_VERSION = "0.1.37"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -53,6 +53,7 @@ try:
     from functions.pages.checklist_page import ChecklistPage
     from functions.pages.action_page import ActionRunnerPage
     from functions.pages.reports_page import ReportsPage
+    from functions.pages.note_page import NotePage
 
     from functions.models.taskbar_model import TaskbarModel
     from functions.utils.app_logging import get_logger
@@ -65,6 +66,7 @@ except ModuleNotFoundError:
     from pages.checklist_page import ChecklistPage
     from pages.action_page import ActionRunnerPage
     from pages.reports_page import ReportsPage
+    from pages.note_page import NotePage
 
     from models.taskbar_model import TaskbarModel
     from utils.app_logging import get_logger
@@ -899,7 +901,7 @@ def check_for_updates(parent: tk.Misc | None = None):
 
     updater = app_folder / "update_vertex.cmd"
 
-    cmd = textwrap.dedent(f"""\
+    cmd = textwrap.dedent(fr"""\
         @echo off
         setlocal
         echo Updating Vertex...
@@ -980,7 +982,7 @@ def check_for_updates(parent: tk.Misc | None = None):
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
     except Exception as e:
-        messagebox.showerror("Update Failed", f"Updater error:\n{e}")
+        messagebox.showerror("Update Failed", f"Updater error:\n{repr(e)}")
         return
 
     sys.exit(0)
@@ -1549,8 +1551,11 @@ class App(ttk.Frame):
 
         # Top bar
         topbar = ttk.Frame(self, style="Card.TFrame", padding=(10, 8)); topbar.pack(side=tk.TOP, fill=tk.X)
+        self.btn_home = ttk.Button(topbar, text="🏠 Home", command=self.go_home, width=10, style="NewUI.TButton")
         self.btn_back = ttk.Button(topbar, text="◀ Back", command=self.nav_back, state=tk.DISABLED, width=10, style="NewUI.TButton")
         self.btn_fwd  = ttk.Button(topbar, text="Forward ▶", command=self.nav_forward, state=tk.DISABLED, width=10, style="NewUI.TButton")
+        
+        self.btn_home.pack(side=tk.LEFT)
         self.btn_back.pack(side=tk.LEFT); self.btn_fwd.pack(side=tk.LEFT, padx=(6,12))
         self.btn_back.bind("<Button-3>", self._show_back_menu)
         self.btn_fwd.bind("<Button-3>", self._show_forward_menu)
@@ -1575,6 +1580,7 @@ class App(ttk.Frame):
         self.page_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(6,0))
 
         self.dashboard = DashboardPage(self)
+        self.notes = NotePage(self)
 
         # Main page
         self._build_main_page()
@@ -2020,10 +2026,11 @@ class App(ttk.Frame):
         header.grid_columnconfigure(1, weight=1)
         header.grid_columnconfigure(2, weight=0)
 
-        page.bind_all("<Control-e>", lambda e, i=idx: self._detail_edit(i))
+        page.bind_all("<Control-e>", lambda e=None, i=idx: self._detail_edit(i))
 
 
         nb = ttk.Notebook(page); nb.pack(fill="both", expand=True, padx=6, pady=6)
+        self._detail_notebook = nb
 
         # Profile tab
         init_profile_tab(
@@ -2084,6 +2091,7 @@ class App(ttk.Frame):
         ttk.Button(actions, text="Back to Company", command=lambda: self.navigate('detail', company_idx, push=True)).pack(side=tk.TOP, fill=tk.X, pady=(6,0))
 
         nb = ttk.Notebook(page); nb.pack(fill="both", expand=True, padx=6, pady=6)
+        self._detail_notebook = nb
 
         # Profile tab
         prof = ttk.Frame(nb, padding=10); nb.add(prof, text="Profile")
@@ -2795,6 +2803,15 @@ class App(ttk.Frame):
                 w.destroy()
             self._build_search_page()
 
+    def _ensure_notes_page(self):
+        # Always (re)create against current page_host if needed.
+        self.page_notes = self.notes.ensure(self.page_host)
+        try:
+            self.notes.refresh()
+        except Exception:
+            pass
+
+
     def _is_valid_person_payload(self, data):
         return is_valid_person_payload(data)
 
@@ -2867,19 +2884,49 @@ class App(ttk.Frame):
     def _render_current_page(self):
         self._clear_page_host()
         kind, data = getattr(self, "_current_page", ("main", None))
-    
+
         if kind == "main":
             self._ensure_main_page()
             self.page_main.pack(fill=tk.BOTH, expand=True)
-    
+
         elif kind == "search":
             self._ensure_search_page()
             self.page_search.pack(fill=tk.BOTH, expand=True)
             self.populate()
-    
+
+        elif kind == "notes":
+            # IMPORTANT: make back/forward able to render Notes
+            if not hasattr(self, "page_notes") or not self.page_notes.winfo_exists():
+                # your navigate() uses either self._ensure_notes_page() or self.notes.ensure()
+                if hasattr(self, "_ensure_notes_page"):
+                    self._ensure_notes_page()
+                else:
+                    self.page_notes = self.notes.ensure(self.page_host)
+            self.page_notes.pack(fill=tk.BOTH, expand=True)
+            try:
+                if hasattr(self.page_notes, "refresh"):
+                    self.page_notes.refresh()
+            except Exception:
+                pass
+
+        elif kind == "taxes":
+            ChecklistPage(app=self).ensure(self.page_host)
+
+        elif kind == "reports":
+            ReportsPage(app=self).ensure(self.page_host)
+
+        elif kind == "actions":
+            self._ensure_actions_page()
+            if data:
+                try:
+                    self._actions_page.preselect(str(data))
+                except Exception:
+                    pass
+            self.page_actions.pack(fill=tk.BOTH, expand=True)
+
         elif kind == "detail":
             self._build_detail_page(int(data))
-    
+
         else:  # person / unknown
             if hasattr(self, "_is_valid_person_payload") and self._is_valid_person_payload(data):
                 ci, role_key, pidx = data
@@ -2887,8 +2934,9 @@ class App(ttk.Frame):
             else:
                 self._ensure_main_page()
                 self.page_main.pack(fill=tk.BOTH, expand=True)
-    
+
         self._update_nav_buttons()
+
     
     def _show_back_menu(self, e):
         if not getattr(self, "_history", []):
@@ -2970,6 +3018,8 @@ class App(ttk.Frame):
             target = ("main", None)
         elif page == "search":
             target = ("search", None)
+        elif page == "notes":
+            target = ("notes", None)
         elif page == "taxes":
             if self._last_viewed_idx is not None and 0 <= self._last_viewed_idx < len(self.items):
                 c = self.items[self._last_viewed_idx]
@@ -3040,7 +3090,9 @@ class App(ttk.Frame):
             if key:
                 self._focus_company_in_search(key)
                 self._return_focus_key = None
-
+        elif kind == "notes":
+            self._ensure_notes_page()
+            self.page_notes.pack(fill=tk.BOTH, expand=True)
         elif kind == "taxes":
             ChecklistPage(app=self).ensure(self.page_host)
         elif kind == "reports":
@@ -3063,6 +3115,37 @@ class App(ttk.Frame):
     
         self._update_nav_buttons()
 
+    def save_clients_data(self):
+        """Persist current self.items using the existing save_clients() helper."""
+        try:
+            save_clients(self.items)
+        except Exception:
+            pass
+
+    def select_detail_tab(self, title: str):
+        """
+        Called from NotePage to switch to the Logs tab if your detail page uses a ttk.Notebook.
+        Safe no-op if not found.
+        """
+        nb = getattr(self, "detail_notebook", None) or getattr(self, "detail_nb", None) or getattr(self, "notebook", None)
+        if not nb or not hasattr(nb, "tabs"):
+            return
+        try:
+            for tab_id in nb.tabs():
+                try:
+                    t = nb.tab(tab_id, "text")
+                except Exception:
+                    t = ""
+                if (t or "").strip().casefold() == (title or "").strip().casefold():
+                    nb.select(tab_id)
+                    return
+        except Exception:
+            return
+
+
+    def go_home(self, push=True):
+        self.navigate("main", push=push)
+
     def nav_back(self):
         self.log.info("nav_back()")
         if not getattr(self, "_history", None):
@@ -3070,6 +3153,7 @@ class App(ttk.Frame):
         prev = self._history.pop()
         self._future.append(self._current_page)
         self._current_page = prev
+        self._render_current_page()
 
         self._clear_page_host()
 
@@ -3087,7 +3171,9 @@ class App(ttk.Frame):
                 self._focus_company_in_search(key)
                 # clear it so it doesn’t keep re-firing
                 self._return_focus_key = None
-
+        elif kind == "notes":
+            self._ensure_notes_page()
+            self.page_notes.pack(fill=tk.BOTH, expand=True)
         elif kind == "taxes":
             ChecklistPage(app=self).ensure(self.page_host)
         elif kind == "detail":
@@ -3110,6 +3196,7 @@ class App(ttk.Frame):
         nxt = self._future.pop()
         self._history.append(self._current_page)
         self._current_page = nxt
+        self._render_current_page()
 
         self._clear_page_host()
 
@@ -3117,7 +3204,9 @@ class App(ttk.Frame):
         if kind == "main":
             self._ensure_main_page()
             self.page_main.pack(fill=tk.BOTH, expand=True)
-
+        elif kind == "notes":
+            self._ensure_notes_page()
+            self.page_notes.pack(fill=tk.BOTH, expand=True)
         elif kind == "search":
             self._ensure_search_page()
             self.page_search.pack(fill=tk.BOTH, expand=True)

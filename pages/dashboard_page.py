@@ -184,7 +184,14 @@ class DashboardPage:
         nav = ttk.Frame(header)
         nav.grid(row=0, column=1, sticky="e")
 
-        
+        ttk.Button(
+            nav,
+            text="Notes",
+            command=lambda: self.app.navigate("notes", push=True),
+            width=8,
+            style="Accent.TButton"
+        ).pack(side=tk.LEFT, padx=(0, 12))
+
         ttk.Button(
             nav,
             text="Company List",
