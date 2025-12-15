@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.37"
+APP_VERSION = "0.1.38"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -903,19 +903,19 @@ def check_for_updates(parent: tk.Misc | None = None):
 
     cmd = textwrap.dedent(fr"""\
         @echo off
-        setlocal
+        setlocal EnableExtensions
         echo Updating Vertex...
 
         REM Always run from the script directory (safe for UNC too)
         set "DIR=%~dp0"
         pushd "%DIR%" >nul 2>&1 || goto :fail
-                          
+
+        REM Resolve a writable LOCALAPPDATA fallback (some shells/services don't set it)
+        if not defined LOCALAPPDATA set "LOCALAPPDATA=%USERPROFILE%\AppData\Local"
+
         REM Force PyInstaller onefile extraction to a stable *writable* folder
         set "RUNTIME_TMP=%LOCALAPPDATA%\Vertex\_runtime_tmp"
         if not exist "%RUNTIME_TMP%" mkdir "%RUNTIME_TMP%" >nul 2>&1
-        set "TMP=%RUNTIME_TMP%"
-        set "TEMP=%RUNTIME_TMP%"
-
 
         set "EXE={exe_name}"
         set "NEW={exe_name}.new"
@@ -928,28 +928,30 @@ def check_for_updates(parent: tk.Misc | None = None):
             goto waitproc
         )
 
-        REM Retry delete/rename for up to ~30 seconds
-        for /l %%i in (1,1,30) do (
-        if exist "%EXE%" del /f /q "%EXE%" >nul 2>&1
-        if exist "%NEW%" (
-            ren "%NEW%" "%EXE%" >nul 2>&1
-        )
-        if exist "%EXE%" if not exist "%NEW%" goto :run
-        timeout /t 3 /nobreak >nul
+        REM Retry delete/rename for up to ~60 seconds
+        for /l %%i in (1,1,60) do (
+            if exist "%EXE%" del /f /q "%EXE%" >nul 2>&1
+            if exist "%NEW%" ren "%NEW%" "%EXE%" >nul 2>&1
+            if exist "%EXE%" if not exist "%NEW%" goto :run
+            timeout /t 2 /nobreak >nul
         )
 
         goto :fail
 
         :run
         REM Give Windows/AV time to release/scan the new EXE (PyInstaller onefile can fail if launched too fast)
-        timeout /t 12 /nobreak >nul
+        timeout /t 20 /nobreak >nul
 
         REM Try to start the app; if it fails immediately, retry a few times
         set "OK=0"
-        for /l %%j in (1,1,5) do (
-            echo Starting %%j/5.
-            start "" /d "%DIR%" "%EXE%"
-            timeout /t 8 /nobreak >nul
+        for /l %%j in (1,1,8) do (
+            echo Starting %%j/8.
+
+            REM Explicitly set TEMP/TMP for the child process (prevents _MEI extraction to volatile Temp)
+            start "" /d "%DIR%" cmd.exe /c ^
+              "set TMP=%RUNTIME_TMP%&& set TEMP=%RUNTIME_TMP%&& start "" ""%EXE%""
+
+            timeout /t 10 /nobreak >nul
 
             REM Check whether process is running
             tasklist | find /i "%EXE%" >nul
@@ -968,11 +970,12 @@ def check_for_updates(parent: tk.Misc | None = None):
 
         :fail
         popd
-        echo Update failed.
-        echo (Tip) If you see this, run update_vertex.cmd manually.
+        echo Update failed to relaunch.
+        echo If the EXE updated but didn’t reopen, try launching Vertex manually.
         pause
         exit /b 1
     """).strip() + "\n"
+
 
     try:
         updater.write_text(cmd, encoding="utf-8")
