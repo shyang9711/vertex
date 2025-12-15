@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.21"
+APP_VERSION = "0.1.36"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -169,7 +169,7 @@ def normalize_logs(logs):
 def tokenize(s: str) -> List[str]:
     if s is None: return []
     s = str(s).lower().strip()
-    parts = re.split(r"[^a-z0-9@._\-]+", s)
+    parts = re.split(r"[^a-z0-9@._\-&]+", s)
     return [p for p in parts if p]
 
 def norm_text(s: str) -> str:
@@ -2370,11 +2370,15 @@ class App(ttk.Frame):
 
     def filtered_items(self) -> List[Dict[str, Any]]:
         q = self.q.get().strip()
+        q_raw = q.casefold()
+        raw_tokens = q_raw.split()
 
         if not q:
             base = list(self.items)
         else:
             q_norm = norm_text(q)
+            q_tokens = q_norm.split()
+            is_digits_only = q.isdigit()
             q_digits = "".join(PHONE_DIGITS_RE.findall(q))
             last10 = q_digits[-10:] if len(q_digits) >= 4 else q_digits
             last9  = q_digits[-9:]  if len(q_digits) >= 4 else q_digits
@@ -2409,10 +2413,15 @@ class App(ttk.Frame):
                     norm_text(c.get("file_location","")),
                     norm_text(c.get("memo","")),
                 ])
-                text_hit = all(tok in hay for tok in q_norm.split()) if q_norm else False
 
-                if phone_hit or ein_hit or text_hit:
-                    res.append(c)
+
+                text_hit = all(tok in hay for tok in q_tokens) if q_norm else False
+                if is_digits_only:
+                    if phone_hit or ein_hit or text_hit:
+                        res.append(c)
+                else:
+                    if text_hit:
+                        res.append(c)
             base = res
 
         # Manager filter (single/multi). Empty set = All managers.
@@ -2473,6 +2482,11 @@ class App(ttk.Frame):
         q = self.q.get().strip()
         if not q:
             self._ac.hide(); return
+        
+        if self.focus_get() is not self.search_entry:
+            self._ac.hide()
+            return
+    
         matches = self.filtered_items()
         lines = [f"{c.get('name','')} — {c.get('dba','') or 'No DBA'} — {c.get('ein','') or 'No EIN'}" for c in matches[:20]]
         self._ac.show(lines)
