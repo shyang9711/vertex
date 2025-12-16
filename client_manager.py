@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.40"
+APP_VERSION = "0.1.41"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -956,13 +956,13 @@ def check_for_updates(parent: tk.Misc | None = None):
 
         :run
         REM Give Windows/AV time to release/scan the new EXE
-        timeout /t 20 /nobreak >nul
+        timeout /t 5 /nobreak >nul
 
-        REM Try to start the app; if it fails immediately, retry a few times
+        REM Start the app directly (we already set TEMP/TMP and cleared _MEI vars above)
         for /l %%j in (1,1,8) do (
             echo Starting %%j/8.
-            start "" cmd /d /c "set PYINSTALLER_RESET_ENVIRONMENT=1 & set _MEIPASS2= & set _PYI_APPLICATION_HOME_DIR= & set TEMP=%RUNTIME_TMP% & set TMP=%RUNTIME_TMP% & cd /d ""%DIR%"" & ""%DIR%\%EXE%""
-            timeout /t 10 /nobreak >nul
+            start "" /d "%DIR%" "%DIR%\%EXE%"
+            timeout /t 2 /nobreak >nul
 
             tasklist | find /i "%EXE%" >nul
             if not errorlevel 1 goto :cleanup
@@ -986,10 +986,25 @@ def check_for_updates(parent: tk.Misc | None = None):
 
     try:
         updater.write_text(cmd, encoding="utf-8")
-        # IMPORTANT: do NOT set cwd here (UNC cwd breaks cmd.exe)
+        clean_env = os.environ.copy()
+        for k in (
+            "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR",
+            "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE",
+            "VIRTUAL_ENV", "CONDA_PREFIX", "__PYVENV_LAUNCHER__",
+        ):
+            clean_env.pop(k, None)
+
+        localapp = clean_env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        runtime_tmp = str(Path(localapp) / "Vertex" / "_runtime_tmp")
+        clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        clean_env["PYINSTALLER_RUNTIME_TMPDIR"] = runtime_tmp
+        clean_env["TEMP"] = runtime_tmp
+        clean_env["TMP"] = runtime_tmp
+
         subprocess.Popen(
-            ["cmd.exe", "/c", "call", str(updater)],
+            ["cmd.exe", "/d", "/c", "call", str(updater)],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
+            env=clean_env,
         )
     except Exception as e:
         messagebox.showerror("Update Failed", f"Updater error:\n{repr(e)}")
