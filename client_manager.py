@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.41"
+APP_VERSION = "0.1.42"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -958,11 +958,11 @@ def check_for_updates(parent: tk.Misc | None = None):
         REM Give Windows/AV time to release/scan the new EXE
         timeout /t 5 /nobreak >nul
 
-        REM Start the app directly (we already set TEMP/TMP and cleared _MEI vars above)
+        REM Try to start the app; if it fails immediately, retry a few times
         for /l %%j in (1,1,8) do (
             echo Starting %%j/8.
             start "" /d "%DIR%" "%DIR%\%EXE%"
-            timeout /t 2 /nobreak >nul
+            timeout /t 10 /nobreak >nul
 
             tasklist | find /i "%EXE%" >nul
             if not errorlevel 1 goto :cleanup
@@ -983,20 +983,24 @@ def check_for_updates(parent: tk.Misc | None = None):
         exit /b 1
     """).strip() + "\n"
 
-
     try:
         updater.write_text(cmd, encoding="utf-8")
+
         clean_env = os.environ.copy()
         for k in (
-            "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR",
-            "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE",
-            "VIRTUAL_ENV", "CONDA_PREFIX", "__PYVENV_LAUNCHER__",
+            "_MEIPASS2",
+            "_PYI_APPLICATION_HOME_DIR",
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "PYTHONNOUSERSITE",
+            "VIRTUAL_ENV",
+            "CONDA_PREFIX",
+            "__PYVENV_LAUNCHER__",
         ):
             clean_env.pop(k, None)
 
         localapp = clean_env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         runtime_tmp = str(Path(localapp) / "Vertex" / "_runtime_tmp")
-        clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         clean_env["PYINSTALLER_RUNTIME_TMPDIR"] = runtime_tmp
         clean_env["TEMP"] = runtime_tmp
         clean_env["TMP"] = runtime_tmp
