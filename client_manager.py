@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.39"
+APP_VERSION = "0.1.40"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -901,7 +901,7 @@ def check_for_updates(parent: tk.Misc | None = None):
 
     updater = app_folder / "update_vertex.cmd"
 
-    cmd = textwrap.dedent(fr"""\
+    cmd = textwrap.dedent(fr"""
         @echo off
         setlocal EnableExtensions
         echo Updating Vertex...
@@ -917,6 +917,22 @@ def check_for_updates(parent: tk.Misc | None = None):
         set "RUNTIME_TMP=%LOCALAPPDATA%\Vertex\_runtime_tmp"
         if not exist "%RUNTIME_TMP%" mkdir "%RUNTIME_TMP%" >nul 2>&1
 
+        REM ---- Prevent PyInstaller env leakage into the relaunched onefile EXE
+        set "PYINSTALLER_RESET_ENVIRONMENT=1"
+        set "_MEIPASS2="
+        set "_PYI_APPLICATION_HOME_DIR="
+        set "PYTHONHOME="
+        set "PYTHONPATH="
+        set "PYTHONNOUSERSITE="
+        set "VIRTUAL_ENV="
+        set "CONDA_PREFIX="
+        set "__PYVENV_LAUNCHER__="
+
+        REM ---- Force onefile extraction to a stable temp directory
+        set "PYINSTALLER_RUNTIME_TMPDIR=%RUNTIME_TMP%"
+        set "TMP=%RUNTIME_TMP%"
+        set "TEMP=%RUNTIME_TMP%"
+                          
         set "EXE={exe_name}"
         set "NEW={exe_name}.new"
 
@@ -942,14 +958,10 @@ def check_for_updates(parent: tk.Misc | None = None):
         REM Give Windows/AV time to release/scan the new EXE
         timeout /t 20 /nobreak >nul
 
-        REM Set TEMP/TMP for this script (child process inherits it)
-        set "TMP=%RUNTIME_TMP%"
-        set "TEMP=%RUNTIME_TMP%"
-
         REM Try to start the app; if it fails immediately, retry a few times
         for /l %%j in (1,1,8) do (
             echo Starting %%j/8.
-            start "" /d "%DIR%" "%EXE%"
+            start "" cmd /d /c "set PYINSTALLER_RESET_ENVIRONMENT=1 & set _MEIPASS2= & set _PYI_APPLICATION_HOME_DIR= & set TEMP=%RUNTIME_TMP% & set TMP=%RUNTIME_TMP% & cd /d ""%DIR%"" & ""%DIR%\%EXE%""
             timeout /t 10 /nobreak >nul
 
             tasklist | find /i "%EXE%" >nul
