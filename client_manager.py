@@ -34,7 +34,7 @@ import csv
 APP_NAME = "Vertex"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.38"
+APP_VERSION = "0.1.39"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -939,26 +939,21 @@ def check_for_updates(parent: tk.Misc | None = None):
         goto :fail
 
         :run
-        REM Give Windows/AV time to release/scan the new EXE (PyInstaller onefile can fail if launched too fast)
+        REM Give Windows/AV time to release/scan the new EXE
         timeout /t 20 /nobreak >nul
 
+        REM Set TEMP/TMP for this script (child process inherits it)
+        set "TMP=%RUNTIME_TMP%"
+        set "TEMP=%RUNTIME_TMP%"
+
         REM Try to start the app; if it fails immediately, retry a few times
-        set "OK=0"
         for /l %%j in (1,1,8) do (
             echo Starting %%j/8.
-
-            REM Explicitly set TEMP/TMP for the child process (prevents _MEI extraction to volatile Temp)
-            start "" /d "%DIR%" cmd.exe /c ^
-              "set TMP=%RUNTIME_TMP%&& set TEMP=%RUNTIME_TMP%&& start "" ""%EXE%""
-
+            start "" /d "%DIR%" "%EXE%"
             timeout /t 10 /nobreak >nul
 
-            REM Check whether process is running
             tasklist | find /i "%EXE%" >nul
-            if not errorlevel 1 (
-                set "OK=1"
-                goto :cleanup
-            )
+            if not errorlevel 1 goto :cleanup
         )
 
         goto :fail
