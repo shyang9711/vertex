@@ -185,6 +185,7 @@ class TasksStore:
             t.setdefault("id", str(uuid.uuid4()))
             t["kind"] = str(t.get("kind", "OTHER")).upper()
             t.setdefault("recurrence", {"freq": "one-off"})
+            t.setdefault("effective_from", "")
             t.setdefault("completed", [])
             t.setdefault("cancelled", [])
             t.setdefault("is_enabled", True)
@@ -212,7 +213,9 @@ class TasksStore:
     def occurs_on(self, task: Dict[str, Any], day: _dt.date) -> bool:
         rec = task.get("recurrence", {"freq": "one-off"})
         freq = (rec.get("freq") or "one-off").lower()
-
+        effective_from = _parse_date_safe(task.get("effective_from", ""))
+        if effective_from and day < effective_from:
+            return False
         end_on = _parse_date_safe(task.get("end_on", ""))
         if end_on and day > end_on:
             return False
@@ -516,3 +519,76 @@ class TasksStore:
         if changed:
             self.save()
         return changed
+
+    def split_recurring_task_from_date(
+        self,
+        task_index: int,
+        new_task: Dict[str, Any],
+        effective_from: _dt.date,
+    ) -> None:
+        """
+        Edit a recurring task without changing the past:
+        - Old task gets end_on = day before effective_from
+        - New task becomes a new series starting at effective_from (effective_from field)
+        """
+        if task_index is None or task_index < 0 or task_index >= len(self.tasks):
+            return
+
+        old = self.tasks[task_index]
+        rec = (old.get("recurrence") or {})
+        freq = (rec.get("freq") or "one-off").lower()
+
+        # Only split true recurring tasks
+        if freq == "one-off":
+            self.tasks[task_index] = new_task
+            self.save()
+            return
+
+        # If effective_from is not valid, fall back to replace
+        if not isinstance(effective_from, _dt.date):
+            self.tasks[task_index] = new_task
+            self.save()
+            return
+
+        # If effective_from is <= start_on, splitting doesn't make sense; just replace
+        old_start = _parse_date_safe(old.get("start_on", "")) or _parse_date_safe(old.get("due", ""))
+        if old_start and effective_from <= old_start:
+            self.tasks[task_index] = new_task
+            self.save()
+            return
+
+        # Cap the old task so it stops BEFORE the edited occurrence
+        old_end = effective_from - _dt.timedelta(days=1)
+        old["end_on"] = old_end.isoformat()
+        # old stays enabled so history still shows
+        old["is_enabled"] = True
+
+        # Build the new (future) task
+        nt = json.loads(json.dumps(new_task))  # deep copy, safe for lists/dicts
+        nt["id"] = str(uuid.uuid4())
+        nt["effective_from"] = effective_from.isoformat()
+
+        # Ensure recurrence is kept (dialog should already provide it)
+        nt.setdefault("recurrence", old.get("recurrence", {"freq": "one-off"}))
+
+        # Ensure future series doesn't start before effective_from
+        nt_start = _parse_date_safe(nt.get("start_on", ""))
+        if not nt_start or nt_start < effective_from:
+            nt["start_on"] = effective_from.isoformat()
+
+        # If the edited version had an end_on earlier than effective_from, drop it
+        nt_end = _parse_date_safe(nt.get("end_on", ""))
+        if nt_end and nt_end < effective_from:
+            nt["end_on"] = ""
+
+        # Important: do NOT carry past completion/cancel history into the new series
+        nt["completed"] = []
+        nt["cancelled"] = []
+
+        # Reset pause markers for the new series (optional but safest)
+        nt["is_paused"] = False
+        nt["pause_from"] = ""
+        nt["resume_from"] = ""
+
+        self.tasks.append(nt)
+        self.save()

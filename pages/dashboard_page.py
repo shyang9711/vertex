@@ -1032,17 +1032,32 @@ class DashboardPage:
         del self.store.tasks[i_task]
         self.store.save()
         self._refresh_todo_feed(); self._draw_calendar()
-
-
+        
     def _edit_task(self):
-        i_task = self._selected_task_index()
-        if i_task is None: return
+        i_task, occ_date = self._selected_task_ref()
+        if i_task is None:
+            return
+
         cur = json.loads(json.dumps(self.store.tasks[i_task]))
         r = self._task_dialog(title="Edit Task", init=cur)
-        if not r: return
-        self.store.tasks[i_task] = r
-        self.store.save()
-        self._refresh_todo_feed(); self._draw_calendar()
+        if not r:
+            return
+
+        # If a recurring task is selected from the feed, preserve history by splitting
+        rec = (cur.get("recurrence") or {})
+        freq = (rec.get("freq") or "one-off").lower()
+
+        if freq != "one-off" and occ_date:
+            # Split so "past occurrences still show exactly as they were"
+            self.store.split_recurring_task_from_date(i_task, r, occ_date)
+        else:
+            # One-off (or no occurrence context) → normal replace
+            self.store.tasks[i_task] = r
+            self.store.save()
+
+        self._refresh_todo_feed()
+        self._draw_calendar()
+
 
     def _selected_task_index(self):
         tv = getattr(self, "todo_tv", None)
@@ -1057,6 +1072,18 @@ class DashboardPage:
                 i_task, _ = self._todo_rows.get(focus, (None, None))
                 return i_task
         return None
+    
+    def _selected_task_ref(self):
+        tv = getattr(self, "todo_tv", None)
+        if tv and tv.winfo_exists():
+            sel = tv.selection()
+            if sel:
+                iid = sel[0]
+                return self._todo_rows.get(iid, (None, None))
+            focus = tv.focus()
+            if focus:
+                return self._todo_rows.get(focus, (None, None))
+        return (None, None)
 
     def _stop_recurring(self):
         i_task = self._selected_task_index()

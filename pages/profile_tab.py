@@ -321,18 +321,21 @@ def init_profile_tab(
 
     company_tasks_tv.bind("<Button-3>", _company_show_context_menu)
 
-    def _selected_company_task_index():
+    def _selected_company_task_ref():
         sel = company_tasks_tv.selection()
         if not sel:
             focus = company_tasks_tv.focus()
-            if not focus: return None
+            if not focus:
+                return (None, None)
             sel = (focus,)
         iid = sel[0]
-        i_task, _ = _company_todo_rows.get(iid, (None, None))
+        return _company_todo_rows.get(iid, (None, None))
+
+    def _selected_company_task_index():
+        i_task, _ = _selected_company_task_ref()
         return i_task
     
-    # ---- Helpers (bridges to dashboard where possible)
-    # Prefer dashboard’s adjust helper if present
+    # ---- Helpers
     def _adjust_display_bridge(d):
         return adjust_if_weekend_or_holiday(d)
 
@@ -554,19 +557,31 @@ def init_profile_tab(
         dash = getattr(app, "dashboard", None)
         if not dash or not getattr(dash, "store", None):
             return
-        i_task = _selected_company_task_index()
+
+        i_task, occ_date = _selected_company_task_ref()
         if i_task is None:
             messagebox.showinfo("Edit Task", "Select a task first.")
             return
+
         cur = json.loads(json.dumps(dash.store.tasks[i_task]))  # deep copy
         r = dash._task_dialog(title="Edit Task", init=cur)
         if not r:
             return
-        dash.store.tasks[i_task] = r
-        dash.store.save()
+
+        rec = (cur.get("recurrence") or {})
+        freq = (rec.get("freq") or "one-off").lower()
+
+        # If a recurring occurrence row is being edited, preserve history by splitting
+        if freq != "one-off" and occ_date:
+            dash.store.split_recurring_task_from_date(i_task, r, occ_date)
+        else:
+            dash.store.tasks[i_task] = r
+            dash.store.save()
+
         dash._refresh_todo_feed()
         _safe_redraw_dashboard()
         _refresh_company_tasks_tv()
+
 
     def _delete_company_task():
         dash = getattr(app, "dashboard", None)
