@@ -14,6 +14,9 @@
     "de9c_to_csv.py": {
         "name": "DE9C to CSV"
     },
+    "file_name_change.py": {
+        "name": "File Name Change"
+    },
     "client_manager.py": {
         "name": "Manage Clients"
     }

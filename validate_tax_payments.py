@@ -83,7 +83,20 @@ def get_tax_period_input():
         period_root.result = (year, quarter_var.get())
         period_root.destroy()
 
-    Button(period_root, text="Submit", command=submit).pack(pady=10)
+    def cancel():
+        period_root.result = None
+        period_root.destroy()
+
+    period_root.protocol("WM_DELETE_WINDOW", cancel)
+
+
+    btn_row = Toplevel(period_root)
+    btn_row.overrideredirect(True)
+    btn_row.destroy()
+
+    Button(period_root, text="Submit", command=submit).pack(pady=(10, 2))
+    Button(period_root, text="Cancel", command=cancel).pack()
+
     period_root.result = None
     period_root.grab_set()
     period_root.wait_window()
@@ -123,7 +136,12 @@ root = Tk()
 root.withdraw()
 
 # Get user-defined tax year and quarter
-tax_year, tax_quarter = get_tax_period_input()
+res = get_tax_period_input()
+if not res:
+    print("Tax period selection canceled. Exiting.")
+    root.destroy()
+    sys.exit(0)
+tax_year, tax_quarter = res
 
 current_year = datetime.now().year
 if int(tax_year) > current_year:
@@ -138,7 +156,6 @@ if not excel_text:
     sys.exit(0)
 
 # --- Step 2: Load EFTPS and EDD PDFs using a file dialog ---
-Tk().withdraw()  # Hide root window
 print("Select the EFTPS PDF file...")
 eftps_path = filedialog.askopenfilename(title="Select EFTPS PDF")
 print("Select the EDD PDF file...")

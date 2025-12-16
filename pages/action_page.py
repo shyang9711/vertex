@@ -44,7 +44,7 @@ class ActionRunnerPage:
     - Streams child stdout/stderr live into console
     """
     # canonical filenames for the three integrated tools
-    TARGET_SCRIPTS = ("pos_parse.py", "validate_tax_payments.py", "vendor_match.py", "de9c_to_csv.py")
+    TARGET_SCRIPTS = ("pos_parse.py", "validate_tax_payments.py", "vendor_match.py", "de9c_to_csv.py", "file_name_change.py")
 
     def __init__(self, app):
         self.app = app
