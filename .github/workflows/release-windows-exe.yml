@@ -46,6 +46,7 @@ jobs:
           --add-data "scripts.json;."
           --add-data "pos_parse.py;."
           --add-data "validate_tax_payments.py;."
+          --add-data "file_name_change.py;."
           --add-data "vendor_match.py;."
           --add-data "de9c_to_csv.py;."
           --name vertex

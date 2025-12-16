@@ -111,7 +111,7 @@ class ActionRunnerPage:
     def _load_tools_from_scripts_json(self):
         """
         Read friendly names from scripts.json at <functions>/scripts.json and
-        build ToolSpec list for our four  TARGET_SCRIPTS.
+        build ToolSpec list for our TARGET_SCRIPTS.
         """
         self.log.info("Loading scripts.json for tool labels")
         try:
@@ -140,7 +140,7 @@ class ActionRunnerPage:
             self._tools = list(mapping.values())
             order = {Path(s).stem: i for i, s in enumerate(self.TARGET_SCRIPTS)}
             self._tools.sort(key=lambda t: order.get(t.key, 999))
-        except Exception:
+        except Exception as e:
             LOG.exception("Failed to load tools list: %s", e)
             self._tools = [ToolSpec(Path(s).stem, Path(s).stem.replace("_"," ").title(), s) for s in self.TARGET_SCRIPTS]
 
