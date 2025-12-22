@@ -32,7 +32,7 @@ FORBIDDEN_NAME_PHRASES = [
     "i. total subject wages this page", "j. total pit wages this page", "k. total pit withheld this page",
     "l. grand total subject wages", "m. grand total pit wages", "n. grand total pit withheld",
     # Addresses / companies (generic)
-    "address", "zip", "california", "inc", "llc", "corp", "company", "co.", "ltd",
+    "address", "po box", "zip", "california", "inc", "llc", "corp", "company", "co.", "ltd",
 ]
 
 # column/header variants we’ve actually seen in your PDFs
@@ -285,10 +285,7 @@ def parse_de9c_text_with_debug(text: str):
     fake_ssn_counter = 0
 
     def _next_fake_ssn():
-        nonlocal fake_ssn_counter
-        val = f"{fake_ssn_counter:09d}"
-        fake_ssn_counter += 1
-        return val
+        return DEFAULT_SSN
 
     while i < n:
         line = lines[i]
@@ -476,16 +473,68 @@ def parse_de9c_text_with_debug(text: str):
 # post-filter
 # =========================
 def _filter_out_header_rows(rows):
+    """Remove header/non-employee artifacts and normalize missing SSNs.
+
+    - Any row missing/invalid SSN gets DEFAULT_SSN.
+    - Drops header/boilerplate rows and non-employee rows (prevents ',,,,,,,' lines).
+    """
     out = []
-    dropped = 0
+    dropped_header = 0
+    dropped_non_employee = 0
+
     for r in rows:
         src = (r.get("_dbg_name_lines") or "").strip()
+
+        # Drop obvious header rows
         if HEADER_NAME_PAT.match(src):
-            dropped += 1
+            dropped_header += 1
             continue
+
+        # Remove debug-only field before output
         r.pop("_dbg_name_lines", None)
+
+        # Normalize SSN: if missing/invalid, force DEFAULT_SSN
+        ssn_digits = re.sub(r"\D", "", (r.get("SSN") or ""))
+        if len(ssn_digits) != 9:
+            ssn_digits = DEFAULT_SSN
+        r["SSN"] = ssn_digits
+
+        # Require BOTH first+last name (prevents B./A. header fragments becoming “people”)
+        first_name = (r.get("First Name") or "").strip()
+        last_name = (r.get("Last Name") or "").strip()
+        has_name = bool(first_name and last_name)
+
+        # Require at least one money value
+        has_money = bool(
+            (r.get("Total Subject Wages") or "").strip()
+            or (r.get("Personal Income Tax Wages") or "").strip()
+            or (r.get("Personal Income Tax Withheld") or "").strip()
+        )
+
+        # Extra guard against addresses/boilerplate accidentally being captured as a name line
+        if src and _is_forbidden_name_line(src, allow_digits=True):
+            dropped_non_employee += 1
+            continue
+
+        if not (has_name and has_money):
+            dropped_non_employee += 1
+            continue
+
+        def _is_initial_token(s: str) -> bool:
+            s = (s or "").strip()
+            if not s:
+                return False
+            s2 = s.replace(".", "")
+            return len(s2) <= 1 and s2.isalpha()
+        
+        if _is_initial_token(first_name) and _is_initial_token(last_name):
+            dropped_non_employee += 1
+            continue
+
         out.append(r)
-    return out, dropped
+
+    return out, dropped_header, dropped_non_employee
+
 
 # =========================
 # csv writer
@@ -502,7 +551,7 @@ def write_csv_no_header(out_path: Path, rows):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("DE9C → CSV (with unique fake SSNs)")
+        self.title("DE9C → CSV")
         self.geometry("800x480")
         self.resizable(True, True)
 
@@ -543,7 +592,7 @@ class App(tk.Tk):
         try:
             text = extract_text_from_pdf(pdf_path)
             rows, dbg = parse_de9c_text_with_debug(text)
-            rows, dropped = _filter_out_header_rows(rows)
+            rows, dropped_header, dropped_non_employee = _filter_out_header_rows(rows)
         except Exception as e:
             self.logln("[ERROR] " + str(e))
             messagebox.showerror("Error", f"Parse failed:\n{e}")
@@ -553,11 +602,18 @@ class App(tk.Tk):
         write_csv_no_header(out_path, rows)
 
         self.log.delete("1.0", "end")
-        self.logln(f"Parsed {len(rows)} employee rows. Removed {dropped} header rows. Saved to: {out_path}")
+        self.logln(
+            f"Parsed {len(rows)} employee rows. Removed {dropped_header} header rows and "
+            f"{dropped_non_employee} non-employee rows. Saved to: {out_path}"
+        )
         self.logln("")
         for d in dbg[:80]:
             self.logln(f'[{d["capture"]}] {d["name_lines"]} → {d["first"]} {d["mi"]} {d["last"]} | {d["F"]},{d["G"]},{d["H"]}')
-        messagebox.showinfo("Done", f"CSV saved:\n{out_path}\n\nRemoved {dropped} header rows.")
+            
+        messagebox.showinfo(
+            "Done",
+            f"CSV saved:\n{out_path}\n\nRemoved {dropped_header} header rows and {dropped_non_employee} non-employee rows."
+        )
 
 # =========================
 # CLI
@@ -565,8 +621,9 @@ class App(tk.Tk):
 def _print_debug_to_console(pdf_path: Path):
     text = extract_text_from_pdf(pdf_path)
     rows, dbg = parse_de9c_text_with_debug(text)
-    rows, dropped = _filter_out_header_rows(rows)
-    print(f"Rows: {len(rows)} (removed {dropped} header rows)")
+    rows, dropped_header, dropped_non_employee = _filter_out_header_rows(rows)
+    print(f"Rows: {len(rows)} (removed {dropped_header} header rows, {dropped_non_employee} non-employee rows)")
+
     for r in rows:
         print(r)
 
