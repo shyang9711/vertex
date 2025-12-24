@@ -32,14 +32,11 @@ from tkinter.scrolledtext import ScrolledText
 import csv
 
 APP_NAME = "Vertex"
+UPDATE_POLICY_ASSET_NAME = "update_policy.json"
 
-# If APP_VERSION is LOWER than this, the app will FORCE an update at startup.
-MIN_REQUIRED_VERSION = "0.1.51"
-# Force Update
-FORCE_ON_MAJOR_BUMP = True
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.51"
+APP_VERSION = "0.1.52"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -48,114 +45,6 @@ GITHUB_API_LATEST   = f"https://api.github.com/repos/{GITHUB_REPO}/releases/late
 
 # Optional: name of the EXE asset in GitHub Releases if you want auto-download
 UPDATE_ASSET_NAME = "vertex.exe"
-
-# -------------------- Update policy --------------------
-def _fetch_latest_release_tag_silent() -> str | None:
-    """
-    Return the latest GitHub release tag (without leading 'v'), or None if unavailable.
-    Silent: no messageboxes (startup-safe).
-    """
-    try:
-        req = urllib.request.Request(
-            GITHUB_API_LATEST,
-            headers={"User-Agent": APP_NAME},
-        )
-        ctx = ssl.create_default_context()
-        with urllib.request.urlopen(req, context=ctx, timeout=6) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-
-    tag = str(data.get("tag_name") or "").strip()
-    if tag.lower().startswith("v"):
-        tag = tag[1:]
-    return tag or None
-
-
-def _major_update_required_reason(latest_tag: str | None, current: str) -> str | None:
-    """
-    Return a human-readable reason if a forced update is required, else None.
-    """
-    # 1) Explicit minimum required version gate (recommended)
-    if _is_newer_version(MIN_REQUIRED_VERSION, current):
-        return f"This version ({current}) is below the minimum required version ({MIN_REQUIRED_VERSION})."
-
-    # 2) Optional: force on major bump
-    if FORCE_ON_MAJOR_BUMP and latest_tag and _is_newer_version(latest_tag, current):
-        latest_major, _, _ = _parse_version(latest_tag)
-        cur_major, _, _ = _parse_version(current)
-        if latest_major > cur_major:
-            return f"A major update is required. Latest: {latest_tag}, Current: {current}."
-
-    return None
-
-
-def enforce_major_update_on_startup(root: tk.Tk) -> bool:
-    """
-    If a major/required update is needed, show a blocking modal and prevent app usage.
-    Returns True if we blocked (i.e., update required), else False.
-    """
-    latest = _fetch_latest_release_tag_silent()
-    reason = _major_update_required_reason(latest, APP_VERSION)
-    if not reason:
-        return False
-
-    # Blocking modal (grab_set prevents interacting with the main window)
-    dlg = tk.Toplevel(root)
-    dlg.title("Update required")
-    dlg.resizable(False, False)
-    dlg.transient(root)
-    dlg.grab_set()
-
-    # Prevent closing via window X (force user to choose Update or Exit)
-    def _ignore_close():
-        pass
-    dlg.protocol("WM_DELETE_WINDOW", _ignore_close)
-
-    frm = ttk.Frame(dlg, padding=18)
-    frm.pack(fill="both", expand=True)
-
-    msg = (
-        f"Update required\n\n"
-        f"Current version: {APP_VERSION}\n"
-        f"Latest version:  {latest or 'unknown'}\n\n"
-        f"{reason}\n\n"
-        "Please update to continue."
-    )
-    ttk.Label(frm, text=msg, justify="left").pack(anchor="w")
-
-    btns = ttk.Frame(frm)
-    btns.pack(fill="x", pady=(16, 0))
-
-    def _do_update():
-        # Reuse your existing updater
-        try:
-            check_for_updates(root)
-        finally:
-            # If check_for_updates returns (e.g., source-run opens browser), exit anyway
-            try:
-                root.destroy()
-            except Exception:
-                pass
-
-    def _exit():
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
-    ttk.Button(btns, text="Update", command=_do_update).pack(side="right", padx=(8, 0))
-    ttk.Button(btns, text="Exit", command=_exit).pack(side="right")
-
-    # Center dialog
-    dlg.update_idletasks()
-    w, h = dlg.winfo_width(), dlg.winfo_height()
-    x = root.winfo_rootx() + (root.winfo_width() // 2) - (w // 2)
-    y = root.winfo_rooty() + (root.winfo_height() // 2) - (h // 2)
-    dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
-
-    return True
-
 
 # pages
 try:
@@ -170,6 +59,7 @@ try:
 
     from functions.models.taskbar_model import TaskbarModel
     from functions.utils.app_logging import get_logger
+    from functions.utils.app_update import enforce_major_update_on_startup, check_for_updates
 
 except ModuleNotFoundError:
     from pages.dashboard_page import DashboardPage
@@ -183,6 +73,7 @@ except ModuleNotFoundError:
 
     from models.taskbar_model import TaskbarModel
     from utils.app_logging import get_logger
+    from utils.app_update import enforce_major_update_on_startup, check_for_updates
 
 # NewUI preference from styles/, fallback to functions/
 try:
@@ -847,300 +738,6 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
         "vendor_lists_written": vl_written,
     }
 
-
-def _parse_version(s: str) -> tuple[int, int, int]:
-    """
-    Turn strings like 'v0.1.3', '0.2', '1.0.0-beta' into (major, minor, patch).
-    Non-numeric parts are ignored.
-    """
-    nums = re.findall(r"\d+", str(s))
-    major = int(nums[0]) if len(nums) > 0 else 0
-    minor = int(nums[1]) if len(nums) > 1 else 0
-    patch = int(nums[2]) if len(nums) > 2 else 0
-    return (major, minor, patch)
-
-
-def _is_newer_version(latest: str, current: str) -> bool:
-    return _parse_version(latest) > _parse_version(current)
-
-
-def check_for_updates(parent: tk.Misc | None = None):
-    """
-    Check GitHub Releases for a newer version.
-    - If no releases exist yet: show a friendly message, NOT a failure.
-    - If newer exists:
-        * When running as EXE, download a new EXE next to the current one as -LATEST.exe
-        * When running from source, just open the Releases page.
-    Never touches DATA_ROOT / data/ folder.
-    """
-    # --- call GitHub API for latest release ---
-    try:
-        req = urllib.request.Request(
-            GITHUB_API_LATEST,
-            headers={"User-Agent": APP_NAME},
-        )
-        ctx = ssl.create_default_context()
-        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        # Most likely: 404 = no releases yet
-        if e.code == 404:
-            messagebox.showinfo(
-                "Updates",
-                "No releases found on GitHub yet.\n\n"
-                "Once you create a release for this app, "
-                "the update checker will compare versions."
-            )
-            return
-        messagebox.showerror("Update Check Failed", f"HTTP error from GitHub:\n{e}")
-        return
-    except Exception as e:
-        messagebox.showerror("Update Check Failed", f"Could not contact GitHub:\n{e}")
-        return
-
-    tag = str(data.get("tag_name") or "").strip()
-    if tag.lower().startswith("v"):
-        tag = tag[1:]
-
-    if not tag:
-        messagebox.showinfo(
-            "Updates",
-            "Latest release has no tag_name.\n"
-            "Use tags like v0.1.0 on GitHub releases."
-        )
-        return
-
-    if not _is_newer_version(tag, APP_VERSION):
-        messagebox.showinfo(
-            "Up to date",
-            f"You are running version {APP_VERSION}, which is the latest release."
-        )
-        return
-
-    # --- Newer version exists ---
-    if not getattr(sys, "frozen", False):
-        # Running from source: just open Releases page
-        if messagebox.askyesno(
-            "Update available",
-            f"Current version: {APP_VERSION}\nLatest version: {tag}\n\n"
-            "Open the GitHub Releases page?"
-        ):
-            webbrowser.open(GITHUB_RELEASES_URL)
-        return
-
-    # Running as EXE: try to download a new EXE next to the current one
-    assets = data.get("assets") or []
-    exe_name = os.path.basename(sys.executable)
-    url = None
-    expected_size = None
-
-    # Prefer asset that matches our exe name
-    for a in assets:
-        if a.get("name") == exe_name:
-            url = a.get("browser_download_url")
-            expected_size = a.get("size")
-            break
-    # Or fallback to UPDATE_ASSET_NAME
-    if not url and UPDATE_ASSET_NAME:
-        for a in assets:
-            if a.get("name") == UPDATE_ASSET_NAME:
-                url = a.get("browser_download_url")
-                expected_size = a.get("size")
-                break
-
-    if not url:
-        # No downloadable EXE found; just send user to Releases page
-        if messagebox.askyesno(
-            "Update available",
-            f"Current version: {APP_VERSION}\nLatest version: {tag}\n\n"
-            "No EXE asset found in the release.\n"
-            "Open Releases page in your browser?"
-        ):
-            webbrowser.open(GITHUB_RELEASES_URL)
-        return
-
-    app_folder = Path(sys.executable).resolve().parent
-    dest = app_folder / f"{exe_name}.new"
-
-    try:
-        ctx = ssl.create_default_context()
-        req = urllib.request.Request(url, headers={"User-Agent": "Vertex-Updater"})
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
-            chunk_size = 1024 * 64
-            with open(dest, "wb") as f:
-                while True:
-                    chunk = resp.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                f.flush()
-                os.fsync(f.fileno())
-                    
-        # --- Verify download (prevents corrupted/partial exe causing python DLL errors) ---
-        actual_size = dest.stat().st_size
-
-        # 1) Compare to GitHub asset size if available
-        if expected_size is not None and actual_size != int(expected_size):
-            try:
-                dest.unlink(missing_ok=True)
-            except Exception:
-                pass
-            messagebox.showerror(
-                "Update Download Failed",
-                f"Downloaded file size mismatch.\n\n"
-                f"Expected: {expected_size} bytes\n"
-                f"Got: {actual_size} bytes\n\n"
-                "Please try Update again."
-            )
-            return
-
-        # 2) Sanity-check Windows EXE header
-        with open(dest, "rb") as f:
-            sig = f.read(2)
-        if sig != b"MZ":
-            try:
-                dest.unlink(missing_ok=True)
-            except Exception:
-                pass
-            messagebox.showerror(
-                "Update Download Failed",
-                "Downloaded file is not a valid Windows executable.\n\n"
-                "Please try Update again."
-            )
-            return
-
-    except Exception as e:
-        try:
-            dest.unlink(missing_ok=True)
-        except Exception:
-            pass
-        messagebox.showerror(
-            "Update Download Failed",
-            f"Could not download the latest EXE.\n\n{e}"
-        )
-        return
-    
-    # --- launch updater to replace running exe ---
-    import textwrap
-
-    updater = app_folder / "update_vertex.cmd"
-
-    cmd = textwrap.dedent(fr"""
-        @echo off
-        setlocal EnableExtensions
-        echo Updating Vertex...
-
-        REM Always run from the script directory (safe for UNC too)
-        set "DIR=%~dp0"
-        pushd "%DIR%" >nul 2>&1 || goto :fail
-
-        REM Resolve a writable LOCALAPPDATA fallback (some shells/services don't set it)
-        if not defined LOCALAPPDATA set "LOCALAPPDATA=%USERPROFILE%\AppData\Local"
-
-        REM Force PyInstaller onefile extraction to a stable *writable* folder
-        set "RUNTIME_TMP=%LOCALAPPDATA%\Vertex\_runtime_tmp"
-        if not exist "%RUNTIME_TMP%" mkdir "%RUNTIME_TMP%" >nul 2>&1
-
-        REM ---- Prevent PyInstaller env leakage into the relaunched onefile EXE
-        set "PYINSTALLER_RESET_ENVIRONMENT=1"
-        set "_MEIPASS2="
-        set "_PYI_APPLICATION_HOME_DIR="
-        set "PYTHONHOME="
-        set "PYTHONPATH="
-        set "PYTHONNOUSERSITE="
-        set "VIRTUAL_ENV="
-        set "CONDA_PREFIX="
-        set "__PYVENV_LAUNCHER__="
-
-        REM ---- Force onefile extraction to a stable temp directory
-        set "PYINSTALLER_RUNTIME_TMPDIR=%RUNTIME_TMP%"
-        set "TMP=%RUNTIME_TMP%"
-        set "TEMP=%RUNTIME_TMP%"
-                          
-        set "EXE={exe_name}"
-        set "NEW={exe_name}.new"
-
-        REM Wait until the process is gone
-        :waitproc
-        tasklist | find /i "%EXE%" >nul
-        if not errorlevel 1 (
-            timeout /t 1 /nobreak >nul
-            goto waitproc
-        )
-
-        REM Retry delete/rename for up to ~60 seconds
-        for /l %%i in (1,1,60) do (
-            if exist "%EXE%" del /f /q "%EXE%" >nul 2>&1
-            if exist "%NEW%" ren "%NEW%" "%EXE%" >nul 2>&1
-            if exist "%EXE%" if not exist "%NEW%" goto :run
-            timeout /t 2 /nobreak >nul
-        )
-
-        goto :fail
-
-        :run
-        REM Give Windows/AV time to release/scan the new EXE
-        timeout /t 5 /nobreak >nul
-
-        REM Try to start the app; if it fails immediately, retry a few times
-        for /l %%j in (1,1,8) do (
-            echo Starting %%j/8.
-            start "" /d "%DIR%" "%DIR%\%EXE%"
-            timeout /t 10 /nobreak >nul
-
-            tasklist | find /i "%EXE%" >nul
-            if not errorlevel 1 goto :cleanup
-        )
-
-        goto :fail
-
-        :cleanup
-        popd
-        del "%~f0"
-        exit /b 0
-
-        :fail
-        popd
-        echo Update failed to relaunch.
-        echo If the EXE updated but didn’t reopen, try launching Vertex manually.
-        pause
-        exit /b 1
-    """).strip() + "\n"
-
-    try:
-        updater.write_text(cmd, encoding="utf-8")
-
-        clean_env = os.environ.copy()
-        for k in (
-            "_MEIPASS2",
-            "_PYI_APPLICATION_HOME_DIR",
-            "PYTHONHOME",
-            "PYTHONPATH",
-            "PYTHONNOUSERSITE",
-            "VIRTUAL_ENV",
-            "CONDA_PREFIX",
-            "__PYVENV_LAUNCHER__",
-        ):
-            clean_env.pop(k, None)
-
-        localapp = clean_env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        runtime_tmp = str(Path(localapp) / "Vertex" / "_runtime_tmp")
-        clean_env["PYINSTALLER_RUNTIME_TMPDIR"] = runtime_tmp
-        clean_env["TEMP"] = runtime_tmp
-        clean_env["TMP"] = runtime_tmp
-
-        subprocess.Popen(
-            ["cmd.exe", "/d", "/c", "call", str(updater)],
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
-            env=clean_env,
-        )
-    except Exception as e:
-        messagebox.showerror("Update Failed", f"Updater error:\n{repr(e)}")
-        return
-
-    sys.exit(0)
-
-    
 def show_about_dialog(parent: tk.Misc | None = None):
     msg = (
         f"{APP_NAME}\n"
@@ -1621,6 +1218,7 @@ class App(ttk.Frame):
         self.pack(fill="both", expand=True)
         self.log = get_logger("client_manager")
         self.log.info("App init")
+        self.root = master.winfo_toplevel()
 
         self.items: List[Dict[str, Any]] = load_clients()
 
@@ -1698,7 +1296,14 @@ class App(ttk.Frame):
             on_export_data=self._export_selected_dialog,
 
             # Update
-            on_check_updates=self._check_for_updates,
+            on_check_updates=lambda: check_for_updates(
+                    parent=self.root,
+                    app_name=APP_NAME,
+                    app_version=APP_VERSION,
+                    github_api_latest=GITHUB_API_LATEST,
+                    github_releases_url=GITHUB_RELEASES_URL,
+                    update_asset_name=UPDATE_ASSET_NAME,
+                ),
             on_about=self._show_about,
         )
 
@@ -1843,10 +1448,6 @@ class App(ttk.Frame):
         # --- Manager filter state
         self._mgr_filter_active = set()
         self._mgr_menu = None
-
-    # Updating Software    
-    def _check_for_updates(self):
-        check_for_updates(self.winfo_toplevel())
 
     def _show_about(self):
         show_about_dialog(self.winfo_toplevel())
@@ -3397,6 +2998,18 @@ def main():
     log.info("Launching Client Manager main()")
     root = tk.Tk()
 
+    if enforce_major_update_on_startup(
+        root,
+        app_name=APP_NAME,
+        app_version=APP_VERSION,
+        github_api_latest=GITHUB_API_LATEST,
+        github_releases_url=GITHUB_RELEASES_URL,
+        update_asset_name=UPDATE_ASSET_NAME,
+        policy_asset_name=UPDATE_POLICY_ASSET_NAME,
+    ):
+        root.mainloop()
+        return
+    
     def resource_path(rel: str) -> str:
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
         return str(base / rel)
@@ -3431,9 +3044,7 @@ def main():
         style = ttk.Style(); style.theme_use("clam")
     except Exception:
         pass
-    if enforce_major_update_on_startup(root):
-        root.mainloop()
-        return
+    
     App(root)
     root.mainloop()
 
