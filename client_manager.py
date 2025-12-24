@@ -33,8 +33,13 @@ import csv
 
 APP_NAME = "Vertex"
 
+# If APP_VERSION is LOWER than this, the app will FORCE an update at startup.
+MIN_REQUIRED_VERSION = "0.1.48"
+# Force Update
+FORCE_ON_MAJOR_BUMP = False
+
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.48"
+APP_VERSION = "0.1.49"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -43,6 +48,114 @@ GITHUB_API_LATEST   = f"https://api.github.com/repos/{GITHUB_REPO}/releases/late
 
 # Optional: name of the EXE asset in GitHub Releases if you want auto-download
 UPDATE_ASSET_NAME = "vertex.exe"
+
+# -------------------- Update policy --------------------
+def _fetch_latest_release_tag_silent() -> str | None:
+    """
+    Return the latest GitHub release tag (without leading 'v'), or None if unavailable.
+    Silent: no messageboxes (startup-safe).
+    """
+    try:
+        req = urllib.request.Request(
+            GITHUB_API_LATEST,
+            headers={"User-Agent": APP_NAME},
+        )
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, context=ctx, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    tag = str(data.get("tag_name") or "").strip()
+    if tag.lower().startswith("v"):
+        tag = tag[1:]
+    return tag or None
+
+
+def _major_update_required_reason(latest_tag: str | None, current: str) -> str | None:
+    """
+    Return a human-readable reason if a forced update is required, else None.
+    """
+    # 1) Explicit minimum required version gate (recommended)
+    if _is_newer_version(MIN_REQUIRED_VERSION, current):
+        return f"This version ({current}) is below the minimum required version ({MIN_REQUIRED_VERSION})."
+
+    # 2) Optional: force on major bump
+    if FORCE_ON_MAJOR_BUMP and latest_tag and _is_newer_version(latest_tag, current):
+        latest_major, _, _ = _parse_version(latest_tag)
+        cur_major, _, _ = _parse_version(current)
+        if latest_major > cur_major:
+            return f"A major update is required. Latest: {latest_tag}, Current: {current}."
+
+    return None
+
+
+def enforce_major_update_on_startup(root: tk.Tk) -> bool:
+    """
+    If a major/required update is needed, show a blocking modal and prevent app usage.
+    Returns True if we blocked (i.e., update required), else False.
+    """
+    latest = _fetch_latest_release_tag_silent()
+    reason = _major_update_required_reason(latest, APP_VERSION)
+    if not reason:
+        return False
+
+    # Blocking modal (grab_set prevents interacting with the main window)
+    dlg = tk.Toplevel(root)
+    dlg.title("Update required")
+    dlg.resizable(False, False)
+    dlg.transient(root)
+    dlg.grab_set()
+
+    # Prevent closing via window X (force user to choose Update or Exit)
+    def _ignore_close():
+        pass
+    dlg.protocol("WM_DELETE_WINDOW", _ignore_close)
+
+    frm = ttk.Frame(dlg, padding=18)
+    frm.pack(fill="both", expand=True)
+
+    msg = (
+        f"Update required\n\n"
+        f"Current version: {APP_VERSION}\n"
+        f"Latest version:  {latest or 'unknown'}\n\n"
+        f"{reason}\n\n"
+        "Please update to continue."
+    )
+    ttk.Label(frm, text=msg, justify="left").pack(anchor="w")
+
+    btns = ttk.Frame(frm)
+    btns.pack(fill="x", pady=(16, 0))
+
+    def _do_update():
+        # Reuse your existing updater
+        try:
+            check_for_updates(root)
+        finally:
+            # If check_for_updates returns (e.g., source-run opens browser), exit anyway
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+    def _exit():
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    ttk.Button(btns, text="Update", command=_do_update).pack(side="right", padx=(8, 0))
+    ttk.Button(btns, text="Exit", command=_exit).pack(side="right")
+
+    # Center dialog
+    dlg.update_idletasks()
+    w, h = dlg.winfo_width(), dlg.winfo_height()
+    x = root.winfo_rootx() + (root.winfo_width() // 2) - (w // 2)
+    y = root.winfo_rooty() + (root.winfo_height() // 2) - (h // 2)
+    dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    return True
+
 
 # pages
 try:
@@ -3318,6 +3431,9 @@ def main():
         style = ttk.Style(); style.theme_use("clam")
     except Exception:
         pass
+    if enforce_major_update_on_startup(root):
+        root.mainloop()
+        return
     App(root)
     root.mainloop()
 
