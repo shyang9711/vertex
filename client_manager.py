@@ -36,7 +36,7 @@ UPDATE_POLICY_ASSET_NAME = "update_policy.json"
 
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.53"
+APP_VERSION = "0.1.54"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -1218,7 +1218,7 @@ class App(ttk.Frame):
         self.pack(fill="both", expand=True)
         self.log = get_logger("client_manager")
         self.log.info("App init")
-        self.root = master.winfo_toplevel()
+        self.root = master
 
         self.items: List[Dict[str, Any]] = load_clients()
 
@@ -1297,7 +1297,7 @@ class App(ttk.Frame):
 
             # Update
             on_check_updates=lambda: check_for_updates(
-                    parent=self.root,
+                    self.winfo_toplevel(),
                     app_name=APP_NAME,
                     app_version=APP_VERSION,
                     github_api_latest=GITHUB_API_LATEST,

@@ -104,6 +104,12 @@ def is_update_required_by_policy(
     )
 
     if not isinstance(policy, dict):
+        if LOG:
+            LOG.warning(
+                "update_policy.json not found or unreadable from latest release. "
+                "latest_tag=%s policy_asset_name=%s",
+                latest_tag, policy_asset_name
+            )
         return (False, None, latest_tag, None)
 
     min_req = str(policy.get("min_required_version") or "").strip()
