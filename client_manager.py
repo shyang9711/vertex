@@ -34,12 +34,12 @@ import csv
 APP_NAME = "Vertex"
 
 # If APP_VERSION is LOWER than this, the app will FORCE an update at startup.
-MIN_REQUIRED_VERSION = "0.1.50"
+MIN_REQUIRED_VERSION = "0.1.51"
 # Force Update
-FORCE_ON_MAJOR_BUMP = False
+FORCE_ON_MAJOR_BUMP = True
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.50"
+APP_VERSION = "0.1.51"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
