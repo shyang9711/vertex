@@ -14,6 +14,7 @@ try:
     from functions.utils.app_logging import get_logger
     LOG = get_logger("app_update")
 except Exception:
+    from utils.app_logging import get_logger
     LOG = None
 
 
