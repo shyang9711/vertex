@@ -36,7 +36,7 @@ UPDATE_POLICY_ASSET_NAME = "update_policy.json"
 
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.55"
+APP_VERSION = "0.1.56"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -59,7 +59,7 @@ try:
 
     from functions.models.taskbar_model import TaskbarModel
     from functions.utils.app_logging import get_logger
-    from functions.utils.app_update import enforce_major_update_on_startup, check_for_updates
+    from functions.utils.app_update import check_for_updates, enforce_major_update_on_startup
 
 except ModuleNotFoundError:
     from pages.dashboard_page import DashboardPage
@@ -73,7 +73,7 @@ except ModuleNotFoundError:
 
     from models.taskbar_model import TaskbarModel
     from utils.app_logging import get_logger
-    from utils.app_update import enforce_major_update_on_startup, check_for_updates
+    from utils.app_update import check_for_updates, enforce_major_update_on_startup
 
 # NewUI preference from styles/, fallback to functions/
 try:
@@ -1297,7 +1297,7 @@ class App(ttk.Frame):
 
             # Update
             on_check_updates=lambda: check_for_updates(
-                    self.winfo_toplevel(),
+                    parent=self.winfo_toplevel(),
                     app_name=APP_NAME,
                     app_version=APP_VERSION,
                     github_api_latest=GITHUB_API_LATEST,
@@ -3005,7 +3005,6 @@ def main():
         github_api_latest=GITHUB_API_LATEST,
         github_releases_url=GITHUB_RELEASES_URL,
         update_asset_name=UPDATE_ASSET_NAME,
-        policy_asset_name=UPDATE_POLICY_ASSET_NAME,
     ):
         root.mainloop()
         return

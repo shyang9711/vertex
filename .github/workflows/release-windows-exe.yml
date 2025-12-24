@@ -52,6 +52,24 @@ jobs:
           --name vertex
           client_manager.py
           
+      - name: Generate update_policy.json
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"          # e.g. v0.1.55 or v0.1.55f
+          $ver = $tag.TrimStart("v")               # e.g. 0.1.55 or 0.1.55f
+          $isMajor = $ver.EndsWith("f")
+
+          $policy = @{
+            min_required_version = $ver
+            latest_version       = $ver
+            message              = $(if ($isMajor) { "Update required to continue." } else { "Update available." })
+            force                = $isMajor
+          } | ConvertTo-Json
+
+          $policy | Out-File -Encoding utf8 update_policy.json
+          Write-Host "Tag=$tag Version=$ver force=$isMajor"
+          Get-Content update_policy.json
+          
       - name: Upload EXE to GitHub Release
         uses: softprops/action-gh-release@v2
         with:

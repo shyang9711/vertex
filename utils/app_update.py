@@ -1,45 +1,79 @@
-from __future__ import annotations
-
-import os
-import sys
 import json
-import re
+import os
 import ssl
-import urllib.request
-import urllib.error
-import webbrowser
-import subprocess
-from pathlib import Path
+import sys
 import tkinter as tk
-from tkinter import ttk, messagebox
+import urllib.error
+import urllib.request
+import webbrowser
+from pathlib import Path
+from tkinter import messagebox, ttk
 
-# Optional logger (safe if you use your app_logging)
+# Optional logger if your app has one; safe fallback
 try:
     from functions.utils.app_logging import get_logger
+    LOG = get_logger("app_update")
 except Exception:
-    try:
-        from utils.app_logging import get_logger
-    except Exception:
-        get_logger = None
-
-LOG = get_logger("app_update") if get_logger else None
+    LOG = None
 
 
-def _parse_version(s: str) -> tuple[int, int, int]:
-    nums = re.findall(r"\d+", str(s))
-    major = int(nums[0]) if len(nums) > 0 else 0
-    minor = int(nums[1]) if len(nums) > 1 else 0
-    patch = int(nums[2]) if len(nums) > 2 else 0
-    return (major, minor, patch)
+def _parse_tag(tag_name: str | None) -> tuple[str | None, bool]:
+    """
+    Returns (version_without_prefix_or_suffix, is_forced)
+
+    Supported GitHub release tag formats:
+      - v0.1.55    -> ("0.1.55", False)  [minor update]
+      - v0.1.55f   -> ("0.1.55", True)   [major/forced update]
+      - 0.1.55f    -> ("0.1.55", True)
+    """
+    if not tag_name:
+        return (None, False)
+
+    tag = str(tag_name).strip()
+    if tag.lower().startswith("v"):
+        tag = tag[1:].strip()
+
+    forced = False
+    if tag.lower().endswith("f"):
+        forced = True
+        tag = tag[:-1].strip()
+
+    return (tag or None, forced)
 
 
-def _is_newer_version(latest: str, current: str) -> bool:
-    return _parse_version(latest) > _parse_version(current)
+def _parse_version(v: str) -> tuple[int, int, int]:
+    """
+    "0.1.55" -> (0, 1, 55)
+    Missing parts become 0.
+    """
+    parts = (v or "").strip().split(".")
+    nums = []
+    for p in parts[:3]:
+        try:
+            nums.append(int(p))
+        except Exception:
+            nums.append(0)
+    while len(nums) < 3:
+        nums.append(0)
+    return (nums[0], nums[1], nums[2])
+
+
+def _is_newer_version(candidate: str, current: str) -> bool:
+    """
+    True if candidate > current (semver-ish numeric compare).
+    """
+    return _parse_version(candidate) > _parse_version(current)
 
 
 def _fetch_latest_release_json_silent(github_api_latest: str, app_name: str) -> dict | None:
+    """
+    Fetch latest release JSON from GitHub, silent (no UI).
+    """
     try:
-        req = urllib.request.Request(github_api_latest, headers={"User-Agent": app_name})
+        req = urllib.request.Request(
+            github_api_latest,
+            headers={"User-Agent": app_name or "Vertex"},
+        )
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, context=ctx, timeout=6) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -47,80 +81,44 @@ def _fetch_latest_release_json_silent(github_api_latest: str, app_name: str) -> 
         return None
 
 
-def _fetch_update_policy_from_latest_release_silent(
-    github_api_latest: str,
-    app_name: str,
-    policy_asset_name: str,
-) -> dict | None:
-    data = _fetch_latest_release_json_silent(github_api_latest, app_name)
-    if not isinstance(data, dict):
-        return None
-
-    assets = data.get("assets") or []
-    policy_url = None
-    for a in assets:
-        if a.get("name") == policy_asset_name:
-            policy_url = a.get("browser_download_url")
-            break
-
-    if not policy_url:
-        return None
-
-    try:
-        req2 = urllib.request.Request(policy_url, headers={"User-Agent": app_name})
-        ctx = ssl.create_default_context()
-        with urllib.request.urlopen(req2, context=ctx, timeout=6) as resp2:
-            raw = resp2.read().decode("utf-8", errors="replace")
-        obj = json.loads(raw)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        return None
-
-
 def _latest_tag_from_release_json(release_json: dict) -> str | None:
-    tag = str(release_json.get("tag_name") or "").strip()
-    if tag.lower().startswith("v"):
-        tag = tag[1:]
-    return tag or None
+    if not isinstance(release_json, dict):
+        return None
+    return str(release_json.get("tag_name") or "").strip() or None
 
 
-def is_update_required_by_policy(
+def is_major_update_required_by_tag(
+    *,
     app_version: str,
     github_api_latest: str,
     app_name: str,
-    policy_asset_name: str = "update_policy.json",
-) -> tuple[bool, str | None, str | None, dict | None]:
+) -> tuple[bool, str | None, str | None, bool]:
     """
-    Returns (required, reason, latest_tag, policy_dict)
-    - required = True only when policy.force == True and app_version < policy.min_required_version
+    Returns (required, reason, latest_version, forced_flag)
+
+    required becomes True ONLY when:
+      - latest tag ends with 'f' (forced), AND
+      - latest_version (without 'f') is newer than app_version
     """
     release_json = _fetch_latest_release_json_silent(github_api_latest, app_name)
-    latest_tag = _latest_tag_from_release_json(release_json) if isinstance(release_json, dict) else None
+    tag_name = _latest_tag_from_release_json(release_json)
+    latest_version, forced = _parse_tag(tag_name)
 
-    policy = _fetch_update_policy_from_latest_release_silent(
-        github_api_latest=github_api_latest,
-        app_name=app_name,
-        policy_asset_name=policy_asset_name,
-    )
+    if LOG:
+        LOG.info("latest_tag=%s latest_version=%s forced=%s app_version=%s", tag_name, latest_version, forced, app_version)
 
-    if not isinstance(policy, dict):
-        if LOG:
-            LOG.warning(
-                "update_policy.json not found or unreadable from latest release. "
-                "latest_tag=%s policy_asset_name=%s",
-                latest_tag, policy_asset_name
-            )
-        return (False, None, latest_tag, None)
+    if not latest_version:
+        return (False, None, None, False)
 
-    min_req = str(policy.get("min_required_version") or "").strip()
-    force = bool(policy.get("force", False))
-    msg = str(policy.get("message") or "Update required to continue.").strip()
+    if forced and _is_newer_version(latest_version, app_version):
+        reason = (
+            "A required update is available.\n\n"
+            f"Current version: {app_version}\n"
+            f"Required version: {latest_version}\n"
+        )
+        return (True, reason, latest_version, True)
 
-    if force and min_req and _is_newer_version(min_req, app_version):
-        reason = f"{msg}\n\nThis version ({app_version}) is below the minimum required version ({min_req})."
-        return (True, reason, latest_tag, policy)
-
-    return (False, None, latest_tag, policy)
+    return (False, None, latest_version, forced)
 
 
 def enforce_major_update_on_startup(
@@ -131,22 +129,17 @@ def enforce_major_update_on_startup(
     github_api_latest: str,
     github_releases_url: str,
     update_asset_name: str = "vertex.exe",
-    policy_asset_name: str = "update_policy.json",
 ) -> bool:
     """
-    If policy says update is required, show a blocking modal.
-    Clicking Update calls check_for_updates().
+    If the latest tag is forced (endswith 'f') and newer than current,
+    show a blocking modal and prevent app usage.
     Returns True if blocked, else False.
     """
-    required, reason, latest_tag, _policy = is_update_required_by_policy(
+    required, reason, latest_version, forced = is_major_update_required_by_tag(
         app_version=app_version,
         github_api_latest=github_api_latest,
         app_name=app_name,
-        policy_asset_name=policy_asset_name,
     )
-
-    if LOG:
-        LOG.info("policy=%s required=%s version=%s", _policy, required, app_version)
 
     if not required or not reason:
         return False
@@ -159,16 +152,17 @@ def enforce_major_update_on_startup(
 
     def _ignore_close():
         pass
+
     dlg.protocol("WM_DELETE_WINDOW", _ignore_close)
 
     frm = ttk.Frame(dlg, padding=18)
     frm.pack(fill="both", expand=True)
 
     msg = (
-        f"Update required\n\n"
+        "Update required\n\n"
         f"Current version: {app_version}\n"
-        f"Latest version:  {latest_tag or 'unknown'}\n\n"
-        f"{reason}\n\n"
+        f"Latest version:  {latest_version or 'unknown'}\n\n"
+        f"{reason}\n"
         "Please update to continue."
     )
     ttk.Label(frm, text=msg, justify="left").pack(anchor="w")
@@ -220,7 +214,7 @@ def check_for_updates(
     update_asset_name: str = "vertex.exe",
 ):
     """
-    Same behavior you currently have:
+    Manual update (Help -> Check for updates).
     - If running from source: open Releases page
     - If running frozen EXE: download EXE asset to <exe>.new and run update cmd to swap/relaunch
     """
@@ -234,8 +228,7 @@ def check_for_updates(
             messagebox.showinfo(
                 "Updates",
                 "No releases found on GitHub yet.\n\n"
-                "Once you create a release for this app, "
-                "the update checker will compare versions.",
+                "Once you create a release for this app, the update checker will compare versions.",
                 parent=parent,
             )
             return
@@ -245,19 +238,18 @@ def check_for_updates(
         messagebox.showerror("Update Check Failed", f"Could not contact GitHub:\n{e}", parent=parent)
         return
 
-    tag = str(data.get("tag_name") or "").strip()
-    if tag.lower().startswith("v"):
-        tag = tag[1:]
+    raw_tag = str(data.get("tag_name") or "").strip()
+    latest_version, _forced = _parse_tag(raw_tag)
 
-    if not tag:
+    if not latest_version:
         messagebox.showinfo(
             "Updates",
-            "Latest release has no tag_name.\nUse tags like v0.1.0 on GitHub releases.",
+            "Latest release has no tag_name.\nUse tags like v0.1.55 or v0.1.55f on GitHub releases.",
             parent=parent,
         )
         return
 
-    if not _is_newer_version(tag, app_version):
+    if not _is_newer_version(latest_version, app_version):
         messagebox.showinfo(
             "Up to date",
             f"You are running version {app_version}, which is the latest release.",
@@ -268,7 +260,7 @@ def check_for_updates(
     if not getattr(sys, "frozen", False):
         if messagebox.askyesno(
             "Update available",
-            f"Current version: {app_version}\nLatest version: {tag}\n\nOpen the GitHub Releases page?",
+            f"Current version: {app_version}\nLatest version: {latest_version}\n\nOpen the GitHub Releases page?",
             parent=parent,
         ):
             webbrowser.open(github_releases_url)
@@ -295,7 +287,7 @@ def check_for_updates(
     if not url:
         if messagebox.askyesno(
             "Update available",
-            f"Current version: {app_version}\nLatest version: {tag}\n\n"
+            f"Current version: {app_version}\nLatest version: {latest_version}\n\n"
             "No EXE asset found in the release.\nOpen Releases page in your browser?",
             parent=parent,
         ):
@@ -354,7 +346,6 @@ def check_for_updates(
         messagebox.showerror("Update Download Failed", f"Could not download the latest EXE.\n\n{e}", parent=parent)
         return
 
-    # write & run updater cmd (kept consistent with your current behavior)
     import textwrap
 
     updater = app_folder / "update_vertex.cmd"
@@ -362,7 +353,7 @@ def check_for_updates(
     cmd = textwrap.dedent(fr"""
         @echo off
         setlocal EnableExtensions
-        echo Updating {app_name}...
+        echo Updating {app_name}.
 
         set "DIR=%~dp0"
         pushd "%DIR%" >nul 2>&1 || goto :fail
@@ -408,50 +399,29 @@ def check_for_updates(
         :run
         timeout /t 5 /nobreak >nul
 
-        for /l %%j in (1,1,8) do (
-            echo Starting %%j/8.
-            start "" /d "%DIR%" "%DIR%\%EXE%"
-            timeout /t 10 /nobreak >nul
-            tasklist | find /i "%EXE%" >nul
-            if not errorlevel 1 goto :cleanup
+        for /l %%j in (1,1,3) do (
+            start "" "%EXE%"
+            timeout /t 1 /nobreak >nul
         )
 
-        goto :fail
-
-        :cleanup
-        popd
-        del "%~f0"
         exit /b 0
 
         :fail
-        popd
-        echo Update failed to relaunch.
+        echo Update failed.
         pause
         exit /b 1
-    """).strip() + "\n"
+    """).strip()
 
     try:
         updater.write_text(cmd, encoding="utf-8")
-        clean_env = os.environ.copy()
-        for k in (
-            "_MEIPASS2",
-            "_PYI_APPLICATION_HOME_DIR",
-            "PYTHONHOME",
-            "PYTHONPATH",
-            "PYTHONNOUSERSITE",
-            "VIRTUAL_ENV",
-            "CONDA_PREFIX",
-            "__PYVENV_LAUNCHER__",
-        ):
-            clean_env.pop(k, None)
+    except Exception:
+        pass
 
-        subprocess.Popen(
-            ["cmd.exe", "/d", "/c", "call", str(updater)],
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
-            env=clean_env,
-        )
-    except Exception as e:
-        messagebox.showerror("Update Failed", f"Updater error:\n{repr(e)}", parent=parent)
-        return
-
-    sys.exit(0)
+    try:
+        if sys.platform.startswith("win"):
+            import subprocess
+            subprocess.Popen(['cmd.exe', '/c', str(updater)], cwd=str(app_folder), close_fds=True)
+        else:
+            webbrowser.open(github_releases_url)
+    except Exception:
+        webbrowser.open(github_releases_url)
