@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys, pathlib, types
+import ctypes
+from ctypes import wintypes
 
 # Make imports work in BOTH layouts:
 _BASE = pathlib.Path(__file__).resolve().parent
@@ -36,7 +38,7 @@ UPDATE_POLICY_ASSET_NAME = "update_policy.json"
 
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.59"
+APP_VERSION = "0.1.60"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -82,6 +84,61 @@ except Exception:
     NewUI = None
 
 LOG = get_logger("client_manager")
+
+# -----------------------------
+# Single-instance (Windows mutex)
+# -----------------------------
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+ERROR_ALREADY_EXISTS = 183
+MB_OK = 0x00000000
+MB_ICONINFORMATION = 0x00000040
+MB_TOPMOST = 0x00040000
+
+_CreateMutexW = _kernel32.CreateMutexW
+_CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+_CreateMutexW.restype = wintypes.HANDLE
+
+_GetLastError = _kernel32.GetLastError
+_GetLastError.argtypes = []
+_GetLastError.restype = wintypes.DWORD
+
+_MessageBoxW = _user32.MessageBoxW
+_MessageBoxW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT]
+_MessageBoxW.restype = ctypes.c_int
+
+_single_instance_mutex_handle = None
+
+def enforce_single_instance(app_id: str = "Vertex") -> bool:
+    """
+    Returns True if this is the first instance.
+    Returns False if another instance is already running (and exits caller typically).
+    """
+    global _single_instance_mutex_handle
+
+    # Use a stable global mutex name
+    mutex_name = f"Global\\{app_id}_SingleInstance_Mutex"
+
+    h = _CreateMutexW(None, False, mutex_name)
+    if not h:
+        # If mutex creation fails, don't block startup (but you can choose to)
+        return True
+
+    _single_instance_mutex_handle = h
+    last_err = _GetLastError()
+
+    if last_err == ERROR_ALREADY_EXISTS:
+        # Another instance already created the mutex
+        _MessageBoxW(
+            None,
+            "Vertex is already running.\n\nPlease close the existing Vertex window before opening a new one.",
+            "Vertex",
+            MB_OK | MB_ICONINFORMATION | MB_TOPMOST,
+        )
+        return False
+
+    return True
 
 # -------------------- Constants --------------------
 ENTITY_TYPES = [
@@ -2994,6 +3051,9 @@ class App(ttk.Frame):
 
 # -------------------- Entrypoint --------------------
 def main():
+    if sys.platform.startswith("win"):
+        if not enforce_single_instance("Vertex"):
+            return
     try:
         from functions.utils.app_update import check_for_updates_on_startup
     except Exception:
