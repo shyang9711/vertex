@@ -404,7 +404,9 @@ def check_for_updates(
         goto :fail
 
         :run
-        timeout /t 5 /nobreak >nul
+        timeout /t 2 /nobreak >nul
+        start "" "%EXE%"
+        exit /b 0
 
         for /l %%j in (1,1,3) do (
             start "" "%EXE%"
@@ -427,9 +429,22 @@ def check_for_updates(
     try:
         if sys.platform.startswith("win"):
             import subprocess
-            subprocess.Popen(['cmd.exe', '/c', str(updater)], cwd=str(app_folder), close_fds=True)
+
+            subprocess.Popen(
+                ["cmd.exe", "/c", str(updater)],
+                cwd=str(app_folder),
+                close_fds=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+
+            # IMPORTANT: exit this running Vertex process so the .cmd can replace the exe
+            os._exit(0)
+
         else:
             webbrowser.open(github_releases_url)
+
     except Exception:
         webbrowser.open(github_releases_url)
 

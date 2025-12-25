@@ -38,7 +38,7 @@ UPDATE_POLICY_ASSET_NAME = "update_policy.json"
 
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.60"
+APP_VERSION = "0.1.61"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -3054,27 +3054,10 @@ def main():
     if sys.platform.startswith("win"):
         if not enforce_single_instance("Vertex"):
             return
-    try:
-        from functions.utils.app_update import check_for_updates_on_startup
-    except Exception:
-        from utils.app_update import check_for_updates_on_startup
 
     log = get_logger("launcher")
     log.info("Launching Client Manager main()")
     root = tk.Tk()
-
-    root.after(
-        800,
-        lambda: check_for_updates_on_startup(
-            root,
-            app_name=APP_NAME,
-            app_version=APP_VERSION,
-            github_api_latest=GITHUB_API_LATEST,
-            github_releases_url=GITHUB_RELEASES_URL,
-            update_asset_name=UPDATE_ASSET_NAME,
-            quiet_when_uptodate=True,
-        ),
-    )
 
     if enforce_major_update_on_startup(
         root,
