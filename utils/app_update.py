@@ -406,6 +406,7 @@ def check_for_updates(
         :run
         timeout /t 2 /nobreak >nul
         start "" "%EXE%"
+        del "%~f0" >nul 2>&1
         exit /b 0
 
         for /l %%j in (1,1,3) do (
