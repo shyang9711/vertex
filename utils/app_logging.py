@@ -7,19 +7,15 @@ _DEFAULT_LOG_NAME = "client_manager"
 
 def _logs_dir() -> Path:
     """
-    Prefer a logs/ folder next to client_manager.py.
-    Fallback: ./logs
+    Persistent logs directory for EXE and dev:
+    %LOCALAPPDATA%/Vertex/logs
     """
-    here = Path(__file__).resolve()
-    # try <project_root>/logs
-    root = here
-    for _ in range(5):
-        if (root / "client_manager.py").exists():
-            break
-        if root.parent == root:
-            break
-        root = root.parent
-    logs = root / "logs"
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        logs = Path(base) / "Vertex" / "logs"
+    else:
+        logs = Path.cwd() / "logs"
+
     logs.mkdir(parents=True, exist_ok=True)
     return logs
 

@@ -55,8 +55,8 @@ jobs:
       - name: Generate update_policy.json
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"          # e.g. v0.1.55 or v0.1.55f
-          $ver = $tag.TrimStart("v")               # e.g. 0.1.55 or 0.1.55f
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart("v")
           $isMajor = $ver.EndsWith("f")
 
           $policy = @{
@@ -69,7 +69,7 @@ jobs:
           $policy | Out-File -Encoding utf8 update_policy.json
           Write-Host "Tag=$tag Version=$ver force=$isMajor"
           Get-Content update_policy.json
-          
+
       - name: Upload EXE to GitHub Release
         uses: softprops/action-gh-release@v2
         with:

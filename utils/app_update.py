@@ -12,10 +12,10 @@ from tkinter import messagebox, ttk
 # Optional logger if your app has one; safe fallback
 try:
     from functions.utils.app_logging import get_logger
-    LOG = get_logger("app_update")
 except Exception:
     from utils.app_logging import get_logger
-    LOG = None
+
+LOG = get_logger("app_update")
 
 
 def _parse_tag(tag_name: str | None) -> tuple[str | None, bool]:
@@ -69,6 +69,7 @@ def _is_newer_version(candidate: str, current: str) -> bool:
 def _fetch_latest_release_json_silent(github_api_latest: str, app_name: str) -> dict | None:
     """
     Fetch latest release JSON from GitHub, silent (no UI).
+    BUT: logs the real exception so we can debug "it didn't update".
     """
     try:
         req = urllib.request.Request(
@@ -78,7 +79,12 @@ def _fetch_latest_release_json_silent(github_api_latest: str, app_name: str) -> 
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, context=ctx, timeout=6) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception:
+    except Exception as e:
+        try:
+            if LOG:
+                LOG.exception("Failed to fetch latest release JSON: %s", e)
+        except Exception:
+            pass
         return None
 
 
@@ -426,3 +432,61 @@ def check_for_updates(
             webbrowser.open(github_releases_url)
     except Exception:
         webbrowser.open(github_releases_url)
+
+def check_for_updates_on_startup(
+    parent: tk.Misc,
+    *,
+    app_name: str,
+    app_version: str,
+    github_api_latest: str,
+    github_releases_url: str,
+    update_asset_name: str = "vertex.exe",
+    quiet_when_uptodate: bool = True,
+):
+    """
+    Startup update check:
+    - If up-to-date: do nothing (by default).
+    - If update available: ask user if they want to update now.
+    """
+    try:
+        req = urllib.request.Request(github_api_latest, headers={"User-Agent": app_name})
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        try:
+            if LOG:
+                LOG.exception("Startup update check failed: %s", e)
+        except Exception:
+            pass
+        # No popup on startup; just fail silently (but logged)
+        return
+
+    raw_tag = str(data.get("tag_name") or "").strip()
+    latest_version, _forced = _parse_tag(raw_tag)
+    if not latest_version:
+        return
+
+    if not _is_newer_version(latest_version, app_version):
+        if not quiet_when_uptodate:
+            messagebox.showinfo(
+                "Up to date",
+                f"You are running version {app_version}, which is the latest release.",
+                parent=parent,
+            )
+        return
+
+    # Update exists
+    if messagebox.askyesno(
+        "Update available",
+        f"Current version: {app_version}\nLatest version: {latest_version}\n\nUpdate now?",
+        parent=parent,
+    ):
+        check_for_updates(
+            parent=parent,
+            app_name=app_name,
+            app_version=app_version,
+            github_api_latest=github_api_latest,
+            github_releases_url=github_releases_url,
+            update_asset_name=update_asset_name,
+        )
