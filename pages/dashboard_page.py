@@ -125,7 +125,7 @@ class DashboardPage:
 
         self._grey_text = "#6B7280"  # same grey as 'done'
 
-        self._CAL_CELL_MINHEIGHT = 60
+        self._CAL_CELL_MINHEIGHT = 48
 
 
     # -------- lifecycle --------
@@ -166,8 +166,10 @@ class DashboardPage:
             except Exception:
                 pass
 
-        for i, w in enumerate((1, 2, 1)):
-            root.columnconfigure(i, weight=w)
+        root.columnconfigure(0, weight=0, minsize=160)   # LEFT: protected
+        root.columnconfigure(1, weight=1, minsize=640)   # MIDDLE: flexible (tasks)
+        root.columnconfigure(2, weight=0, minsize=240)   # RIGHT: protected
+
         root.rowconfigure(1, weight=1)
 
         # ---- Header bar
@@ -183,6 +185,22 @@ class DashboardPage:
         # Navigation buttons container (right side)
         nav = ttk.Frame(header)
         nav.grid(row=0, column=1, sticky="e")
+
+        style = ttk.Style()
+        style.configure(
+            "Compact.TButton",
+            width=8
+        )
+
+        style.configure(
+            "Compact.Outline.TButton",
+            width=8
+        )
+
+        style.configure(
+            "Compact.Accent.TButton",
+            width=8
+        )
 
         ttk.Button(
             nav,
@@ -216,17 +234,47 @@ class DashboardPage:
         ).pack(side="left", padx=(0, 8))
 
         # ---- Left card: Today
-        left = ttk.Frame(root, padding=14, style="Card.TFrame")
+        left = ttk.Frame(root, padding=12, style="Card.TFrame")
         left.grid(row=1, column=0, sticky="nsew", padx=(0,10))
+
         today = _today()
-        ttk.Label(left, text=today.strftime("%A, %B %d, %Y"), style="Header.TLabel").pack(anchor="w")
-        total = len(getattr(self.app, "items", []))
-        has_email = sum(1 for c in getattr(self.app, "items", []) if c.get("emails"))
-        ttk.Label(left, text=f"Companies: {total}").pack(anchor="w", pady=(10,0))
-        ttk.Label(left, text=f"With Emails: {has_email}", style="Subtle.TLabel").pack(anchor="w")
+        ttk.Label(left, text=today.strftime("%A,\n%B %d,\n%Y"), style="Header.TLabel").pack(anchor="w")
+
+        items = getattr(self.app, "items", []) or []
+        # total = len(items)
+        # has_email = sum(1 for c in items if (c.get("emails") if isinstance(c, dict) else False))
+
+        # ttk.Label(left, text=f"Companies: {total}").pack(anchor="w", pady=(10,0))
+        # ttk.Label(left, text=f"With Emails: {has_email}", style="Subtle.TLabel").pack(anchor="w")
+
+        # ---- Unchecked logs by company (only show companies with count > 0)
+        pending = []
+        for c in items:
+            if not isinstance(c, dict):
+                continue
+            cnt = self._count_unchecked_logs_for_company(c)
+            if cnt > 0:
+                pending.append(((c.get("name") or "").strip(), cnt))
+
+        pending.sort(key=lambda x: (-x[1], x[0].casefold()))
+
+        if pending:
+            ttk.Separator(left).pack(fill="x", pady=10)
+
+            total_unchecked = sum(cnt for _name, cnt in pending)
+            ttk.Label(left, text=f"Unchecked logs: {total_unchecked}", style="Header.TLabel").pack(anchor="w")
+
+            # show up to N companies to avoid the card getting too tall
+            MAX_SHOW = 20
+            for name, cnt in pending[:MAX_SHOW]:
+                ttk.Label(left, text=f"• {name} — {cnt}", style="Subtle.TLabel").pack(anchor="w")
+
+            if len(pending) > MAX_SHOW:
+                ttk.Label(left, text=f"(+{len(pending)-MAX_SHOW} more)", style="Subtle.TLabel").pack(anchor="w")
+
 
         # ---- Middle card: To‑Do
-        mid = ttk.Frame(root, padding=14, style="Card.TFrame")
+        mid = ttk.Frame(root, padding=12, style="Card.TFrame")
         mid.grid(row=1, column=1, sticky="nsew")
         mid.columnconfigure(0, weight=1)
         mid.rowconfigure(1, weight=1)
@@ -241,12 +289,12 @@ class DashboardPage:
                 
         btns = ttk.Frame(top_row)
         btns.grid(row=0, column=1)  # center column
-        ttk.Button(btns, text="Add Task",   style="Accent.TButton",  command=self._add_task).pack(side=tk.LEFT)
-        ttk.Button(btns, text="Edit",       style="Outline.TButton", command=self._edit_task).pack(side=tk.LEFT, padx=(8,0))
-        ttk.Button(btns, text="Delete",                              command=self._delete_task).pack(side=tk.LEFT, padx=(8,0))
-        ttk.Button(btns, text="Stop Recurrence",                     command=self._stop_recurring).pack(side=tk.LEFT, padx=(8,0))
-        ttk.Button(btns, text="Pause Recurrence",           command=self._pause_recurring).pack(side=tk.LEFT, padx=(8,0))
-        ttk.Button(btns, text="Resume Recurrence",          command=self._resume_recurring).pack(side=tk.LEFT, padx=(8,0))
+        ttk.Button(btns, text="Add",    style="Compact.Accent.TButton",  command=self._add_task).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Edit",   style="Compact.Outline.TButton",  command=self._edit_task).pack(side=tk.LEFT, padx=(8,0))
+        ttk.Button(btns, text="Delete", style="Compact.TButton",  command=self._delete_task).pack(side=tk.LEFT, padx=(8,0))
+        ttk.Button(btns, text="Stop",   style="Compact.TButton",  command=self._stop_recurring).pack(side=tk.LEFT, padx=(8,0))
+        ttk.Button(btns, text="Pause",  style="Compact.TButton",  command=self._pause_recurring).pack(side=tk.LEFT, padx=(8,0))
+        ttk.Button(btns, text="Resume", style="Compact.TButton",  command=self._resume_recurring).pack(side=tk.LEFT, padx=(8,0))
 
 
         # Show past toggle aligned to the right
@@ -258,10 +306,10 @@ class DashboardPage:
 
         cols = ("mark", "kind", "company", "date")
         self.todo_tv = ttk.Treeview(mid, columns=cols, show="headings", selectmode="browse", height=14, style="Modern.Treeview")
-        self.todo_tv.column("mark", width=16, minwidth=14, stretch=False, anchor="center")
-        self.todo_tv.column("kind", width=48, minwidth=20, stretch=True, anchor="center")
-        self.todo_tv.column("company", width=48, minwidth=20, stretch=True, anchor="center")
-        self.todo_tv.column("date", width=48, minwidth=20, stretch=True, anchor="center")
+        self.todo_tv.column("mark", width=16, minwidth=16, stretch=False, anchor="center")
+        self.todo_tv.column("kind", width=20, minwidth=20, stretch=True, anchor="center")
+        self.todo_tv.column("company", width=20, minwidth=20, stretch=True, anchor="center")
+        self.todo_tv.column("date", width=20, minwidth=20, stretch=True, anchor="center")
         self.todo_tv.heading("mark", text="", anchor="center")
         self.todo_tv.heading("kind",    text="Type",    command=lambda: self._on_sort_click("kind"))
         self.todo_tv.heading("company", text="Company", command=lambda: self._on_sort_click("company"))
@@ -277,7 +325,7 @@ class DashboardPage:
         self.todo_tv.bind("<Button-3>", self._todo_show_context_menu)
 
         # ---- Right card: Calendar
-        right = ttk.Frame(root, padding=14, style="Card.TFrame")
+        right = ttk.Frame(root, padding=12, style="Card.TFrame")
         right.grid(row=1, column=2, sticky="nsew", padx=(10,0))
         self._cal_year, self._cal_month = today.year, today.month
 
@@ -824,9 +872,9 @@ class DashboardPage:
         cal = _cal.Calendar(firstweekday=0)
         for r, week in enumerate(cal.monthdayscalendar(y, m), start=2):
             for c, day in enumerate(week):
-                cell = ttk.Frame(self._cal_wrap, padding=6, style="Card.TFrame")
+                cell = ttk.Frame(self._cal_wrap, padding=4, style="Card.TFrame")
                 cell.grid(row=r, column=c, padx=2, pady=2, sticky="nsew")
-                self._cal_wrap.grid_columnconfigure(c, weight=1, minsize=70)
+                self._cal_wrap.grid_columnconfigure(c, weight=1, minsize=64)
                 self._cal_wrap.grid_rowconfigure(r, weight=1, uniform="calrow", minsize=self._CAL_CELL_MINHEIGHT)
 
 
@@ -1152,7 +1200,7 @@ class DashboardPage:
     def _task_dialog(self, title, init=None):
         init = init or {}
         d = tk.Toplevel(self.app); d.title(title); d.resizable(False, False)
-        frm = ttk.Frame(d, padding=14)
+        frm = ttk.Frame(d, padding=12)
         frm.pack(fill="both", expand=True)
         frm.columnconfigure(1, weight=1)
 
@@ -1502,6 +1550,67 @@ class DashboardPage:
         if isinstance(idx, int) and 0 <= idx < len(items):
             return items[idx].get("name")
         return None
+    
+    def _count_unchecked_logs_for_company(self, company: dict) -> int:
+        """
+        Best-effort counter for 'unchecked logs' across a few common shapes.
+
+        Supports:
+        - company["logs"] = [{"checked": bool}, {"done": bool}, {"is_done": bool}, ...]
+        - company["logs"] = {"items": [...]}
+        - company["checklist_logs"] / ["log_items"] / ["activity_logs"] etc.
+        """
+        if not isinstance(company, dict):
+            return 0
+
+        # Try several likely keys
+        candidates = []
+        for k in ("logs", "checklist_logs", "log_items", "activity_logs", "log"):
+            v = company.get(k)
+            if v is None:
+                continue
+            candidates.append(v)
+
+        # Normalize into a single list of dicts
+        items = []
+        for v in candidates:
+            if isinstance(v, list):
+                items.extend(v)
+            elif isinstance(v, dict):
+                # sometimes wrapped as {"items":[...]} or {"logs":[...]}
+                for kk in ("items", "logs", "rows"):
+                    inner = v.get(kk)
+                    if isinstance(inner, list):
+                        items.extend(inner)
+
+        # Count unchecked
+        unchecked = 0
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+
+            # Common "checked" flags
+            checked_val = it.get("checked", None)
+            done_val = it.get("done", None)
+            is_done_val = it.get("is_done", None)
+            is_checked_val = it.get("is_checked", None)
+
+            # Pick the first flag that exists; default unchecked if none exist
+            if checked_val is not None:
+                checked = bool(checked_val)
+            elif is_checked_val is not None:
+                checked = bool(is_checked_val)
+            elif done_val is not None:
+                checked = bool(done_val)
+            elif is_done_val is not None:
+                checked = bool(is_done_val)
+            else:
+                checked = False
+
+            if not checked:
+                unchecked += 1
+
+        return unchecked
 
     def _shift_month(self, delta):
         y, m = self._cal_year, self._cal_month

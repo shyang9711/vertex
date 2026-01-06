@@ -38,7 +38,7 @@ UPDATE_POLICY_ASSET_NAME = "update_policy.json"
 
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.65"
+APP_VERSION = "0.1.66"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -3090,8 +3090,8 @@ def main():
         pass
 
     root.title("Vertex")
-    root.geometry("1280x800")
-    root.minsize(1920, 720)
+    root.geometry("1440x720")
+    root.minsize(1440, 720)
 
     try:
         from styles.new_ui import NewUI
