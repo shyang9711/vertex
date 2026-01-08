@@ -7,7 +7,6 @@ from datetime import datetime
 from tkinter import Tk, Toplevel, Text, Scrollbar, Button, END, RIGHT, Y, LEFT, BOTH, messagebox, filedialog, StringVar, OptionMenu, Label
 try:
     from colorama import init, Fore, Style
-    init(autoreset=True)
 except Exception:
     class _Dummy:
         def __getattr__(self, _): return ""
@@ -18,6 +17,24 @@ init(autoreset=True)  # Reset color after each print
 # Auto-install required packages
 import subprocess
 import sys
+
+def _can_print(s: str) -> bool:
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        s.encode(enc, errors="strict")
+        return True
+    except Exception:
+        return False
+
+# Best-effort: try to make stdout UTF-8 on Windows terminals
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+# Symbols (emoji when possible, ASCII fallback when not)
+BAD = "❌" if _can_print("❌") else "X"
+OK = "✔" if _can_print("✔") else "OK"
 
 required_packages = [
     "pandas",
@@ -145,9 +162,10 @@ tax_year, tax_quarter = res
 
 current_year = datetime.now().year
 if int(tax_year) > current_year:
-    print(f"{RED}❌ Tax year {tax_year} is in the future. Exiting...{RESET}")
+    print(f"{RED}{BAD} Tax year {tax_year} is in the future. Exiting...{RESET}")
     root.destroy()
     sys.exit(1)
+
 
 excel_text = get_excel_input()
 
@@ -197,7 +215,7 @@ for col in excel_df.columns:
 excel_df["Date"] = pd.to_datetime(excel_df["Date"], errors='coerce')
 
 if excel_df["Date"].isnull().any():
-    print("❌ Some dates couldn't be parsed. Please check your input.")
+    print(f"{BAD} Some dates couldn't be parsed. Please check your input.")
     print(excel_df[excel_df["Date"].isnull()])
     sys.exit(1)
 
@@ -248,12 +266,14 @@ def parse_edd(pdf_path):
 
 eftps_df = parse_eftps(eftps_path, tax_year, tax_quarter)
 if eftps_df.empty:
-    print(f"\n{RED}❌ No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
+    print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
     sys.exit(1)
+
 edd_payments = parse_edd(edd_path)
 if not edd_payments:
-    print(f"\n{RED}❌ No EDD records found for {tax_year} {tax_quarter}.{RESET}")
+    print(f"\n{RED}{BAD} No EDD records found for {tax_year} {tax_quarter}.{RESET}")
     sys.exit(1)
+
 
 # --- Step 6: Validation ---
 eftps_flags = []
@@ -262,12 +282,12 @@ for _, row in excel_df.iterrows():
     total = round(row["Total"], 2)
     matches = eftps_df[eftps_df["SettlementDate"] == date]
     if matches.empty:
-        eftps_flags.append(f"❌ No EFTPS record for {date.date()}")
+        eftps_flags.append(f"{BAD} No EFTPS record for {date.date()}")
     elif total not in matches["Amount"].round(2).values:
-        eftps_flags.append(f"❌ Amount mismatch on {date.date()} — Excel: {total}, EFTPS: {[float(a) for a in matches['Amount']]}")
+        eftps_flags.append(f"{BAD} Amount mismatch on {date.date()} — Excel: {total}, EFTPS: {[float(a) for a in matches['Amount']]}")
 
 if len(eftps_df) != len(excel_df):
-    eftps_flags.append(f"❌ Row count mismatch: Excel({len(excel_df)}) vs EFTPS({len(eftps_df)})")
+    eftps_flags.append(f"{BAD} Row count mismatch: Excel({len(excel_df)}) vs EFTPS({len(eftps_df)})")
 
 
 excel_edd_counter = Counter(excel_df["EDD_Total"].round(2))
@@ -276,15 +296,29 @@ edd_pdf_counter = Counter([round(x, 2) for x in edd_payments])
 edd_flags = []
 excel_edd_totals = list(excel_df["EDD_Total"].round(2))
 
-sum_edd_payments = sum(list(excel_df["EDD_Total"].round(2)))
-sum_edd_excel = sum(excel_edd_totals)
-if sum_edd_payments != sum_edd_excel:
+sum_edd_excel = round(sum(excel_edd_totals), 2)
+sum_edd_pdf   = round(sum(round(x, 2) for x in edd_payments), 2)
+
+if sum_edd_excel != sum_edd_pdf:
+    # Excel amounts missing or wrong counts
     for val, excel_count in excel_edd_counter.items():
         edd_count = edd_pdf_counter.get(val, 0)
         if excel_count != edd_count:
             edd_flags.append(
-                f"❌ EDD Total {val} count mismatch — Excel: {excel_count}, EDD PDF: {edd_count}"
+                f"{BAD} EDD Total {val} count mismatch — Excel: {excel_count}, EDD PDF: {edd_count}"
             )
+
+    # PDF contains extra amounts not in Excel
+    for val, edd_count in edd_pdf_counter.items():
+        excel_count = excel_edd_counter.get(val, 0)
+        if edd_count != excel_count:
+            edd_flags.append(
+                f"{BAD} EDD Total {val} count mismatch — Excel: {excel_count}, EDD PDF: {edd_count}"
+            )
+
+    # Optional: helpful totals line
+    edd_flags.append(f"{BAD} EDD sum mismatch — Excel: {sum_edd_excel}, EDD PDF: {sum_edd_pdf}")
+
 
 # Optional: Uncomment to print tables
 print("\nExcel Data:")
@@ -297,12 +331,12 @@ print(edd_payments)
 # --- Step 7: Print Results ---
 print("\n--- EFTPS Validation ---")
 if eftps_flags:
-    print(RED + "❌ " + "\n❌ ".join(eftps_flags))
+    print(RED + f"{BAD} " + ("\n" + f"{BAD} ").join(eftps_flags) + RESET)
 else:
-    print(GREEN + "✔ All EFTPS records match.")
+    print(GREEN + f"{OK} All EFTPS records match." + RESET)
 
 print("\n--- EDD Validation ---")
 if edd_flags:
-    print(RED + "❌ " + "\n❌ ".join(edd_flags))
+    print(RED + f"{BAD} " + ("\n" + f"{BAD} ").join(edd_flags) + RESET)
 else:
-    print(GREEN + "✔ All EDD payments match.")
+    print(GREEN + f"{OK} All EDD payments match." + RESET)
