@@ -17,24 +17,18 @@ init(autoreset=True)  # Reset color after each print
 # Auto-install required packages
 import subprocess
 import sys
-
-def _can_print(s: str) -> bool:
-    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
-    try:
-        s.encode(enc, errors="strict")
-        return True
-    except Exception:
-        return False
+import os
 
 # Best-effort: try to make stdout UTF-8 on Windows terminals
 try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if os.name == "nt":
+        sys.stdout.reconfigure(encoding="cp1252", errors="replace")
+        sys.stderr.reconfigure(encoding="cp1252", errors="replace")
 except Exception:
     pass
 
-# Symbols (emoji when possible, ASCII fallback when not)
-BAD = "❌" if _can_print("❌") else "X"
-OK = "✔" if _can_print("✔") else "OK"
+BAD = "X"
+OK = "OK"
 
 required_packages = [
     "pandas",
