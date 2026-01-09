@@ -4,7 +4,7 @@ import warnings
 import re
 from io import StringIO
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, date
 from tkinter import Tk, Toplevel, Text, Scrollbar, Button, END, RIGHT, Y, LEFT, BOTH, messagebox, filedialog, StringVar, OptionMenu, Label
 try:
     from colorama import init, Fore, Style
@@ -63,7 +63,23 @@ def get_previous_quarter_and_year():
         return str(current_year - 1), "Q4"
     else:
         return str(current_year), f"Q{current_quarter - 1}"
+    
+def quarter_date_range(tax_year: str, tax_quarter: str):
+    y = int(tax_year)
+    q = tax_quarter.upper().strip()
 
+    if q == "Q1":
+        start = date(y, 1, 1);  end = date(y, 3, 31)
+    elif q == "Q2":
+        start = date(y, 4, 1);  end = date(y, 6, 30)
+    elif q == "Q3":
+        start = date(y, 7, 1);  end = date(y, 9, 30)
+    elif q == "Q4":
+        start = date(y, 10, 1); end = date(y, 12, 31)
+    else:
+        raise ValueError(f"Invalid quarter: {tax_quarter}")
+
+    return pd.Timestamp(start), pd.Timestamp(end)
 # Prompt user for tax year and quarter
 def get_tax_period_input():
 
@@ -282,26 +298,57 @@ def parse_eftps(pdf_path, tax_year, tax_quarter):
     return pd.DataFrame(records)
 
 # --- Step 5: Parse EDD PDF ---
-def parse_edd(pdf_path):
+def parse_edd(pdf_path, tax_year, tax_quarter):
+    """
+    Parse EDD e-Services 'My Payments' export and return DE88 payment amounts
+    whose PAY DATE is within the selected quarter (e.g., Q4 = Oct 1–Dec 31).
+    """
     doc = fitz.open(pdf_path)
     text = "\n".join(page.get_text() for page in doc)
-    quarter_end_month = {
-        "Q1": "Mar",
-        "Q2": "Jun",
-        "Q3": "Sep",
-        "Q4": "Dec"
-    }[tax_quarter]
 
-    edd_pattern = rf'\d{{2}}-{quarter_end_month}-{tax_year}\s+DE88\s+Payment\s+\d{{2}}-[A-Za-z]{{3}}-{tax_year}\s+\$([\d,]+\.\d{{2}})'
-    matches = re.findall(edd_pattern, text)
-    return [float(p.replace(",", "")) for p in matches]
+    q_start, q_end = quarter_date_range(tax_year, tax_quarter)
+
+    # Typical row in extracted text looks like:
+    # 31-Dec-2025 DE88 Payment
+    # 12-Dec-2025 $46.76 $46.76 $2.74 $0.18 $42.97 $0.87 $0.00
+    #
+    # We capture:
+    #  - Period (date)
+    #  - Pay Date (date)
+    #  - Orig Payment ($)
+    #  - Applied Amount ($)  (if present)
+    row_pat = re.compile(
+        r'(?P<period>\d{2}-[A-Za-z]{3}-\d{4})\s+DE88\s+Payment\s+'
+        r'(?P<paydate>\d{2}-[A-Za-z]{3}-\d{4})\s+'
+        r'\$(?P<orig>[\d,]+\.\d{2})'
+        r'(?:\s+\$(?P<applied>[\d,]+\.\d{2}))?',
+        re.MULTILINE
+    )
+
+    payments = []
+    for m in row_pat.finditer(text):
+        pay_dt = pd.to_datetime(m.group("paydate"), format="%d-%b-%Y", errors="coerce")
+        if pd.isna(pay_dt):
+            continue
+
+        # Quarter filter (inclusive)
+        if not (q_start <= pay_dt <= q_end):
+            continue
+
+        # Prefer Applied Amount; fallback to Orig
+        amt_str = m.group("applied") or m.group("orig")
+        amt = float(amt_str.replace(",", ""))
+        payments.append(amt)
+
+    return payments
+
 
 eftps_df = parse_eftps(eftps_path, tax_year, tax_quarter)
 if eftps_df.empty:
     print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
     sys.exit(1)
 
-edd_payments = parse_edd(edd_path)
+edd_payments = parse_edd(edd_path, tax_year, tax_quarter)
 if not edd_payments:
     print(f"\n{RED}{BAD} No EDD records found for {tax_year} {tax_quarter}.{RESET}")
     sys.exit(1)
@@ -322,34 +369,38 @@ if len(eftps_df) != len(excel_df):
     eftps_flags.append(f"{BAD} Row count mismatch: Excel({len(excel_df)}) vs EFTPS({len(eftps_df)})")
 
 
-excel_edd_counter = Counter(excel_df["EDD_Total"].round(2))
-edd_pdf_counter = Counter([round(x, 2) for x in edd_payments])
-
 edd_flags = []
-excel_edd_totals = list(excel_df["EDD_Total"].round(2))
+
+# Compare sums ONLY (line mismatches are allowed if sums match)
+excel_edd_totals = excel_df["EDD_Total"].astype(float).round(2).tolist()
+pdf_edd_totals   = [round(float(x), 2) for x in edd_payments]
 
 sum_edd_excel = round(sum(excel_edd_totals), 2)
-sum_edd_pdf   = round(sum(round(x, 2) for x in edd_payments), 2)
+sum_edd_pdf   = round(sum(pdf_edd_totals), 2)
 
-if sum_edd_excel != sum_edd_pdf:
-    # Excel amounts missing or wrong counts
-    for val, excel_count in excel_edd_counter.items():
-        edd_count = edd_pdf_counter.get(val, 0)
-        if excel_count != edd_count:
-            edd_flags.append(
-                f"{BAD} EDD Total {val} count mismatch — Excel: {excel_count}, EDD PDF: {edd_count}"
-            )
+# Tolerance to avoid floating noise (e.g., 0.01)
+SUM_TOL = 0.01
 
-    # PDF contains extra amounts not in Excel
-    for val, edd_count in edd_pdf_counter.items():
+if abs(sum_edd_excel - sum_edd_pdf) <= SUM_TOL:
+    # PASS: sums match, do not flag line-item mismatches
+    pass
+else:
+    # FAIL: sums don't match -> now show helpful diagnostics
+    excel_edd_counter = Counter(excel_edd_totals)
+    edd_pdf_counter   = Counter(pdf_edd_totals)
+
+    # Show which values have different counts
+    all_vals = sorted(set(excel_edd_counter.keys()) | set(edd_pdf_counter.keys()))
+    for val in all_vals:
         excel_count = excel_edd_counter.get(val, 0)
-        if edd_count != excel_count:
+        pdf_count   = edd_pdf_counter.get(val, 0)
+        if excel_count != pdf_count:
             edd_flags.append(
-                f"{BAD} EDD Total {val} count mismatch — Excel: {excel_count}, EDD PDF: {edd_count}"
+                f"{BAD} EDD Total {val} count mismatch — Excel: {excel_count}, EDD PDF: {pdf_count}"
             )
 
-    # Optional: helpful totals line
     edd_flags.append(f"{BAD} EDD sum mismatch — Excel: {sum_edd_excel}, EDD PDF: {sum_edd_pdf}")
+
 
 
 # Optional: Uncomment to print tables
