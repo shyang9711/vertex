@@ -378,8 +378,8 @@ pdf_edd_totals   = [round(float(x), 2) for x in edd_payments]
 sum_edd_excel = round(sum(excel_edd_totals), 2)
 sum_edd_pdf   = round(sum(pdf_edd_totals), 2)
 
-# Tolerance to avoid floating noise (e.g., 0.01)
-SUM_TOL = 0.01
+# Tolerance if needed change
+SUM_TOL = 0.00
 
 if abs(sum_edd_excel - sum_edd_pdf) <= SUM_TOL:
     # PASS: sums match, do not flag line-item mismatches
