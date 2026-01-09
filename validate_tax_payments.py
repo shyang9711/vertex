@@ -1,5 +1,6 @@
 import pandas as pd
 import fitz  # PyMuPDF
+import warnings
 import re
 from io import StringIO
 from collections import Counter
@@ -79,7 +80,7 @@ def get_tax_period_input():
 
     Label(period_root, text="Enter Tax Year:").pack(pady=(10, 2))
     year_entry = Text(period_root, height=1, width=10)
-    year_entry.insert("1.0", "2025")
+    year_entry.insert("1.0", default_year)
     year_entry.pack()
 
     Label(period_root, text="Select Quarter:").pack(pady=(10, 2))
@@ -174,22 +175,59 @@ print("Select the EDD PDF file...")
 edd_path = filedialog.askopenfilename(title="Select EDD PDF")
 
 # --- Step 3: Parse Excel text ---
+def parse_excel_dates(series: pd.Series) -> pd.Series:
+    """
+    Parse mixed Excel-like date strings without triggering Pandas 'Could not infer format' warnings.
+    Tries several common formats first; falls back to dateutil (warning-suppressed) only for leftovers.
+    """
+    s = series.astype(str).str.strip()
+
+    fmts = [
+        "%Y-%m-%d",   # 2025-10-08
+        "%m/%d/%Y",   # 10/08/2025
+        "%m/%d/%y",   # 10/08/25
+        "%m-%d-%Y",   # 10-08-2025
+        "%m-%d-%y",   # 10-08-25
+        "%m.%d.%Y",   # 10.08.2025
+        "%m.%d.%y",   # 10.08.25
+        "%d-%b-%Y",   # 08-Oct-2025
+        "%d-%b-%y",   # 08-Oct-25
+    ]
+
+    out = pd.Series(pd.NaT, index=s.index)
+
+    for fmt in fmts:
+        m = out.isna()
+        if not m.any():
+            break
+        parsed = pd.to_datetime(s[m], format=fmt, errors="coerce")
+        out.loc[m] = parsed
+
+    # Fallback for any remaining weird cases (suppress the warning you’re seeing)
+    m = out.isna()
+    if m.any():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            out.loc[m] = pd.to_datetime(s[m], errors="coerce")
+
+    return out
+
 rows = [re.split(r"\s+", line.strip()) for line in excel_text.strip().split("\n") if line.strip()]
 col_count = len(rows[0])
 
 if col_count == 10:
     # Two date columns: take the later one
     excel_df = pd.DataFrame(rows, columns=["Date1", "Date2", "Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "P+I", "EDD_Total"])
-    excel_df["Date1"] = pd.to_datetime(excel_df["Date1"], errors='coerce')
-    excel_df["Date2"] = pd.to_datetime(excel_df["Date2"], errors='coerce')
+    excel_df["Date1"] = parse_excel_dates(excel_df["Date1"])
+    excel_df["Date2"] = parse_excel_dates(excel_df["Date2"])
     excel_df["Date"] = excel_df[["Date1", "Date2"]].max(axis=1)
     excel_df.drop(columns=["Date1", "Date2"], inplace=True)
 elif col_count == 9:
     excel_df = pd.DataFrame(rows, columns=["Date", "Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "P+I", "EDD_Total"])
-    excel_df["Date"] = pd.to_datetime(excel_df["Date"], errors='coerce')
+    excel_df["Date"] = parse_excel_dates(excel_df["Date"])
 elif col_count == 7:
     excel_df = pd.DataFrame(rows, columns=["Date", "Total", "UI", "ETT", "SDI", "PIT", "EDD_Total"])
-    excel_df["Date"] = pd.to_datetime(excel_df["Date"], errors='coerce')
+    excel_df["Date"] = parse_excel_dates(excel_df["Date"])
 else:
     raise ValueError(f"Unexpected column count: {col_count}")
 
