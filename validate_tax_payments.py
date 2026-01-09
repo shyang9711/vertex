@@ -80,6 +80,15 @@ def quarter_date_range(tax_year: str, tax_quarter: str):
         raise ValueError(f"Invalid quarter: {tax_quarter}")
 
     return pd.Timestamp(start), pd.Timestamp(end)
+
+def is_date_like(val: str) -> bool:
+    try:
+        pd.to_datetime(val, errors="raise")
+        return True
+    except Exception:
+        return False
+
+
 # Prompt user for tax year and quarter
 def get_tax_period_input():
 
@@ -231,6 +240,9 @@ def parse_excel_dates(series: pd.Series) -> pd.Series:
 rows = [re.split(r"\s+", line.strip()) for line in excel_text.strip().split("\n") if line.strip()]
 col_count = len(rows[0])
 
+first_row = rows[0]
+date_cols = [i for i, v in enumerate(first_row) if is_date_like(v)]
+
 if col_count == 10:
     # Two date columns: take the later one
     excel_df = pd.DataFrame(rows, columns=["Date1", "Date2", "Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "P+I", "EDD_Total"])
@@ -238,9 +250,34 @@ if col_count == 10:
     excel_df["Date2"] = parse_excel_dates(excel_df["Date2"])
     excel_df["Date"] = excel_df[["Date1", "Date2"]].max(axis=1)
     excel_df.drop(columns=["Date1", "Date2"], inplace=True)
+
 elif col_count == 9:
     excel_df = pd.DataFrame(rows, columns=["Date", "Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "P+I", "EDD_Total"])
     excel_df["Date"] = parse_excel_dates(excel_df["Date"])
+    
+elif col_count == 8:
+    if len(date_cols) == 2:
+        # Case 1: two dates → NO UI+ETT
+        excel_df = pd.DataFrame(
+            rows,
+            columns=["Date1", "Date2", "Total", "UI", "ETT", "SDI", "PIT", "EDD_Total"]
+        )
+        excel_df["Date1"] = parse_excel_dates(excel_df["Date1"])
+        excel_df["Date2"] = parse_excel_dates(excel_df["Date2"])
+        excel_df["Date"] = excel_df[["Date1", "Date2"]].max(axis=1)
+        excel_df.drop(columns=["Date1", "Date2"], inplace=True)
+
+    elif len(date_cols) == 1:
+        # Case 2: one date → HAS UI+ETT
+        excel_df = pd.DataFrame(
+            rows,
+            columns=["Date", "Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "EDD_Total"]
+        )
+        excel_df["Date"] = parse_excel_dates(excel_df["Date"])
+
+    else:
+        raise ValueError("8-column input but could not determine date columns")
+    
 elif col_count == 7:
     excel_df = pd.DataFrame(rows, columns=["Date", "Total", "UI", "ETT", "SDI", "PIT", "EDD_Total"])
     excel_df["Date"] = parse_excel_dates(excel_df["Date"])
