@@ -315,12 +315,14 @@ def parse_eftps(pdf_path, tax_year, tax_quarter):
             tax_form = lines[i + 2]
             tax_period = lines[i + 3]
             amount = lines[i + 4]
-            status = lines[i + 5]
+            status = lines[i + 5].strip()
+            if status == "Return":
+                status = "Returned"
 
             if (
                 re.match(r"\d{4}-\d{2}-\d{2}", settlement_date)
                 and tax_period == f"{tax_year}/{tax_quarter}"
-                and status in ("Settled", "Scheduled", "Return")
+                and status in ("Settled", "Scheduled", "Returned")
             ):
                 records.append({
                     "SettlementDate": pd.to_datetime(settlement_date),
@@ -499,9 +501,12 @@ for _, row in excel_df.iterrows():
     elif total not in matches["Amount"].round(2).values:
         eftps_flags.append(f"{BAD} Amount mismatch on {date.date()} — Excel: {total}, EFTPS: {[float(a) for a in matches['Amount']]}")
 
-if len(eftps_df) != len(excel_df):
-    eftps_flags.append(f"{BAD} Row count mismatch: Excel({len(excel_df)}) vs EFTPS({len(eftps_df)})")
+# Compare total sums instead of row counts (EFTPS can have multiple payments on same date)
+sum_excel_total = round(float(excel_df["Total"].sum()), 2)
+sum_eftps_total = round(float(eftps_df["Amount"].sum()), 2)
 
+if sum_excel_total != sum_eftps_total:
+    eftps_flags.append(f"{BAD} EFTPS sum mismatch: Excel({sum_excel_total}) vs EFTPS({sum_eftps_total})")
 
 edd_flags = []
 
