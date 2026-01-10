@@ -320,7 +320,7 @@ def parse_eftps(pdf_path, tax_year, tax_quarter):
             if (
                 re.match(r"\d{4}-\d{2}-\d{2}", settlement_date)
                 and tax_period == f"{tax_year}/{tax_quarter}"
-                and status in ("Settled", "Scheduled", "Returned")
+                and status in ("Settled", "Scheduled", "Return")
             ):
                 records.append({
                     "SettlementDate": pd.to_datetime(settlement_date),
