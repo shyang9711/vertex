@@ -296,9 +296,6 @@ for col in excel_df.columns:
         .astype(float)
     )
 
-# Auto-detect date formats like 4/9/25 or 04.09.2025
-excel_df["Date"] = pd.to_datetime(excel_df["Date"], errors='coerce')
-
 if excel_df["Date"].isnull().any():
     print(f"{BAD} Some dates couldn't be parsed. Please check your input.")
     print(excel_df[excel_df["Date"].isnull()])
@@ -323,16 +320,110 @@ def parse_eftps(pdf_path, tax_year, tax_quarter):
             if (
                 re.match(r"\d{4}-\d{2}-\d{2}", settlement_date)
                 and tax_period == f"{tax_year}/{tax_quarter}"
-                and (status == "Settled" or status == "Scheduled")
+                and status in ("Settled", "Scheduled", "Returned")
             ):
                 records.append({
                     "SettlementDate": pd.to_datetime(settlement_date),
-                    "Amount": float(amount.replace(",", ""))
+                    "InitiationDate": pd.to_datetime(initiation_date, errors="coerce"),
+                    "Amount": float(amount.replace(",", "")),
+                    "Status": status
                 })
         except Exception:
             continue
 
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    if not df.empty:
+        df = df.sort_values(["SettlementDate", "InitiationDate"], ascending=[True, True]).reset_index(drop=True)
+    return df
+
+def reconcile_eftps_returns(eftps_df: pd.DataFrame):
+    """
+    For each Returned transaction:
+      - find ONE prior successful payment (Settled/Scheduled) with same amount
+        and SettlementDate <= return date
+      - remove it once (most recent prior one)
+      - add info to returned bucket
+
+    Also checks whether each return amount was repaid later by a successful payment.
+    """
+    if eftps_df is None or eftps_df.empty:
+        return eftps_df, pd.DataFrame(), []
+
+    df = eftps_df.copy().sort_values(["SettlementDate", "InitiationDate"], ascending=[True, True]).reset_index(drop=True)
+
+    # Separate
+    success_mask = df["Status"].isin(["Settled", "Scheduled"])
+    return_mask  = df["Status"].eq("Returned")
+
+    success = df[success_mask].copy().reset_index(drop=False)  # keep original row index
+    returns = df[return_mask].copy().reset_index(drop=False)
+
+    # Track which successful rows get canceled by returns
+    canceled_success_row_ids = set()
+    returned_bucket = []
+
+    # For matching: we want most recent successful BEFORE/EQUAL return date, same amount
+    # We'll scan returns in chronological order (already sorted)
+    for _, r in returns.iterrows():
+        r_date = r["SettlementDate"]
+        r_amt  = round(float(r["Amount"]), 2)
+
+        # Candidate successful payments not already canceled
+        candidates = success[
+            (~success["index"].isin(canceled_success_row_ids)) &
+            (success["SettlementDate"] <= r_date) &
+            (success["Amount"].round(2) == r_amt)
+        ]
+
+        if not candidates.empty:
+            # pick most recent prior (max SettlementDate, then max InitiationDate)
+            pick = candidates.sort_values(
+                ["SettlementDate", "InitiationDate", "index"],
+                ascending=[False, False, False]
+            ).iloc[0]
+
+            canceled_success_row_ids.add(int(pick["index"]))
+            returned_bucket.append({
+                "ReturnedDate": r_date,
+                "Amount": r_amt,
+                "CanceledPaymentDate": pick["SettlementDate"],
+                "CanceledPaymentStatus": df.loc[int(pick["index"]), "Status"],
+            })
+        else:
+            # Return exists but we couldn't find a payment to cancel (still important)
+            returned_bucket.append({
+                "ReturnedDate": r_date,
+                "Amount": r_amt,
+                "CanceledPaymentDate": pd.NaT,
+                "CanceledPaymentStatus": "NOT_FOUND",
+            })
+
+    returned_df = pd.DataFrame(returned_bucket)
+
+    # Effective success = all success minus canceled ones
+    effective_success = success[~success["index"].isin(canceled_success_row_ids)].copy()
+    effective_success = effective_success.drop(columns=["index"]).reset_index(drop=True)
+
+    # Now: Return health check
+    # A return is "repaid" if there exists a later successful payment (effective) of same amount AFTER return date
+    return_flags = []
+    if not returned_df.empty:
+        for _, rr in returned_df.iterrows():
+            r_date = rr["ReturnedDate"]
+            r_amt = round(float(rr["Amount"]), 2)
+
+            repaid = not success[
+                (success["SettlementDate"] > r_date) &
+                (success["Amount"].round(2) == r_amt)
+            ].empty
+
+            if not repaid:
+                return_flags.append(
+                    f"{BAD} Returned payment {r_amt} on {pd.to_datetime(r_date).date()} was not repaid later."
+                )
+
+    return effective_success, returned_df, return_flags
+
 
 # --- Step 5: Parse EDD PDF ---
 def parse_edd(pdf_path, tax_year, tax_quarter):
@@ -380,7 +471,13 @@ def parse_edd(pdf_path, tax_year, tax_quarter):
     return payments
 
 
-eftps_df = parse_eftps(eftps_path, tax_year, tax_quarter)
+eftps_raw_df = parse_eftps(eftps_path, tax_year, tax_quarter)
+if eftps_raw_df.empty:
+    print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
+    sys.exit(1)
+
+eftps_df, eftps_returned_df, eftps_return_flags = reconcile_eftps_returns(eftps_raw_df)
+
 if eftps_df.empty:
     print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
     sys.exit(1)
@@ -441,15 +538,16 @@ else:
 
 
 # Optional: Uncomment to print tables
-print("\nExcel Data:")
-print(excel_df)
 print("\nEFTPS Data:")
 print(eftps_df)
+print("\nEFTPS Returned Bucket:")
+print(eftps_returned_df if not eftps_returned_df.empty else "[]")
 print("\nEDD Data:")
 print(edd_payments)
 
 # --- Step 7: Print Results ---
 print("\n--- EFTPS Validation ---")
+eftps_flags.extend(eftps_return_flags)
 if eftps_flags:
     print(RED + f"{BAD} " + ("\n" + f"{BAD} ").join(eftps_flags) + RESET)
 else:
