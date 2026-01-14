@@ -555,30 +555,53 @@ if r is not None and not r.empty and "CanceledPaymentDate" in r.columns and "Amo
         if not hit.empty:
             excel_is_returned.loc[i] = True
 
-# Per-row validation
-for i, row in excel_df.iterrows():
-    d = row["Date"]
-    total = round(float(row["Total"]), 2)
+# --- EFTPS per-date multiset validation (supports multiple payments same date) ---
 
-    # 1) Check against EFFECTIVE EFTPS settled/scheduled (after removing canceled-by-return)
-    matches = eftps_df[eftps_df["SettlementDate"] == d]
-    if (not matches.empty) and (total in matches["Amount"].round(2).values):
-        continue  # OK
+# Build Excel paid amounts grouped by date (exclude returned/canceled rows)
+excel_paid = excel_df.loc[~excel_is_returned, ["Date", "Total"]].copy()
+excel_paid["Total"] = excel_paid["Total"].astype(float).round(2)
 
-    # 2) If this Excel row is a returned/canceled payment, DO NOT flag mismatch
-    if bool(excel_is_returned.loc[i]):
-        # Optional: you can print or collect an informational note, but not an error
-        # Example note (not required):
-        # print(f"INFO Returned/canceled payment acknowledged on {d.date()} amount {total}")
+# Build EFTPS paid amounts grouped by date
+eftps_paid = eftps_df[["SettlementDate", "Amount"]].copy()
+eftps_paid["Amount"] = eftps_paid["Amount"].astype(float).round(2)
+
+# Compare Counters per date
+all_dates = sorted(set(excel_paid["Date"].unique()) | set(eftps_paid["SettlementDate"].unique()))
+
+for d in all_dates:
+    ex_list = excel_paid.loc[excel_paid["Date"] == d, "Total"].tolist()
+    ef_list = eftps_paid.loc[eftps_paid["SettlementDate"] == d, "Amount"].tolist()
+
+    ex_c = Counter(ex_list)
+    ef_c = Counter(ef_list)
+
+    if ex_c == ef_c:
         continue
 
-    # 3) Otherwise, real mismatch / missing
-    if matches.empty:
-        eftps_flags.append(f"{BAD} No EFTPS record for {d.date()} (and not marked Returned)")
-    else:
-        eftps_flags.append(
-            f"{BAD} Amount mismatch on {d.date()} — Excel: {total}, EFTPS (effective paid): {[float(a) for a in matches['Amount']]}"
-        )
+    # Nice diagnostics: what is missing / extra
+    missing = []
+    extra = []
+
+    # Missing in EFTPS means Excel has more of that amount than EFTPS
+    for amt, cnt in (ex_c - ef_c).items():
+        missing.append((amt, cnt))
+
+    # Extra in EFTPS means EFTPS has more of that amount than Excel
+    for amt, cnt in (ef_c - ex_c).items():
+        extra.append((amt, cnt))
+
+    msg_parts = [f"{BAD} EFTPS paid mismatch on {pd.to_datetime(d).date()}"]
+    if missing:
+        msg_parts.append(f"Missing in EFTPS: {missing}")
+    if extra:
+        msg_parts.append(f"Extra in EFTPS: {extra}")
+
+    # Also show full lists for quick eyeballing
+    msg_parts.append(f"ExcelPaid={sorted(ex_list)}")
+    msg_parts.append(f"EFTPSPaid={sorted(ef_list)}")
+
+    eftps_flags.append(" — ".join(msg_parts))
+
 
 # --- EFTPS Sum Checks (split into Paid vs Returned) ---
 
