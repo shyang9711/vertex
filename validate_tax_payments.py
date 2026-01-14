@@ -388,8 +388,12 @@ def reconcile_eftps_returns(eftps_df: pd.DataFrame):
             returned_bucket.append({
                 "ReturnedDate": r_date,
                 "Amount": r_amt,
+
+                # This is the key your matching logic needs
+                "CanceledPaymentDate": pick["SettlementDate"],
+
+                # show "Returned" (not the original status)
                 "CanceledPaymentStatus": "Returned",
-                "CanceledPaymentStatus": df.loc[int(pick["index"]), "Status"],
             })
         else:
             # Return exists but we couldn't find a payment to cancel (still important)
@@ -398,6 +402,7 @@ def reconcile_eftps_returns(eftps_df: pd.DataFrame):
                 "Amount": r_amt,
                 "CanceledPaymentDate": pd.NaT,
                 "CanceledPaymentStatus": "NOT_FOUND",
+                "CanceledPaymentOriginalStatus": "",
             })
 
     returned_df = pd.DataFrame(returned_bucket)
@@ -414,9 +419,9 @@ def reconcile_eftps_returns(eftps_df: pd.DataFrame):
             r_date = rr["ReturnedDate"]
             r_amt = round(float(rr["Amount"]), 2)
 
-            repaid = not success[
-                (success["SettlementDate"] > r_date) &
-                (success["Amount"].round(2) == r_amt)
+            repaid = not effective_success[
+                (effective_success["SettlementDate"] > r_date) &
+                (effective_success["Amount"].round(2) == r_amt)
             ].empty
 
             if not repaid:
@@ -497,18 +502,55 @@ eftps_flags = []
 excel_is_returned = pd.Series(False, index=excel_df.index)
 
 if eftps_returned_df is not None and not eftps_returned_df.empty:
-    # Ensure datetime
     r = eftps_returned_df.copy()
-    r["CanceledPaymentDate"] = pd.to_datetime(r["CanceledPaymentDate"], errors="coerce")
-    r["Amount"] = r["Amount"].astype(float).round(2)
 
+    # --- Robust column detection (handles small naming differences) ---
+    possible_canceled_cols = [
+        "CanceledPaymentDate",
+        "Canceled Payment Date",
+        "Canceled_Payment_Date",
+        "CanceledPayment Date",
+        "CanceledPaymentDate ",
+        "CanceledPaymentDt",
+        "CanceledDate",
+    ]
+    possible_amount_cols = [
+        "Amount",
+        "ReturnedAmount",
+        "ReturnAmount",
+        "Returned Amount",
+        "Amount ",
+    ]
+
+    canceled_col = next((c for c in possible_canceled_cols if c in r.columns), None)
+    amount_col   = next((c for c in possible_amount_cols if c in r.columns), None)
+
+    # If we cannot find the columns, treat as "no returns" (don’t crash the program)
+    if canceled_col is None or amount_col is None:
+        print(f"[WARN] Returned bucket columns found: {list(r.columns)}")
+        print("[WARN] Could not detect canceled-date/amount columns in returned bucket; skipping returned matching.")
+        r = pd.DataFrame()  # force "no returns" behavior
+    else:
+        # Normalize to canonical names used by the rest of the script
+        if canceled_col != "CanceledPaymentDate":
+            r["CanceledPaymentDate"] = r[canceled_col]
+        r["CanceledPaymentDate"] = pd.to_datetime(r["CanceledPaymentDate"], errors="coerce")
+
+        if amount_col != "Amount":
+            r["Amount"] = r[amount_col]
+        r["Amount"] = pd.to_numeric(r["Amount"], errors="coerce").astype(float).round(2)
+else:
+    r = pd.DataFrame()
+
+# --- Mark Excel rows that correspond to returned/canceled EFTPS payments ---
+if r is not None and not r.empty and "CanceledPaymentDate" in r.columns and "Amount" in r.columns:
     for i, row in excel_df.iterrows():
         d = row["Date"]
         amt = round(float(row["Total"]), 2)
 
         hit = r[
             (r["CanceledPaymentDate"] == d) &
-            (r["Amount"] == amt)
+            (r["Amount"].round(2) == amt)
         ]
         if not hit.empty:
             excel_is_returned.loc[i] = True
