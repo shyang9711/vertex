@@ -50,6 +50,22 @@ GREEN = Fore.GREEN
 RED = Fore.RED
 RESET = Style.RESET_ALL
 
+def round2(x):
+    try:
+        return round(float(x), 2)
+    except Exception:
+        return None
+
+def counter_take(counter: Counter, amt: float, n: int = 1) -> bool:
+    """Try to consume n of amt from counter; return True if successful."""
+    if counter.get(amt, 0) >= n:
+        counter[amt] -= n
+        if counter[amt] <= 0:
+            del counter[amt]
+        return True
+    return False
+
+
 def get_previous_quarter_and_year():
     today = datetime.today()
     current_month = today.month
@@ -638,36 +654,184 @@ if (sum_excel_returned != 0.00) or (sum_eftps_returned != 0.00):
 
 
 edd_flags = []
-
-# Compare sums ONLY (line mismatches are allowed if sums match)
-excel_edd_totals = excel_df["EDD_Total"].astype(float).round(2).tolist()
-pdf_edd_totals   = [round(float(x), 2) for x in edd_payments]
-
-sum_edd_excel = round(sum(excel_edd_totals), 2)
-sum_edd_pdf   = round(sum(pdf_edd_totals), 2)
+edd_split_paid_logs = []  # <-- we will print this under EDD Validation
 
 # Tolerance if needed change
 SUM_TOL = 0.00
+AMT_TOL = 0.00  # keep strict unless you want 0.01
 
+# Build Excel EDD rows
+excel_rows = excel_df.copy()
+excel_rows["EDD_Total"] = excel_rows["EDD_Total"].astype(float).round(2)
+
+# PDF amounts
+pdf_amounts = [round(float(x), 2) for x in edd_payments]
+
+sum_edd_excel = round(float(excel_rows["EDD_Total"].sum()), 2)
+sum_edd_pdf   = round(float(sum(pdf_amounts)), 2)
+
+# If sums match, we’re done (your original rule)
 if abs(sum_edd_excel - sum_edd_pdf) <= SUM_TOL:
-    # PASS: sums match, do not flag line-item mismatches
     pass
 else:
-    # FAIL: sums don't match -> now show helpful diagnostics
-    excel_edd_counter = Counter(excel_edd_totals)
-    edd_pdf_counter   = Counter(pdf_edd_totals)
+    # ------------------------------------------------------------
+    # Phase 1) Direct match EDD_Total vs PDF amounts (count-aware)
+    # ------------------------------------------------------------
+    pdf_counter = Counter(pdf_amounts)
 
-    # Show which values have different counts
-    all_vals = sorted(set(excel_edd_counter.keys()) | set(edd_pdf_counter.keys()))
-    for val in all_vals:
-        excel_count = excel_edd_counter.get(val, 0)
-        pdf_count   = edd_pdf_counter.get(val, 0)
-        if excel_count != pdf_count:
-            edd_flags.append(
-                f"{BAD} EDD Total {val} count mismatch — Excel: {excel_count}, EDD PDF: {pdf_count}"
-            )
+    # Track which Excel rows are matched directly
+    excel_direct_matched = pd.Series(False, index=excel_rows.index)
 
+    for i, row in excel_rows.iterrows():
+        amt = round2(row["EDD_Total"])
+        if amt is None:
+            continue
+
+        # strict match (AMT_TOL==0). If you want tolerance: search nearby keys.
+        if AMT_TOL == 0.0:
+            if counter_take(pdf_counter, amt, 1):
+                excel_direct_matched.loc[i] = True
+        else:
+            # tolerant match: find any key within tol
+            hit_key = None
+            for k in list(pdf_counter.keys()):
+                if abs(k - amt) <= AMT_TOL and pdf_counter[k] > 0:
+                    hit_key = k
+                    break
+            if hit_key is not None:
+                counter_take(pdf_counter, hit_key, 1)
+                excel_direct_matched.loc[i] = True
+
+    # Unmatched after direct matching
+    excel_unmatched = excel_rows.loc[~excel_direct_matched].copy()
+
+    # ------------------------------------------------------------
+    # Phase 2) Paid-separately matching using UI+ETT and P+I
+    # Only for rows still unmatched AND only consuming remaining PDF payments
+    # ------------------------------------------------------------
+    can_split = ("UI+ETT" in excel_rows.columns) and ("P+I" in excel_rows.columns)
+
+    if can_split and not excel_unmatched.empty:
+        for i, row in excel_unmatched.iterrows():
+            d = row["Date"]
+            edd_total = round2(row["EDD_Total"])
+            ui_ett = round2(row.get("UI+ETT", None))
+            p_i   = round2(row.get("P+I", None))
+
+            if edd_total is None or ui_ett is None or p_i is None:
+                continue
+
+            # require exact row arithmetic match: UI+ETT + P+I == EDD_Total
+            if AMT_TOL == 0.0:
+                if round2(ui_ett + p_i) != edd_total:
+                    continue
+            else:
+                if abs((ui_ett + p_i) - edd_total) > AMT_TOL:
+                    continue
+
+            # require BOTH payments exist in remaining PDF unmatched pool
+            # if amounts equal, need two occurrences
+            need_two = (ui_ett == p_i)
+
+            ok_ui = False
+            ok_pi = False
+
+            if AMT_TOL == 0.0:
+                if need_two:
+                    # need two of the same amount
+                    if pdf_counter.get(ui_ett, 0) >= 2:
+                        counter_take(pdf_counter, ui_ett, 2)
+                        ok_ui = True
+                        ok_pi = True
+                else:
+                    if pdf_counter.get(ui_ett, 0) >= 1 and pdf_counter.get(p_i, 0) >= 1:
+                        counter_take(pdf_counter, ui_ett, 1)
+                        counter_take(pdf_counter, p_i, 1)
+                        ok_ui = True
+                        ok_pi = True
+            else:
+                # tolerant: pick matching keys within tol (must not reuse)
+                def find_key_within(counter, target):
+                    for k in list(counter.keys()):
+                        if abs(k - target) <= AMT_TOL and counter[k] > 0:
+                            return k
+                    return None
+
+                if need_two:
+                    k1 = find_key_within(pdf_counter, ui_ett)
+                    if k1 is not None and pdf_counter.get(k1, 0) >= 2:
+                        counter_take(pdf_counter, k1, 2)
+                        ok_ui = True
+                        ok_pi = True
+                else:
+                    k_ui = find_key_within(pdf_counter, ui_ett)
+                    if k_ui is None:
+                        continue
+                    # consume one first so we don't reuse it
+                    counter_take(pdf_counter, k_ui, 1)
+
+                    k_pi = find_key_within(pdf_counter, p_i)
+                    if k_pi is None:
+                        # rollback consumption
+                        pdf_counter[k_ui] = pdf_counter.get(k_ui, 0) + 1
+                        continue
+                    counter_take(pdf_counter, k_pi, 1)
+
+                    ok_ui = True
+                    ok_pi = True
+
+            if ok_ui and ok_pi:
+                # mark row as matched via split
+                excel_direct_matched.loc[i] = True
+
+                # log it as "paid separately"
+                edd_split_paid_logs.append(
+                    f"{OK} EDD paid separately on {pd.to_datetime(d).date()} — "
+                    f"PDF(UI+ETT)={ui_ett} + PDF(P+I)={p_i} — "
+                    f"Excel EDD_Total={edd_total}"
+                )
+
+        # recompute unmatched Excel after split matching
+        excel_unmatched = excel_rows.loc[~excel_direct_matched].copy()
+
+    # ------------------------------------------------------------
+    # Phase 3) Build mismatch diagnostics AFTER split matching
+    # ------------------------------------------------------------
+    remaining_pdf = []
+    for k, cnt in pdf_counter.items():
+        remaining_pdf.extend([k] * cnt)
+    remaining_pdf = sorted(remaining_pdf)
+
+    remaining_excel = sorted([round2(x) for x in excel_unmatched["EDD_Total"].tolist() if round2(x) is not None])
+
+    # If still mismatched, show which values are off (count-aware)
+    if remaining_excel or remaining_pdf:
+        excel_counter = Counter(remaining_excel)
+        pdf_rem_counter = Counter(remaining_pdf)
+
+        # Show which values have different counts
+        all_vals = sorted(set(excel_counter.keys()) | set(pdf_rem_counter.keys()))
+        for val in all_vals:
+            excel_count = excel_counter.get(val, 0)
+            pdf_count   = pdf_rem_counter.get(val, 0)
+            if excel_count != pdf_count:
+                edd_flags.append(
+                    f"{BAD} Unmatched EDD amount {val} count mismatch — Excel(unmatched): {excel_count}, EDD PDF(unmatched): {pdf_count}"
+                )
+
+        # Updated effective sums after split matching:
+        # (Matched total = total excel - remaining excel)
+        sum_excel_unmatched = round(sum(remaining_excel), 2)
+        sum_pdf_unmatched   = round(sum(remaining_pdf), 2)
+
+        edd_flags.append(
+            f"{BAD} EDD unresolved mismatch after split-matching — "
+            f"Excel(unmatched sum): {sum_excel_unmatched}, EDD PDF(unmatched sum): {sum_pdf_unmatched}"
+        )
+
+    # also keep the original top-level sum mismatch line (helps quick glance)
     edd_flags.append(f"{BAD} EDD sum mismatch — Excel: {sum_edd_excel}, EDD PDF: {sum_edd_pdf}")
+
 
 
 
@@ -688,6 +852,9 @@ else:
     print(GREEN + f"{OK} All EFTPS records match." + RESET)
 
 print("\n--- EDD Validation ---")
+if 'edd_split_paid_logs' in globals() and edd_split_paid_logs:
+    print(GREEN + "\n".join(edd_split_paid_logs) + RESET)
+
 if edd_flags:
     print(RED + f"{BAD} " + ("\n" + f"{BAD} ").join(edd_flags) + RESET)
 else:
