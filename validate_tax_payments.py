@@ -388,7 +388,7 @@ def reconcile_eftps_returns(eftps_df: pd.DataFrame):
             returned_bucket.append({
                 "ReturnedDate": r_date,
                 "Amount": r_amt,
-                "CanceledPaymentDate": pick["SettlementDate"],
+                "CanceledPaymentStatus": "Returned",
                 "CanceledPaymentStatus": df.loc[int(pick["index"]), "Status"],
             })
         else:
@@ -489,24 +489,88 @@ if not edd_payments:
     print(f"\n{RED}{BAD} No EDD records found for {tax_year} {tax_quarter}.{RESET}")
     sys.exit(1)
 
-
 # --- Step 6: Validation ---
 eftps_flags = []
-for _, row in excel_df.iterrows():
-    date = row["Date"]
-    total = round(row["Total"], 2)
-    matches = eftps_df[eftps_df["SettlementDate"] == date]
+
+# Identify Excel rows that correspond to a payment that was later RETURNED
+# Match rule: Excel Date == CanceledPaymentDate AND Excel Total == Returned Amount
+excel_is_returned = pd.Series(False, index=excel_df.index)
+
+if eftps_returned_df is not None and not eftps_returned_df.empty:
+    # Ensure datetime
+    r = eftps_returned_df.copy()
+    r["CanceledPaymentDate"] = pd.to_datetime(r["CanceledPaymentDate"], errors="coerce")
+    r["Amount"] = r["Amount"].astype(float).round(2)
+
+    for i, row in excel_df.iterrows():
+        d = row["Date"]
+        amt = round(float(row["Total"]), 2)
+
+        hit = r[
+            (r["CanceledPaymentDate"] == d) &
+            (r["Amount"] == amt)
+        ]
+        if not hit.empty:
+            excel_is_returned.loc[i] = True
+
+# Per-row validation
+for i, row in excel_df.iterrows():
+    d = row["Date"]
+    total = round(float(row["Total"]), 2)
+
+    # 1) Check against EFFECTIVE EFTPS settled/scheduled (after removing canceled-by-return)
+    matches = eftps_df[eftps_df["SettlementDate"] == d]
+    if (not matches.empty) and (total in matches["Amount"].round(2).values):
+        continue  # OK
+
+    # 2) If this Excel row is a returned/canceled payment, DO NOT flag mismatch
+    if bool(excel_is_returned.loc[i]):
+        # Optional: you can print or collect an informational note, but not an error
+        # Example note (not required):
+        # print(f"INFO Returned/canceled payment acknowledged on {d.date()} amount {total}")
+        continue
+
+    # 3) Otherwise, real mismatch / missing
     if matches.empty:
-        eftps_flags.append(f"{BAD} No EFTPS record for {date.date()}")
-    elif total not in matches["Amount"].round(2).values:
-        eftps_flags.append(f"{BAD} Amount mismatch on {date.date()} — Excel: {total}, EFTPS: {[float(a) for a in matches['Amount']]}")
+        eftps_flags.append(f"{BAD} No EFTPS record for {d.date()} (and not marked Returned)")
+    else:
+        eftps_flags.append(
+            f"{BAD} Amount mismatch on {d.date()} — Excel: {total}, EFTPS (effective paid): {[float(a) for a in matches['Amount']]}"
+        )
 
-# Compare total sums instead of row counts (EFTPS can have multiple payments on same date)
-sum_excel_total = round(float(excel_df["Total"].sum()), 2)
-sum_eftps_total = round(float(eftps_df["Amount"].sum()), 2)
+# --- EFTPS Sum Checks (split into Paid vs Returned) ---
 
-if sum_excel_total != sum_eftps_total:
-    eftps_flags.append(f"{BAD} EFTPS sum mismatch: Excel({sum_excel_total}) vs EFTPS({sum_eftps_total})")
+# Paid = Excel excluding rows that match canceled-by-return payments
+sum_excel_paid = round(float(excel_df.loc[~excel_is_returned, "Total"].sum()), 2)
+
+# Returned = Excel rows that match canceled-by-return payments
+sum_excel_returned = round(float(excel_df.loc[excel_is_returned, "Total"].sum()), 2)
+
+# EFTPS effective paid (already excludes canceled payments)
+sum_eftps_paid = round(float(eftps_df["Amount"].sum()), 2)
+
+# EFTPS returned total (from returned bucket)
+sum_eftps_returned = 0.00
+if eftps_returned_df is not None and not eftps_returned_df.empty:
+    sum_eftps_returned = round(float(eftps_returned_df["Amount"].astype(float).sum()), 2)
+
+# Compare Paid totals
+if sum_excel_paid != sum_eftps_paid:
+    eftps_flags.append(
+        f"{BAD} EFTPS PAID sum mismatch: ExcelPaid({sum_excel_paid}) vs EFTPSPaid({sum_eftps_paid})"
+    )
+
+# Compare Returned totals (only if either side has returns)
+if (sum_excel_returned != 0.00) or (sum_eftps_returned != 0.00):
+    if sum_excel_returned != sum_eftps_returned:
+        eftps_flags.append(
+            f"{BAD} EFTPS RETURNED sum mismatch: ExcelReturned({sum_excel_returned}) vs EFTPSReturned({sum_eftps_returned})"
+        )
+    else:
+        # Optional informational line (no error), if you want it visible in console:
+        # print(f"{GREEN}{OK} Returned totals match: {sum_excel_returned}{RESET}")
+        pass
+
 
 edd_flags = []
 
