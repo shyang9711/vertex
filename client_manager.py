@@ -22,7 +22,7 @@ _PARENT = _BASE.parent
 if str(_PARENT) not in sys.path:
     sys.path.insert(0, str(_PARENT))
 
-import os, sys, json, re, webbrowser, subprocess, datetime, urllib.request, urllib.error, ssl, urllib.parse
+import os, sys, json, re, hashlib, webbrowser, subprocess, datetime, urllib.request, urllib.error, ssl, urllib.parse
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import date, datetime
@@ -38,7 +38,7 @@ UPDATE_POLICY_ASSET_NAME = "update_policy.json"
 
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.79"
+APP_VERSION = "0.1.80"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
@@ -191,6 +191,7 @@ DATA_DIR  = CLIENTS_DIR
 DATA_FILE = CLIENTS_DIR / "clients.json"
 
 ACCOUNT_MANAGERS_FILE = CLIENTS_DIR / "account_managers.json"
+PERSONNEL_FILE        = CLIENTS_DIR / "personnel.json"
 TASKS_FILE            = TASKS_DIR / "tasks.json"
 MONTHLY_STATE_FILE    = MONTHLY_DATA_DIR / "monthly_state.json"
 COMPANY_LIST_FILE     = MATCH_RULES_DIR / "company_list.json"
@@ -228,6 +229,22 @@ def normalize_logs(logs):
         else:
             out.append({"ts":"", "user":"", "text":str(x), "done": False})
     return out
+
+_AM_WS_RE = re.compile(r"\s+")
+
+def _account_manager_key(am: dict) -> str:
+    """Stable, case-insensitive key for deduping account managers."""
+    if not isinstance(am, dict):
+        am = {"name": str(am)}
+    name  = _AM_WS_RE.sub(" ", str(am.get("name", "") or "").strip()).casefold()
+    email = str(am.get("email", "") or "").strip().casefold()
+    phone = normalize_phone_digits(str(am.get("phone", "") or "").strip())
+    return f"{name}|{email}|{phone}"
+
+def _account_manager_id_from_key(key: str) -> str:
+    """Deterministic short id from key (so imports don't create duplicates)."""
+    h = hashlib.sha1((key or "").encode("utf-8", errors="ignore")).hexdigest()
+    return f"am_{h[:12]}"
 
 def tokenize(s: str) -> List[str]:
     if s is None: return []
@@ -300,6 +317,180 @@ def officers_to_flat_phones(officers: List[Dict[str,str]]) -> List[str]:
 
 def is_valid_person_payload(data):
     return isinstance(data, (tuple, list)) and len(data) == 3 and data[0] is not None
+
+# -------------------- Personnel (global people catalog) --------------------
+def _personnel_path(self) -> Path:
+    return PERSONNEL_FILE
+
+def _normalize_person(self, x: dict) -> dict:
+    """Normalize a person record and ensure it has a deterministic id."""
+    o = ensure_officer_dict(x)
+    key = (
+        f"{(o.get('first_name','') or '').strip().casefold()}|"
+        f"{(o.get('middle_name','') or '').strip().casefold()}|"
+        f"{(o.get('last_name','') or '').strip().casefold()}|"
+        f"{(o.get('nickname','') or '').strip().casefold()}|"
+        f"{(o.get('email','') or '').strip().casefold()}|"
+        f"{normalize_phone_digits(o.get('phone','') or '')}"
+    )
+    pid = str(x.get('id','') or '').strip()
+    if not pid:
+        pid = f"p_{hashlib.sha1(key.encode('utf-8', errors='ignore')).hexdigest()[:12]}"
+    o['id'] = pid
+    return o
+
+def _load_personnel(self) -> list[dict]:
+    path = self._personnel_path()
+    try:
+        data = _read_json_file(path, default=[])
+        if not isinstance(data, list):
+            return []
+        out = []
+        seen = set()
+        for x in data:
+            if not isinstance(x, dict):
+                continue
+            p = self._normalize_person(x)
+            if p['id'] in seen:
+                continue
+            seen.add(p['id'])
+            out.append(p)
+        return out
+    except Exception:
+        return []
+
+def _save_personnel(self, people: list[dict]) -> None:
+    path = self._personnel_path()
+    out = []
+    seen = set()
+    for x in (people or []):
+        if not isinstance(x, dict):
+            continue
+        p = self._normalize_person(x)
+        if p['id'] in seen:
+            continue
+        seen.add(p['id'])
+        out.append(p)
+    _write_json_file(path, out)
+
+def get_personnel_catalog(self) -> list[dict]:
+    return list(self.personnel or [])
+
+def upsert_person(self, person_dict: dict) -> dict:
+    p = self._normalize_person(person_dict or {})
+    people = list(self.personnel or [])
+    idx = next((i for i, q in enumerate(people) if str(q.get('id','')) == p['id']), None)
+    if idx is None:
+        people.append(p)
+    else:
+        people[idx] = p
+    self.personnel = people
+    self._save_personnel(self.personnel)
+    return p
+
+def delete_person(self, person_id: str) -> bool:
+    pid = str(person_id or '').strip()
+    if not pid:
+        return False
+    before = len(self.personnel or [])
+    self.personnel = [p for p in (self.personnel or []) if str(p.get('id','')) != pid]
+    changed = False
+    for c in (self.items or []):
+        if not isinstance(c, dict):
+            continue
+        lst = c.get('personnel', [])
+        if isinstance(lst, list):
+            new_lst = [lnk for lnk in lst if str((lnk or {}).get('person_id','')) != pid]
+            if len(new_lst) != len(lst):
+                c['personnel'] = new_lst
+                changed = True
+    if changed:
+        save_clients(self.items)
+    self._save_personnel(self.personnel)
+    return len(self.personnel) != before
+
+def _migrate_company_personnel_in_place(self, company: dict) -> bool:
+    """Convert legacy embedded officers/employees into company['personnel'] links."""
+    if not isinstance(company, dict):
+        return False
+    if isinstance(company.get('personnel'), list):
+        return False  # already new schema
+
+    links = []
+    changed = False
+
+    def _add_links(role_key: str, people_list):
+        nonlocal changed
+        for x in (people_list or []):
+            if not isinstance(x, dict):
+                x = {'name': str(x)}
+            p = self.upsert_person(x)
+            links.append({'role': 'Officer' if role_key == 'officers' else 'Employee', 'person_id': p['id']})
+            changed = True
+
+    _add_links('officers', company.get('officers', []))
+    _add_links('employees', company.get('employees', []))
+
+    if changed:
+        company['personnel'] = links
+    return changed
+
+def link_person_to_company(self, company: dict, person_id: str, role: str) -> bool:
+    if not isinstance(company, dict):
+        return False
+    pid = str(person_id or '').strip()
+    if not pid:
+        return False
+    role = 'Officer' if (role or '').lower().startswith('off') else 'Employee'
+    lst = company.get('personnel')
+    if not isinstance(lst, list):
+        company['personnel'] = []
+        lst = company['personnel']
+    for lnk in lst:
+        if str((lnk or {}).get('person_id','')) == pid and str((lnk or {}).get('role','')) == role:
+            return False
+    lst.append({'role': role, 'person_id': pid})
+    save_clients(self.items)
+    return True
+
+def unlink_company_personnel_link(self, company: dict, link_index: int) -> bool:
+    if not isinstance(company, dict):
+        return False
+    lst = company.get('personnel')
+    if not isinstance(lst, list):
+        return False
+    if link_index < 0 or link_index >= len(lst):
+        return False
+    lst.pop(link_index)
+    save_clients(self.items)
+    return True
+
+def company_personnel_rows(self, company: dict) -> list[dict]:
+    """Return rows for UI: [{link_index, role, person_id, first,last,email,phone}]"""
+    if not isinstance(company, dict):
+        return []
+    if not isinstance(company.get('personnel'), list):
+        self._migrate_company_personnel_in_place(company)
+    links = company.get('personnel', []) if isinstance(company.get('personnel'), list) else []
+    people_by_id = {str(p.get('id','')): p for p in (self.personnel or []) if isinstance(p, dict)}
+    rows = []
+    for i, lnk in enumerate(links):
+        if not isinstance(lnk, dict):
+            continue
+        pid = str(lnk.get('person_id','') or '').strip()
+        role = str(lnk.get('role','') or '').strip() or 'Employee'
+        p = people_by_id.get(pid, {})
+        rows.append({
+            'link_index': i,
+            'role': role,
+            'person_id': pid,
+            'first_name': str(p.get('first_name','') or ''),
+            'last_name': str(p.get('last_name','') or ''),
+            'email': str(p.get('email','') or ''),
+            'phone': str(p.get('phone','') or ''),
+        })
+    return rows
+
 
 # ---- Quarter / Tax helpers ---------------------------------------------------
 def today_date() -> datetime.date:
@@ -695,27 +886,60 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
         if nm and nm not in name_to_idx:
             name_to_idx[nm] = idx
 
-    # --- import account managers (no overwrite by id) ---
+    # --- import account managers (dedupe by (name/email/phone) + normalize to deterministic ids) ---
     am_added = 0
     if isinstance(data.get("account_managers"), list):
         existing_ams = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
         if not isinstance(existing_ams, list):
             existing_ams = []
-        existing_am_ids = {str(x.get("id", "")).strip() for x in existing_ams if isinstance(x, dict)}
+
+        # Normalize existing first (adds ids + dedupes)
+        norm_existing = []
+        seen_keys = set()
+        for x in existing_ams:
+            if not isinstance(x, dict):
+                x = {"name": str(x)}
+            key = _account_manager_key(x)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            amid = str(x.get("id", "") or "").strip()
+            if not amid:
+                amid = _account_manager_id_from_key(key)
+            norm_existing.append({
+                "id": amid,
+                "name": str(x.get("name", "") or "").strip(),
+                "email": str(x.get("email", "") or "").strip(),
+                "phone": str(x.get("phone", "") or "").strip(),
+            })
+
+        existing_ams = norm_existing
+        existing_keys = { _account_manager_key(x) for x in existing_ams if isinstance(x, dict) }
 
         for am in data["account_managers"]:
             if not isinstance(am, dict):
                 continue
-            amid = str(am.get("id", "")).strip()
-            if amid and amid in existing_am_ids:
+
+            key = _account_manager_key(am)
+            if key in existing_keys:
                 continue
-            existing_ams.append(am)
+
+            amid = str(am.get("id", "") or "").strip()
+            if not amid:
+                amid = _account_manager_id_from_key(key)
+
+            existing_ams.append({
+                "id": amid,
+                "name": str(am.get("name", "") or "").strip(),
+                "email": str(am.get("email", "") or "").strip(),
+                "phone": str(am.get("phone", "") or "").strip(),
+            })
+            existing_keys.add(key)
             am_added += 1
-            if amid:
-                existing_am_ids.add(amid)
 
         ACCOUNT_MANAGERS_FILE.parent.mkdir(parents=True, exist_ok=True)
         ACCOUNT_MANAGERS_FILE.write_text(json.dumps(existing_ams, indent=2, ensure_ascii=False), encoding="utf-8")
+
 
     # --- import monthly_state (safe: write if file missing; else keep existing) ---
     if isinstance(data.get("monthly_state"), dict):
@@ -1318,6 +1542,21 @@ class App(ttk.Frame):
         self.get_account_managers = _get_acct_mgrs
         self.set_account_managers = _set_acct_mgrs
 
+        # --- Personnel catalog (global people) ---
+        self.personnel = self._load_personnel()
+        # Migrate legacy embedded officers/employees into company['personnel'] links
+        try:
+            any_changed = False
+            for c in (self.items or []):
+                if isinstance(c, dict):
+                    if self._migrate_company_personnel_in_place(c):
+                        any_changed = True
+            if any_changed:
+                save_clients(self.items)
+                self._save_personnel(self.personnel)
+        except Exception:
+            pass
+
         def _open_prefs():
             # If you already have a Preferences dialog, call it here.
             # Otherwise, the TaskbarModel can show its default prefs dialog.
@@ -1594,22 +1833,41 @@ class App(ttk.Frame):
 
     def _normalize_acct_mgr_list(self, items):
         """
-        Ensure list of dicts with keys: name, email, phone.
+        Ensure list of dicts with keys: id, name, email, phone.
         Accepts list[str] or list[dict].
+
+        - id is deterministic (derived from name/email/phone) so imports/exports won't duplicate.
+        - Dedupes case-insensitively by (name,email,phone).
         """
         out = []
+        seen_keys = set()
+
         for x in (items or []):
             if isinstance(x, dict):
-                out.append({
-                    "name":  str(x.get("name","")).strip(),
-                    "email": str(x.get("email","")).strip(),
-                    "phone": str(x.get("phone","")).strip(),
-                })
+                am = {
+                    "id":    str(x.get("id", "") or "").strip(),
+                    "name":  str(x.get("name", "") or "").strip(),
+                    "email": str(x.get("email", "") or "").strip(),
+                    "phone": str(x.get("phone", "") or "").strip(),
+                }
             else:
                 s = str(x).strip()
-                if s:
-                    out.append({"name": s, "email": "", "phone": ""})
+                if not s:
+                    continue
+                am = {"id": "", "name": s, "email": "", "phone": ""}
+
+            key = _account_manager_key(am)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+            if not am["id"]:
+                am["id"] = _account_manager_id_from_key(key)
+
+            out.append(am)
+
         return out
+
 
     def _load_account_managers(self):
         """Load from clients/account_managers.json; return [] if missing/error."""
@@ -2034,6 +2292,12 @@ class App(ttk.Frame):
         self.log.info("Importing data from %s", path)
 
         stats = import_all_from_json(path, self.items)
+
+        # Reload account managers immediately so dropdowns reflect imports
+        try:
+            self.account_managers = self._load_account_managers()
+        except Exception:
+            pass
 
         # Refresh dashboard tasks immediately (no restart needed)
         try:
