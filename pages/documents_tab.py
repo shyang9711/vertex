@@ -115,7 +115,7 @@ def _is_allowed(path: str) -> bool:
 
 def _clients_root() -> str:
     """
-    Try to anchor at the same folder that holds clients.json / company_list.json.
+    Try to anchor at the same folder that holds clients.json / client_list.json.
     We now prefer .../functions/data/clients, but keep fallbacks.
     """
     guesses = [
@@ -129,7 +129,7 @@ def _clients_root() -> str:
 
         # Prefer new data/clients structure
         for base in (data_dir, legacy_dir):
-            for fname in ("clients.json", "company_list.json"):
+            for fname in ("clients.json", "client_list.json"):
                 p = base / fname
                 if p.exists():
                     return str(base)
@@ -139,7 +139,7 @@ def _clients_root() -> str:
     return str(Path.home() / "Documents" / "LineUpDocs" / "clients")
 
 
-def _company_dir(c: dict) -> str:
+def _client_dir(c: dict) -> str:
     nm = (c.get("name") or "Client").strip()
     ein = (c.get("ein") or "").strip().replace("-", "")
     safe = re.sub(r"[^\w\-\.\s]", "_", nm).strip().replace(" ", "_")
@@ -149,7 +149,7 @@ def _company_dir(c: dict) -> str:
     return base
 
 def _year_dir(c: dict, year: int) -> str:
-    base = _company_dir(c)
+    base = _client_dir(c)
     ydir = os.path.join(base, f"{year:04d}")
     os.makedirs(ydir, exist_ok=True)
     return ydir

@@ -48,11 +48,11 @@ def _parse_dt(val: Any) -> datetime:
 class NotePage:
     """
     Global Notes page.
-    Shows ALL company logs across all companies.
+    Shows ALL client logs across all companies.
     Newest first.
     Double-click:
       - on ✓ column: toggle done
-      - elsewhere: open company and focus Logs tab
+      - elsewhere: open client and focus Logs tab
     """
 
     def __init__(self, app):
@@ -60,7 +60,7 @@ class NotePage:
         self.page = None
         self.tree = None
 
-        self._iid_to_row: Dict[str, Tuple[int, int]] = {}  # iid -> (company_idx, log_idx)
+        self._iid_to_row: Dict[str, Tuple[int, int]] = {}  # iid -> (client_idx, log_idx)
 
         self.q = tk.StringVar()
         self.mgr = tk.StringVar(value="All")
@@ -97,19 +97,19 @@ class NotePage:
         self.cmb_done.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
 
         # Tree (NO user column)
-        cols = ("done", "date", "company", "manager", "note")
+        cols = ("done", "date", "client", "manager", "note")
         self.tree = ttk.Treeview(self.page, columns=cols, show="headings", height=22)
         self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
         self.tree.heading("done", text="✓")
         self.tree.heading("date", text="Date")
-        self.tree.heading("company", text="Company")
+        self.tree.heading("client", text="Company")
         self.tree.heading("manager", text="Manager")
         self.tree.heading("note", text="Note")
 
         self.tree.column("done", width=44, anchor="center", stretch=False)
         self.tree.column("date", width=170, anchor="w", stretch=False)
-        self.tree.column("company", width=260, anchor="w", stretch=True)
+        self.tree.column("client", width=260, anchor="w", stretch=True)
         self.tree.column("manager", width=140, anchor="w", stretch=False)
         self.tree.column("note", width=900, anchor="w", stretch=True)
 
@@ -138,17 +138,17 @@ class NotePage:
 
     def _flatten_logs(self):
         rows = []
-        for company_idx, c in enumerate(getattr(self.app, "items", []) or []):
+        for client_idx, c in enumerate(getattr(self.app, "items", []) or []):
             cname = c.get("name", "")
             mgr = c.get("acct_mgr", "")
             for log_idx, lg in enumerate(c.get("logs", []) or []):
                 ts = str(lg.get("ts", "")).strip()
                 rows.append({
-                    "company_idx": company_idx,
+                    "client_idx": client_idx,
                     "log_idx": log_idx,
                     "date": ts,
                     "_dt": self._parse_ts(ts),
-                    "company": cname,
+                    "client": cname,
                     "manager": mgr,
                     "text": lg.get("text", ""),
                     "done": bool(lg.get("done")),
@@ -195,7 +195,7 @@ class NotePage:
 
             if q_norm:
                 hay = " ".join([
-                    norm_text(r["company"]),
+                    norm_text(r["client"]),
                     norm_text(r["manager"]),
                     norm_text(r["text"]),
                     norm_text(r["date"]),
@@ -210,12 +210,12 @@ class NotePage:
                 values=(
                     "✓" if r["done"] else "",
                     r["date"],
-                    r["company"],
+                    r["client"],
                     r["manager"],
                     r["text"],
                 ),
             )
-            self._iid_to_row[iid] = (r["company_idx"], r["log_idx"])
+            self._iid_to_row[iid] = (r["client_idx"], r["log_idx"])
 
     def _on_double_click(self, e):
         if not self.tree:
@@ -234,10 +234,10 @@ class NotePage:
         row = self._iid_to_row.get(iid)
         if not row:
             return
-        company_idx, log_idx = row
+        client_idx, log_idx = row
 
         try:
-            lg = self.app.items[company_idx]["logs"][log_idx]
+            lg = self.app.items[client_idx]["logs"][log_idx]
         except Exception:
             return
 
@@ -256,10 +256,10 @@ class NotePage:
         row = self._iid_to_row.get(iid)
         if not row:
             return
-        company_idx, _log_idx = row
+        client_idx, _log_idx = row
 
         # IMPORTANT: positional arg for data (your navigate() expects data, not idx=)
-        self.app.navigate("detail", company_idx, push=True)
+        self.app.navigate("detail", client_idx, push=True)
 
         # try to focus Logs tab if available
         if hasattr(self.app, "select_detail_tab"):

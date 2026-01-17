@@ -15,7 +15,7 @@ except ModuleNotFoundError:
 
 class TaskbarModel:
     """
-    Menubar: [File] [Edit] [Company] [Action]
+    Menubar: [File] [Edit] [Client] [Action]
       - Action → Client Actions… (opens in-app Actions page)
     """
 
@@ -24,7 +24,7 @@ class TaskbarModel:
         root: tk.Tk,
         *,
         on_exit=None,
-        on_new_company=None,
+        on_new_client=None,
         get_account_managers=None,
         set_account_managers=None,
         on_open_preferences=None,
@@ -33,12 +33,13 @@ class TaskbarModel:
         on_save_data=None,
         on_import_data=None,
         on_export_data=None,
+        on_update_data=None,
         on_check_updates=None,
         on_about=None,
     ):
         self.root = root
         self.on_exit = on_exit or (lambda: root.destroy())
-        self.on_new_company = on_new_company or (lambda: None)
+        self.on_new_client = on_new_client or (lambda: None)
         self.get_account_managers = get_account_managers or (lambda: [])
         self.set_account_managers = set_account_managers or (lambda _lst: None)
         self.on_open_preferences = on_open_preferences or (lambda: self._default_prefs_dialog())
@@ -55,6 +56,7 @@ class TaskbarModel:
         self.on_save_data = on_save_data or (lambda: None)
         self.on_import_data = on_import_data or (lambda: None)
         self.on_export_data = on_export_data or (lambda: None)
+        self.on_update_data = on_update_data or (lambda: None)
         
         self.log = get_logger("taskbar")
         self._menu = tk.Menu(root)
@@ -64,7 +66,7 @@ class TaskbarModel:
         is_macos = (root.tk.call("tk", "windowingsystem") == "aqua")
         mod = "Command" if is_macos else "Control"
         root.bind_all(f"<{mod}-q>", lambda e: self._do_exit())
-        root.bind_all(f"<{mod}-n>", lambda e: self._do_new_company())
+        root.bind_all(f"<{mod}-n>", lambda e: self._do_new_client())
         root.bind_all(f"<{mod}-comma>", lambda e: self._do_preferences())
         root.bind_all(f"<{mod}-s>", lambda e: self._do_save_data())
 
@@ -78,6 +80,7 @@ class TaskbarModel:
         )
         m_file.add_command(label="Import Data...", command=self._do_import_data)
         m_file.add_command(label="Export Data...", command=self._do_export_data)
+        m_file.add_command(label="Update Data...", command=self._do_update_data)
         m_file.add_separator()
         m_file.add_command(
             label="Exit",
@@ -95,11 +98,11 @@ class TaskbarModel:
                            accelerator="Ctrl+," if self._accel_ctrl() else "⌘,")
         self._menu.add_cascade(label="Edit", menu=m_edit)
 
-        # Company
+        # Client
         m_comp = tk.Menu(self._menu, tearoff=False)
-        m_comp.add_command(label="New Company", command=self._do_new_company,
+        m_comp.add_command(label="New Client", command=self._do_new_client,
                            accelerator="Ctrl+N" if self._accel_ctrl() else "⌘N")
-        self._menu.add_cascade(label="Company", menu=m_comp)
+        self._menu.add_cascade(label="Client", menu=m_comp)
 
         # Action
         m_action = tk.Menu(self._menu, tearoff=False)
@@ -118,7 +121,7 @@ class TaskbarModel:
 
     # --- handlers
     def _do_exit(self): self.on_exit()
-    def _do_new_company(self): self.on_new_company()
+    def _do_new_client(self): self.on_new_client()
     def _do_preferences(self):
         self.log.info("Preferences opened")
         self.on_open_preferences()
@@ -140,7 +143,11 @@ class TaskbarModel:
     def _do_export_data(self):
         self.log.info("Export Data triggered from menu")
         self.on_export_data()
-        
+
+    def _do_update_data(self):
+        self.log.info("Export Data triggered from menu")
+        self.on_update_data()
+
     def _do_check_updates(self):
         self.log.info("Check for updates triggered from menu")
         self.on_check_updates()

@@ -212,8 +212,8 @@ class DashboardPage:
 
         ttk.Button(
             nav,
-            text="Company List",
-            command=self._open_company_list,
+            text="Client List",
+            command=self._open_client_list,
             style="Accent.TButton"
         ).pack(side="left", padx=(0, 8))
 
@@ -247,12 +247,12 @@ class DashboardPage:
         # ttk.Label(left, text=f"Companies: {total}").pack(anchor="w", pady=(10,0))
         # ttk.Label(left, text=f"With Emails: {has_email}", style="Subtle.TLabel").pack(anchor="w")
 
-        # ---- Unchecked logs by company (only show companies with count > 0)
+        # ---- Unchecked logs by client (only show companies with count > 0)
         pending = []
         for c in items:
             if not isinstance(c, dict):
                 continue
-            cnt = self._count_unchecked_logs_for_company(c)
+            cnt = self._count_unchecked_logs_for_client(c)
             if cnt > 0:
                 pending.append(((c.get("name") or "").strip(), cnt))
 
@@ -304,15 +304,15 @@ class DashboardPage:
             self._refresh_todo_feed()
         ttk.Checkbutton(top_row, text="Show past", variable=self._show_past_var, command=_flip_past).grid(row=1, column=1, sticky="e")
 
-        cols = ("mark", "kind", "company", "date")
+        cols = ("mark", "kind", "client", "date")
         self.todo_tv = ttk.Treeview(mid, columns=cols, show="headings", selectmode="browse", height=14, style="Modern.Treeview")
         self.todo_tv.column("mark", width=16, minwidth=16, stretch=False, anchor="center")
         self.todo_tv.column("kind", width=20, minwidth=20, stretch=True, anchor="center")
-        self.todo_tv.column("company", width=20, minwidth=20, stretch=True, anchor="center")
+        self.todo_tv.column("client", width=20, minwidth=20, stretch=True, anchor="center")
         self.todo_tv.column("date", width=20, minwidth=20, stretch=True, anchor="center")
         self.todo_tv.heading("mark", text="", anchor="center")
         self.todo_tv.heading("kind",    text="Type",    command=lambda: self._on_sort_click("kind"))
-        self.todo_tv.heading("company", text="Company", command=lambda: self._on_sort_click("company"))
+        self.todo_tv.heading("client", text="client", command=lambda: self._on_sort_click("client"))
         self.todo_tv.heading("date",    text="Date",    command=lambda: self._on_sort_click("date"))
         self.todo_tv.grid(row=1, column=0, sticky="nsew")
         ysb = ttk.Scrollbar(mid, orient="vertical", command=self.todo_tv.yview)
@@ -321,7 +321,7 @@ class DashboardPage:
 
         # interactions
         self.todo_tv.bind("<Button-1>", self._todo_click)
-        self.todo_tv.bind("<Double-1>", self._todo_open_company)
+        self.todo_tv.bind("<Double-1>", self._todo_open_client)
         self.todo_tv.bind("<Button-3>", self._todo_show_context_menu)
 
         # ---- Right card: Calendar
@@ -407,12 +407,13 @@ class DashboardPage:
             if not t.get("is_enabled", True):
                 continue
             kind = t.get("kind", "")
-            company = t.get("company_name") or self._company_name(t.get("company_idx")) or ""
+            idx, nm = self._task_client_ref(t)
+            client = nm or self._client_name(idx) or ""
             for orig, disp, is_done in occurs_between(t, window_start, today - _dt.timedelta(days=1)):
                 if window_start <= disp <= window_end:
                     key = (i, orig.isoformat())
                     if key not in seen:
-                        rows.append((disp, is_done, i, kind, company, orig))
+                        rows.append((disp, is_done, i, kind, client, orig))
                         seen.add(key)
 
         # ---- FUTURE (today .. window_end)
@@ -420,11 +421,12 @@ class DashboardPage:
             if not t.get("is_enabled", True):
                 continue
             kind = t.get("kind", "")
-            company = t.get("company_name") or self._company_name(t.get("company_idx")) or ""
+            idx, nm = self._task_client_ref(t)
+            client = nm or self._client_name(idx) or ""
             futures = []
             for orig, disp, is_done in occurs_between(t, today, window_end):
                 if today <= disp <= window_end:
-                    futures.append((disp, is_done, i, kind, company, orig))
+                    futures.append((disp, is_done, i, kind, client, orig))
             if not futures:
                 continue
             futures.sort(key=lambda x: x[0])
@@ -433,14 +435,14 @@ class DashboardPage:
             for item in (first, next((f for f in futures[1:] if f[1] is False), None)):
                 if item is None:
                     continue
-                disp, is_done, i_task, kind, company, orig = item
+                disp, is_done, i_task, kind, client, orig = item
                 key = (i_task, orig.isoformat())
                 if key not in seen:
                     rows.append(item)
                     seen.add(key)
         
         def _row_sort_key_date(item):
-            disp, is_done, i_task, kind, company, _orig = item
+            disp, is_done, i_task, kind, client, _orig = item
             task = self.store.tasks[i_task]
             method = (task.get("method") or "").lower()
             lead_flag = int(task.get("action_lead_days", 0) or 0) > 0
@@ -456,7 +458,7 @@ class DashboardPage:
                 date_ord,
                 done_rank,
                 submission_first,
-                (company or "").casefold(),
+                (client or "").casefold(),
                 (kind or "").casefold(),
             )
 
@@ -471,14 +473,14 @@ class DashboardPage:
                                      (r[4] or "").casefold(),
                                      r[0].toordinal()))
             if not asc: rows.reverse()
-        elif key == "company":
+        elif key == "client":
             rows.sort(key=lambda r: ((r[4] or "").casefold(),
                                      (r[3] or "").casefold(),
                                      r[0].toordinal()))
             if not asc: rows.reverse()
 
 
-        for disp, is_done, i_task, kind, company, orig in rows:
+        for disp, is_done, i_task, kind, client, orig in rows:
             task = self.store.tasks[i_task]
             canc = set(task.get("cancelled", []) or [])
             is_cancelled = (orig.isoformat() in canc) or (disp.isoformat() in canc)
@@ -489,7 +491,7 @@ class DashboardPage:
             else:
                 mark = "v" if is_done else "ㅁ"
 
-            iid = tv.insert("", "end", values=(mark, kind, company, disp.isoformat()))
+            iid = tv.insert("", "end", values=(mark, kind, client, disp.isoformat()))
             self._todo_rows[iid] = (i_task, orig)
 
             # base semantic tags
@@ -560,12 +562,12 @@ class DashboardPage:
             tv.focus(row)
             return
 
-    def _todo_open_company(self, _e=None):
+    def _todo_open_client(self, _e=None):
         tv = self.todo_tv
         sel = tv.selection()
         if not sel: return
         i_task, _d = self._todo_rows[sel[0]]
-        self._navigate_company(self.store.tasks[i_task])
+        self._navigate_client(self.store.tasks[i_task])
 
     def _toggle_done_for_date(self, task, date_obj: _dt.date):
         self.store.toggle_done_for_date(task, date_obj)
@@ -587,44 +589,46 @@ class DashboardPage:
         if not tv or not tv.winfo_exists():
             return
         arrow = "▲" if getattr(self, "_sort_asc", True) else "▼"
-        labels = {"mark":"", "kind":"Type", "company":"Company", "date":"Date"}
-        for c in ("mark","kind","company","date"):
+        labels = {"mark":"", "kind":"Type", "client":"Client", "date":"Date"}
+        for c in ("mark","kind","client","date"):
             text = labels[c]
             if c == getattr(self, "_sort_col", "date") and text:
                 text = f"{text} {arrow}"
             # keep commands wired for the sortable ones
             if c == "kind":
                 tv.heading(c, text=text, command=lambda cc="kind": self._on_sort_click(cc))
-            elif c == "company":
-                tv.heading(c, text=text, command=lambda cc="company": self._on_sort_click(cc))
+            elif c == "client":
+                tv.heading(c, text=text, command=lambda cc="client": self._on_sort_click(cc))
             elif c == "date":
                 tv.heading(c, text=text, command=lambda cc="date": self._on_sort_click(cc))
             else:
                 tv.heading(c, text=text)
 
+    def _navigate_client(self, task):
+        items = getattr(self.app, "items", []) or []
 
-    def _navigate_company(self, task):
-        items = getattr(self.app, "items", [])
-        idx = task.get("company_idx")
-        if idx is None:
-            name = task.get("company_name")
-            if name:
-                try:
-                    idx = next(i for i, c in enumerate(items) if c.get("name") == name)
-                except StopIteration:
-                    idx = None
-        if idx is not None and 0 <= idx < len(items):
+        idx, name = self._task_client_ref(task)
+
+        # If idx missing but name exists, try locate by name
+        if idx is None and name:
+            try:
+                idx = next(i for i, c in enumerate(items) if (c.get("name") or "").strip() == name)
+            except StopIteration:
+                idx = None
+
+        # If idx exists but name doesn’t match anymore, still trust idx
+        if isinstance(idx, int) and 0 <= idx < len(items):
             try:
                 self.app.navigate("detail", idx, push=True)
             except Exception as e:
-                LOG.exception("Failed navigating to company for task %s: %s", task.get("title"), e)
+                LOG.exception("Failed navigating to client for task %s: %s", task.get("title"), e)
                 self.app.navigate("detail", idx)
         else:
-            messagebox.showinfo("Open Company", "No linked company found for this task.")
+            messagebox.showinfo("Open Client", "No linked client found for this task.")
 
-            # still in class DashboardPage, add this helper anywhere among the other methods
 
-    def _open_company_list(self):
+
+    def _open_client_list(self):
         # Clear any prior query so the full list shows (harmless if q doesn’t exist)
         try:
             if hasattr(self.app, "q"):
@@ -925,18 +929,18 @@ class DashboardPage:
             ttk.Button(frm, text="Close", command=d.destroy).pack(pady=(8,0), anchor="e")
             d.grab_set(); self.app.wait_window(d); return
     
-        # ✅ sort: submission first, then A→Z (company → type → title)
+        # ✅ sort: submission first, then A→Z (client → type → title)
         today = _dt.date.today()
     
-        def _company_of(t):
-            return t.get("company_name") or self._company_name(t.get("company_idx")) or ""
+        def _client_of(t):
+            return t.get("client_name") or self._client_name(t.get("client_idx")) or ""
     
         def _is_done(t, orig_date):
             return (orig_date.isoformat() in (t.get("completed", []) or []))
     
         def _day_sort_key(pair):
             t, orig_date = pair
-            company_name = _company_of(t)
+            client_name = _client_of(t)
             is_done_now  = _is_done(t, orig_date)
 
             tags = calc_tags_for_occurrence(t, display_date, is_done_now, today)
@@ -952,7 +956,7 @@ class DashboardPage:
                 0 if not is_done_now else 1,  # pending before done
                 submission_first,             # among pending: submission first
                 neg_date,                     # NEW: future → past within group
-                company_name.casefold(),
+                client_name.casefold(),
                 (t.get("kind") or "").casefold(),
                 (t.get("title") or "").casefold(),
             )
@@ -960,7 +964,8 @@ class DashboardPage:
         items = sorted(items, key=_day_sort_key)
     
         for (t, orig_date) in items:
-            company = t.get("company_name") or self._company_name(t.get("company_idx")) or ""
+            idx, nm = self._task_client_ref(t)
+            client = nm or self._client_name(idx) or ""
             row = ttk.Frame(frm); row.pack(fill="x", pady=2)
 
             comp = set(t.get("completed", []) or [])
@@ -973,7 +978,7 @@ class DashboardPage:
             v_cancel = tk.BooleanVar(value=is_cancelled)
 
             # Label with strikethrough when cancelled
-            lbl = ttk.Label(row, text=f"{t.get('title','')} ({t.get('kind','')}) — {company}  [actual: {orig_date.isoformat()}]")
+            lbl = ttk.Label(row, text=f"{t.get('title','')} ({t.get('kind','')}) — {client}  [actual: {orig_date.isoformat()}]")
 
             def _refresh_label():
                 strike = getattr(self, "_strike_font", None)
@@ -1207,7 +1212,7 @@ class DashboardPage:
         _title_locked = {"value": False}
 
         v_kind = tk.StringVar(value=(init.get("kind","payroll") or "other").upper())
-        v_company_name = tk.StringVar(value= init.get("company_name") or (self._company_name(init.get("company_idx")) or ""))
+        v_client_name = tk.StringVar(value= init.get("client_name") or (self._client_name(init.get("client_idx")) or ""))
         rec = init.get("recurrence", {"freq":"one-off"})
 
         _original_task_id   = init.get("id", "")
@@ -1239,7 +1244,7 @@ class DashboardPage:
 
         def _current_auto_title():
             kind = (v_kind.get() or "").strip().upper()
-            comp = (v_company_name.get() or "").strip().upper()
+            comp = (v_client_name.get() or "").strip().upper()
             if (v_mode.get() or "one-off") == "one-off":
                 mmdd = ""
                 s = (v_due.get() or "").strip()
@@ -1281,7 +1286,7 @@ class DashboardPage:
         else:
             v_title.set(_current_auto_title())
 
-        for var in (v_kind, v_freq, v_company_name):
+        for var in (v_kind, v_freq, v_client_name):
             var.trace_add("write", _maybe_set_auto_title)
         v_mode.trace_add("write", _trace_mode)
         v_due.trace_add("write", _trace_mode)
@@ -1302,10 +1307,10 @@ class DashboardPage:
         ttk.Label(frm, text="Notify days").grid(row=1, column=3, sticky="e", pady=(4,0))
         ttk.Entry(frm, textvariable=v_notify, width=6).grid(row=1, column=4, sticky="w", padx=(6,0), pady=(4,0))
 
-        # Company (autocomplete)
-        ttk.Label(frm, text="Company").grid(row=2, column=0, sticky="w", pady=(6,0))
+        # client (autocomplete)
+        ttk.Label(frm, text="client").grid(row=2, column=0, sticky="w", pady=(6,0))
         names = [c.get("name","") for c in getattr(self.app, "items", [])]
-        AutoCompleteCombobox(frm, textvariable=v_company_name, values=names, width=48).grid(row=2, column=1, columnspan=4, sticky="we", padx=(6,0), pady=(6,0))
+        AutoCompleteCombobox(frm, textvariable=v_client_name, values=names, width=48).grid(row=2, column=1, columnspan=4, sticky="we", padx=(6,0), pady=(6,0))
 
         ttk.Separator(frm).grid(row=3, column=0, columnspan=5, sticky="we", pady=10)
 
@@ -1428,8 +1433,8 @@ class DashboardPage:
             if not title_txt:
                 messagebox.showerror("Validation", "Title is required"); return
             kind = (v_kind.get() or "other").strip().upper()
-            company_name = v_company_name.get().strip() or None
-            company_idx = next((i for i,c in enumerate(getattr(self.app, "items", [])) if c.get("name") == company_name), None)
+            client_name = v_client_name.get().strip() or None
+            client_idx = next((i for i,c in enumerate(getattr(self.app, "items", [])) if c.get("name") == client_name), None)
             method = v_method.get(); action_lead = int(v_action_lead.get())
             if method in ("mail","direct_deposit"): action_lead = max(action_lead, 2)
             if v_mode.get() == "one-off":
@@ -1515,8 +1520,8 @@ class DashboardPage:
                 "title": title_txt,
                 "kind": kind,
                 "category": init.get("category", "other"),
-                "company_idx": company_idx,
-                "company_name": company_name,
+                "client_idx": client_idx,
+                "client_name": client_name,
                 "start_on": start_on or "",
                 "recurrence": rec_,
                 "due": due,
@@ -1545,28 +1550,48 @@ class DashboardPage:
         return out if out else None
 
     # -------------- helpers --------------
-    def _company_name(self, idx):
+    def _client_name(self, idx):
         items = getattr(self.app, "items", [])
         if isinstance(idx, int) and 0 <= idx < len(items):
             return items[idx].get("name")
         return None
     
-    def _count_unchecked_logs_for_company(self, company: dict) -> int:
+    def _task_client_ref(self, task: dict):
+        """
+        Backward compatible client reference for tasks:
+          - Prefer client_idx/client_name
+          - Fallback to company_idx/company_name
+        Returns: (idx, name)
+        """
+        if not isinstance(task, dict):
+            return (None, "")
+
+        idx = task.get("client_idx", None)
+        name = task.get("client_name", None)
+
+        if idx is None:
+            idx = task.get("company_idx", None)
+        if not name:
+            name = task.get("company_name", None)
+
+        return (idx, (name or "").strip())
+
+    def _count_unchecked_logs_for_client(self, client: dict) -> int:
         """
         Best-effort counter for 'unchecked logs' across a few common shapes.
 
         Supports:
-        - company["logs"] = [{"checked": bool}, {"done": bool}, {"is_done": bool}, ...]
-        - company["logs"] = {"items": [...]}
-        - company["checklist_logs"] / ["log_items"] / ["activity_logs"] etc.
+        - client["logs"] = [{"checked": bool}, {"done": bool}, {"is_done": bool}, ...]
+        - client["logs"] = {"items": [...]}
+        - client["checklist_logs"] / ["log_items"] / ["activity_logs"] etc.
         """
-        if not isinstance(company, dict):
+        if not isinstance(client, dict):
             return 0
 
         # Try several likely keys
         candidates = []
         for k in ("logs", "checklist_logs", "log_items", "activity_logs", "log"):
-            v = company.get(k)
+            v = client.get(k)
             if v is None:
                 continue
             candidates.append(v)

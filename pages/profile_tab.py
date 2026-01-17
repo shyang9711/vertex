@@ -470,8 +470,11 @@ def init_profile_tab(
             for t in dash.store.tasks:
                 if not t.get("is_enabled", True):
                     continue
-                if (idx is not None and t.get("company_idx") == idx) or \
-                ((t.get("company_name") or "").strip().lower() == name_key):
+                
+                task_idx  = t.get("client_idx", t.get("company_idx"))
+                task_name = (t.get("client_name") or t.get("company_name") or "").strip().lower()
+
+                if (idx is not None and task_idx == idx) or (task_name == name_key):
                     out.append(t)
         return out
 

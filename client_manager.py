@@ -191,10 +191,9 @@ DATA_DIR  = CLIENTS_DIR
 DATA_FILE = CLIENTS_DIR / "clients.json"
 
 ACCOUNT_MANAGERS_FILE = CLIENTS_DIR / "account_managers.json"
-PERSONNEL_FILE        = CLIENTS_DIR / "personnel.json"
 TASKS_FILE            = TASKS_DIR / "tasks.json"
 MONTHLY_STATE_FILE    = MONTHLY_DATA_DIR / "monthly_state.json"
-COMPANY_LIST_FILE     = MATCH_RULES_DIR / "company_list.json"
+client_LIST_FILE     = MATCH_RULES_DIR / "client_list.json"
 
 
 # -------------------- System Fault Handler -----------
@@ -318,180 +317,6 @@ def officers_to_flat_phones(officers: List[Dict[str,str]]) -> List[str]:
 def is_valid_person_payload(data):
     return isinstance(data, (tuple, list)) and len(data) == 3 and data[0] is not None
 
-# -------------------- Personnel (global people catalog) --------------------
-def _personnel_path(self) -> Path:
-    return PERSONNEL_FILE
-
-def _normalize_person(self, x: dict) -> dict:
-    """Normalize a person record and ensure it has a deterministic id."""
-    o = ensure_officer_dict(x)
-    key = (
-        f"{(o.get('first_name','') or '').strip().casefold()}|"
-        f"{(o.get('middle_name','') or '').strip().casefold()}|"
-        f"{(o.get('last_name','') or '').strip().casefold()}|"
-        f"{(o.get('nickname','') or '').strip().casefold()}|"
-        f"{(o.get('email','') or '').strip().casefold()}|"
-        f"{normalize_phone_digits(o.get('phone','') or '')}"
-    )
-    pid = str(x.get('id','') or '').strip()
-    if not pid:
-        pid = f"p_{hashlib.sha1(key.encode('utf-8', errors='ignore')).hexdigest()[:12]}"
-    o['id'] = pid
-    return o
-
-def _load_personnel(self) -> list[dict]:
-    path = self._personnel_path()
-    try:
-        data = _read_json_file(path, default=[])
-        if not isinstance(data, list):
-            return []
-        out = []
-        seen = set()
-        for x in data:
-            if not isinstance(x, dict):
-                continue
-            p = self._normalize_person(x)
-            if p['id'] in seen:
-                continue
-            seen.add(p['id'])
-            out.append(p)
-        return out
-    except Exception:
-        return []
-
-def _save_personnel(self, people: list[dict]) -> None:
-    path = self._personnel_path()
-    out = []
-    seen = set()
-    for x in (people or []):
-        if not isinstance(x, dict):
-            continue
-        p = self._normalize_person(x)
-        if p['id'] in seen:
-            continue
-        seen.add(p['id'])
-        out.append(p)
-    _write_json_file(path, out)
-
-def get_personnel_catalog(self) -> list[dict]:
-    return list(self.personnel or [])
-
-def upsert_person(self, person_dict: dict) -> dict:
-    p = self._normalize_person(person_dict or {})
-    people = list(self.personnel or [])
-    idx = next((i for i, q in enumerate(people) if str(q.get('id','')) == p['id']), None)
-    if idx is None:
-        people.append(p)
-    else:
-        people[idx] = p
-    self.personnel = people
-    self._save_personnel(self.personnel)
-    return p
-
-def delete_person(self, person_id: str) -> bool:
-    pid = str(person_id or '').strip()
-    if not pid:
-        return False
-    before = len(self.personnel or [])
-    self.personnel = [p for p in (self.personnel or []) if str(p.get('id','')) != pid]
-    changed = False
-    for c in (self.items or []):
-        if not isinstance(c, dict):
-            continue
-        lst = c.get('personnel', [])
-        if isinstance(lst, list):
-            new_lst = [lnk for lnk in lst if str((lnk or {}).get('person_id','')) != pid]
-            if len(new_lst) != len(lst):
-                c['personnel'] = new_lst
-                changed = True
-    if changed:
-        save_clients(self.items)
-    self._save_personnel(self.personnel)
-    return len(self.personnel) != before
-
-def _migrate_company_personnel_in_place(self, company: dict) -> bool:
-    """Convert legacy embedded officers/employees into company['personnel'] links."""
-    if not isinstance(company, dict):
-        return False
-    if isinstance(company.get('personnel'), list):
-        return False  # already new schema
-
-    links = []
-    changed = False
-
-    def _add_links(role_key: str, people_list):
-        nonlocal changed
-        for x in (people_list or []):
-            if not isinstance(x, dict):
-                x = {'name': str(x)}
-            p = self.upsert_person(x)
-            links.append({'role': 'Officer' if role_key == 'officers' else 'Employee', 'person_id': p['id']})
-            changed = True
-
-    _add_links('officers', company.get('officers', []))
-    _add_links('employees', company.get('employees', []))
-
-    if changed:
-        company['personnel'] = links
-    return changed
-
-def link_person_to_company(self, company: dict, person_id: str, role: str) -> bool:
-    if not isinstance(company, dict):
-        return False
-    pid = str(person_id or '').strip()
-    if not pid:
-        return False
-    role = 'Officer' if (role or '').lower().startswith('off') else 'Employee'
-    lst = company.get('personnel')
-    if not isinstance(lst, list):
-        company['personnel'] = []
-        lst = company['personnel']
-    for lnk in lst:
-        if str((lnk or {}).get('person_id','')) == pid and str((lnk or {}).get('role','')) == role:
-            return False
-    lst.append({'role': role, 'person_id': pid})
-    save_clients(self.items)
-    return True
-
-def unlink_company_personnel_link(self, company: dict, link_index: int) -> bool:
-    if not isinstance(company, dict):
-        return False
-    lst = company.get('personnel')
-    if not isinstance(lst, list):
-        return False
-    if link_index < 0 or link_index >= len(lst):
-        return False
-    lst.pop(link_index)
-    save_clients(self.items)
-    return True
-
-def company_personnel_rows(self, company: dict) -> list[dict]:
-    """Return rows for UI: [{link_index, role, person_id, first,last,email,phone}]"""
-    if not isinstance(company, dict):
-        return []
-    if not isinstance(company.get('personnel'), list):
-        self._migrate_company_personnel_in_place(company)
-    links = company.get('personnel', []) if isinstance(company.get('personnel'), list) else []
-    people_by_id = {str(p.get('id','')): p for p in (self.personnel or []) if isinstance(p, dict)}
-    rows = []
-    for i, lnk in enumerate(links):
-        if not isinstance(lnk, dict):
-            continue
-        pid = str(lnk.get('person_id','') or '').strip()
-        role = str(lnk.get('role','') or '').strip() or 'Employee'
-        p = people_by_id.get(pid, {})
-        rows.append({
-            'link_index': i,
-            'role': role,
-            'person_id': pid,
-            'first_name': str(p.get('first_name','') or ''),
-            'last_name': str(p.get('last_name','') or ''),
-            'email': str(p.get('email','') or ''),
-            'phone': str(p.get('phone','') or ''),
-        })
-    return rows
-
-
 # ---- Quarter / Tax helpers ---------------------------------------------------
 def today_date() -> datetime.date:
     return datetime.date.today()
@@ -561,7 +386,7 @@ def load_clients() -> List[Dict[str, Any]]:
             c.setdefault("file_location","")
             c.setdefault("memo","")
 
-            # Company extended fields
+            # client extended fields
             c.setdefault("addr1","")
             c.setdefault("addr2","")
             c.setdefault("city","")
@@ -671,6 +496,55 @@ def _write_json_file(path: Path, obj) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
 
+def migrate_tasks_client_to_client(tasks_path: Path, remove_old_keys: bool = True) -> dict:
+    """
+    Convert tasks.json:
+      client_idx  -> client_idx
+      client_name -> client_name
+
+    remove_old_keys=True will remove client_* fields after copying.
+    """
+    tasks = _read_json_file(tasks_path, default=[])
+    if not isinstance(tasks, list):
+        return {"updated": 0, "skipped": 0, "error": "tasks.json is not a list"}
+
+    updated = 0
+    skipped = 0
+
+    for t in tasks:
+        if not isinstance(t, dict):
+            skipped += 1
+            continue
+
+        changed = False
+
+        # idx
+        if "client_idx" not in t and "client_idx" in t:
+            t["client_idx"] = t.get("client_idx")
+            changed = True
+
+        # name
+        if "client_name" not in t and "client_name" in t:
+            t["client_name"] = t.get("client_name")
+            changed = True
+
+        if remove_old_keys:
+            if "client_idx" in t:
+                t.pop("client_idx", None)
+                changed = True
+            if "client_name" in t:
+                t.pop("client_name", None)
+                changed = True
+
+        if changed:
+            updated += 1
+        else:
+            skipped += 1
+
+    _write_json_file(tasks_path, tasks)
+    return {"updated": updated, "skipped": skipped, "path": str(tasks_path)}
+
+
 def _deep_merge_no_overwrite(dst, src):
     """
     Merge src into dst WITHOUT overwriting existing values.
@@ -698,7 +572,7 @@ def export_all_to_json(out_path: Path, clients: list[dict]):
     Includes:
       - clients + account_managers
       - tasks + monthly_state
-      - match_rules/*.json (including vendor_rules_*.json, accounts_*.json, company_list.json)
+      - match_rules/*.json (including vendor_rules_*.json, accounts_*.json, client_list.json)
       - vendor_lists/*.csv
     """
     out_path = Path(out_path)
@@ -828,7 +702,7 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
       - clients: do NOT duplicate if EIN or id already exists
       - account_managers: do NOT duplicate if id already exists
       - tasks: do NOT duplicate if id already exists
-              AND remap company_idx using company_name against current clients list
+              AND remap client_idx using client_name against current clients list
       - match_rules: do NOT overwrite existing json files
       - vendor_lists: overwrite
     """
@@ -982,7 +856,7 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
             except Exception:
                 pass
 
-    # --- import tasks (no dup by id, AND remap company_idx) ---
+    # --- import tasks (no dup by id, AND remap client_idx) ---
     tasks_added = 0
     incoming_tasks = data.get("tasks", [])
     if isinstance(incoming_tasks, list):
@@ -998,10 +872,10 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
             if tid and tid in existing_task_ids:
                 continue
 
-            # remap company_idx based on company_name (so tasks show under correct company)
-            cname = _norm_name(t.get("company_name", ""))
+            # remap client_idx based on client_name (so tasks show under correct client)
+            cname = _norm_name(t.get("client_name", ""))
             if cname and cname in name_to_idx:
-                t["company_idx"] = name_to_idx[cname]
+                t["client_idx"] = name_to_idx[cname]
 
             existing_tasks.append(t)
             tasks_added += 1
@@ -1296,7 +1170,7 @@ class ClientDialog(tk.Toplevel):
 
         row("File Location (folder path or URL)", self.v_path, 4, 2, 40, 2)
 
-        ttk.Label(frm, text="Company Address").grid(row=6, column=0, sticky="w", pady=(8,2))
+        ttk.Label(frm, text="client Address").grid(row=6, column=0, sticky="w", pady=(8,2))
         row("Address 1", self.v_addr1, 7, 0, 50, 4)
         row("Address 2", self.v_addr2, 9, 0, 50, 4)
 
@@ -1542,21 +1416,6 @@ class App(ttk.Frame):
         self.get_account_managers = _get_acct_mgrs
         self.set_account_managers = _set_acct_mgrs
 
-        # --- Personnel catalog (global people) ---
-        self.personnel = self._load_personnel()
-        # Migrate legacy embedded officers/employees into company['personnel'] links
-        try:
-            any_changed = False
-            for c in (self.items or []):
-                if isinstance(c, dict):
-                    if self._migrate_company_personnel_in_place(c):
-                        any_changed = True
-            if any_changed:
-                save_clients(self.items)
-                self._save_personnel(self.personnel)
-        except Exception:
-            pass
-
         def _open_prefs():
             # If you already have a Preferences dialog, call it here.
             # Otherwise, the TaskbarModel can show its default prefs dialog.
@@ -1570,8 +1429,8 @@ class App(ttk.Frame):
             # Close the main window / app
             on_exit=lambda: self.winfo_toplevel().destroy(),
 
-            # New Company menu item
-            on_new_company=self.on_new,
+            # New client menu item
+            on_new_client=self.on_new,
 
             # Account manager list dialog
             get_account_managers=_get_acct_mgrs,
@@ -1590,6 +1449,7 @@ class App(ttk.Frame):
             on_save_data=self._save_all_data,
             on_import_data=self._import_data_dialog,
             on_export_data=self._export_selected_dialog,
+            on_update_data=self._update_data_dialog,
 
             # Update
             on_check_updates=lambda: check_for_updates(
@@ -1901,7 +1761,36 @@ class App(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Account Managers", f"Failed to save:\n{e}")
 
-            
+
+    def _update_data_dialog(self):
+        # migrate tasks.json keys client_* -> client_*
+        try:
+            if not messagebox.askyesno(
+                "Update Data",
+                "This will update data file.\n\n"
+                "Proceed?"
+            ):
+                return
+
+            stats = migrate_tasks_client_to_client(TASKS_FILE, remove_old_keys=True)
+
+            # refresh dashboard if present
+            try:
+                dash = getattr(self, "dashboard", None)
+                if dash and hasattr(dash, "reload_from_disk"):
+                    dash.reload_from_disk()
+            except Exception:
+                pass
+
+            messagebox.showinfo(
+                "Update Data",
+                f"Updated: {stats.get('updated', 0)}\n"
+                f"Skipped: {stats.get('skipped', 0)}\n\n"
+                f"File: {stats.get('path','')}"
+            )
+        except Exception as e:
+            messagebox.showerror("Update Data", f"Failed updating tasks.json:\n{e}")
+  
     def _mgr_filter_names_ci(self):
         """Case-insensitive set for matching."""
         return { (n or "").casefold() for n in self._mgr_filter_active }
@@ -2040,7 +1929,7 @@ class App(ttk.Frame):
         if not hasattr(self, "page_main") or not self.page_main.winfo_exists():
             self.page_main = self.dashboard.ensure(self.page_host)
 
-    # ---------- Company Detail (Notebook) ----------
+    # ---------- client Detail (Notebook) ----------
     def _build_detail_page(self, idx: int):
         for w in self.page_host.winfo_children():
             self._clear_page_host()
@@ -2083,11 +1972,11 @@ class App(ttk.Frame):
         actions = ttk.Frame(header)
         actions.grid(row=0, column=2, rowspan=2, sticky="e", padx=(16, 0))
         
-        ttk.Button(actions, text="Edit Company", style="NewUI.Accent.TButton",
+        ttk.Button(actions, text="Edit Client", style="NewUI.Accent.TButton",
                    command=lambda i=idx: self._detail_edit(i)).pack(side="top", fill="x")
-        ttk.Button(actions, text="Delete Company", style="NewUI.Accent.TButton",
-                   command=lambda i=idx: self._delete_company(i)).pack(side="top", fill="x", pady=(6,0))
-        ttk.Button(actions, text="Open File Location", style="NewUI.Accent.TButton",
+        ttk.Button(actions, text="Delete Client", style="NewUI.Accent.TButton",
+                   command=lambda i=idx: self._delete_client(i)).pack(side="top", fill="x", pady=(6,0))
+        ttk.Button(actions, text="Open File Client", style="NewUI.Accent.TButton",
                    command=lambda: self.open_path(c.get("file_location",""))).pack(side="top", fill="x", pady=(6,0))
         
         # Column sizing so name (col 0) hugs content, middle info (col 1) expands, actions (col 2) stays tight.
@@ -2136,14 +2025,14 @@ class App(ttk.Frame):
         self._current_page = ("detail", idx)
 
     # ---------- Personnel Detail Page ----------
-    def _build_person_page(self, company_idx: int, role_key: str, person_idx: int):
+    def _build_person_page(self, client_idx: int, role_key: str, person_idx: int):
         for w in self.page_host.winfo_children():
             self._clear_page_host()
 
-        c = self.items[company_idx]
+        c = self.items[client_idx]
         people = c.get(role_key, [])
         if person_idx < 0 or person_idx >= len(people):
-            self.navigate("detail", company_idx, replace=True); return
+            self.navigate("detail", client_idx, replace=True); return
         p = ensure_officer_dict(people[person_idx])
 
         page = ttk.Frame(self.page_host)
@@ -2156,8 +2045,8 @@ class App(ttk.Frame):
         ttk.Label(title_box, text=f"{'Officer' if role_key=='officers' else 'Employee'} — {c.get('name','')}", foreground="#555").pack(anchor="w", pady=(2,0))
 
         actions = ttk.Frame(header); actions.pack(side=tk.RIGHT)
-        ttk.Button(actions, text="Edit", command=lambda: self._edit_person(company_idx, role_key, person_idx)).pack(side=tk.TOP, fill=tk.X)
-        ttk.Button(actions, text="Back to Company", command=lambda: self.navigate('detail', company_idx, push=True)).pack(side=tk.TOP, fill=tk.X, pady=(6,0))
+        ttk.Button(actions, text="Edit", command=lambda: self._edit_person(client_idx, role_key, person_idx)).pack(side=tk.TOP, fill=tk.X)
+        ttk.Button(actions, text="Back to client", command=lambda: self.navigate('detail', client_idx, push=True)).pack(side=tk.TOP, fill=tk.X, pady=(6,0))
 
         nb = ttk.Notebook(page); nb.pack(fill="both", expand=True, padx=6, pady=6)
         self._detail_notebook = nb
@@ -2192,17 +2081,17 @@ class App(ttk.Frame):
 
         footer = ttk.Frame(page, padding=(8,2)); footer.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self._current_page = ("person", (company_idx, role_key, person_idx))
+        self._current_page = ("person", (client_idx, role_key, person_idx))
 
-    def _edit_person(self, company_idx: int, role_key: str, person_idx: int):
-        c = self.items[company_idx]
+    def _edit_person(self, client_idx: int, role_key: str, person_idx: int):
+        c = self.items[client_idx]
         p = ensure_officer_dict(c.get(role_key, [])[person_idx])
         d = OfficerDialog(self, f"Edit {'Officer' if role_key=='officers' else 'Employee'}", p)
         self.wait_window(d)
         if d.result:
             c[role_key][person_idx] = ensure_officer_dict(d.result)
             save_clients(self.items)
-            self.navigate("person", (company_idx, role_key, person_idx), replace=True)
+            self.navigate("person", (client_idx, role_key, person_idx), replace=True)
 
     # ---- Rates editing / refresh ----
     def _edit_rates(self, idx: int):
@@ -2623,7 +2512,7 @@ class App(ttk.Frame):
         except Exception:
             pass
     
-    def _focus_company_in_search(self, key: str):
+    def _focus_client_in_search(self, key: str):
         if not key or not hasattr(self, "tree") or not self.tree.winfo_exists():
             return
         key = (key or "").strip().lower()
@@ -2725,7 +2614,7 @@ class App(ttk.Frame):
         self.on_edit()
 
     def on_delete(self):
-        self._delete_company()
+        self._delete_client()
 
     # ---------- Actions ----------
     def copy_emails(self):
@@ -2805,7 +2694,7 @@ class App(ttk.Frame):
             LOG.exception("Open path failed: %s", path)
             messagebox.showerror("Open Error", str(e))
 
-    def _delete_company(self, idx: int | None = None):
+    def _delete_client(self, idx: int | None = None):
         if idx is None:
             if getattr(self, "_current_page", ("main", None))[0] != "main":
                 idx = getattr(self, "_current_detail_idx", None)
@@ -2813,13 +2702,13 @@ class App(ttk.Frame):
                 idx = self.selected_index()
 
         if idx is None or idx < 0 or idx >= len(self.items):
-            messagebox.showinfo("Delete", "Select a company to delete first.")
+            messagebox.showinfo("Delete", "Select a client to delete first.")
             return
 
         c = self.items[idx]
         if not messagebox.askyesno(
             "Confirm Delete",
-            f"Delete this company?\n\n{c.get('name','')}  (DBA: {c.get('dba','') or '—'})"
+            f"Delete this client?\n\n{c.get('name','')}  (DBA: {c.get('dba','') or '—'})"
         ):
             return
 
@@ -2830,7 +2719,7 @@ class App(ttk.Frame):
         self.navigate("search", None, push=False, replace=True)
         self.populate()
         self._update_suggestions()
-        self.status.set("Company deleted.")
+        self.status.set("client deleted.")
 
     def _on_delete_from_tree(self, event):
         tv = event.widget
@@ -2840,9 +2729,9 @@ class App(ttk.Frame):
         if not sel:
             return
         idx = tv.index(sel[0])
-        self._delete_company_at_index(idx, tv)
+        self._delete_client_at_index(idx, tv)
 
-    def _delete_company_at_index(self, idx, tv):
+    def _delete_client_at_index(self, idx, tv):
         pass
 
     # ---------- Sorting ----------
@@ -3108,8 +2997,8 @@ class App(ttk.Frame):
             if self._last_viewed_idx is not None and 0 <= self._last_viewed_idx < len(self.items):
                 c = self.items[self._last_viewed_idx]
                 key = c.get("ein") or c.get("name") or c.get("dba")
-                if key and hasattr(self, "checklist") and hasattr(self.checklist, "focus_company_by_key"):
-                    self.checklist.focus_company_by_key(key) 
+                if key and hasattr(self, "checklist") and hasattr(self.checklist, "focus_client_by_key"):
+                    self.checklist.focus_client_by_key(key) 
             target = ("taxes", None)
         elif page == "detail":
             # accept either idx or payload for backwards-compat
@@ -3172,7 +3061,7 @@ class App(ttk.Frame):
             self.populate()
             key = getattr(self, "_return_focus_key", None)
             if key:
-                self._focus_company_in_search(key)
+                self._focus_client_in_search(key)
                 self._return_focus_key = None
         elif kind == "notes":
             self._ensure_notes_page()
@@ -3252,7 +3141,7 @@ class App(ttk.Frame):
             self.populate()
             key = getattr(self, "_return_focus_key", None)
             if key:
-                self._focus_company_in_search(key)
+                self._focus_client_in_search(key)
                 # clear it so it doesn’t keep re-firing
                 self._return_focus_key = None
         elif kind == "notes":

@@ -29,14 +29,14 @@ except Exception:
         def stripe_tree(tree): pass
 
 # ----- Columns -----
-COMPANY_COL = "Company"
+client_COL = "client"
 COLS = [
     "Jan","Feb","Mar","Q1",
     "Apr","May","Jun","Q2",
     "Jul","Aug","Sep","Q3",
     "Oct","Nov","Dec","Q4",
 ]
-ALL_COLS = [COMPANY_COL] + COLS
+ALL_COLS = [client_COL] + COLS
 
 CELL_OPTIONS = ["--", "To do", "Done"]
 
@@ -147,7 +147,7 @@ def _load_tab_year_state(section_key: str, year: int):
     if not isinstance(companies, list): companies = []
     if not isinstance(cells, dict): cells = {}
 
-    # Make sure each company row has all columns and normalize for UI
+    # Make sure each client row has all columns and normalize for UI
     for k in companies:
         row = cells.setdefault(k, {})
         for c in COLS:
@@ -211,7 +211,7 @@ class _ChecklistTab(ttk.Frame):
 
         # Controls
         bar = ttk.Frame(self); bar.pack(fill="x", pady=(8,6))
-        ttk.Label(bar, text="Company:").pack(side="left")
+        ttk.Label(bar, text="client:").pack(side="left")
         self._combo = ttk.Combobox(
             bar, width=48, state="normal",
             values=[lbl for (lbl, _k) in self._clients]
@@ -225,7 +225,7 @@ class _ChecklistTab(ttk.Frame):
         ttk.Button(bar, text="Reload", command=self._on_reload).pack(side="right")
         ttk.Button(bar, text="Save", command=self._on_save).pack(side="right", padx=(6,8))
 
-        # Table (Company + months/quarters)
+        # Table (client + months/quarters)
         try:
             s = ttk.Style()
             s.configure("Treeview", rowheight=40)
@@ -234,25 +234,25 @@ class _ChecklistTab(ttk.Frame):
 
         table = ttk.Frame(self); table.pack(fill="both", expand=True)
         
-        # LEFT tree: frozen Company column
+        # LEFT tree: frozen client column
         self._ltree = ttk.Treeview(
             table,
-            columns=(COMPANY_COL,),
+            columns=(client_COL,),
             show="headings",
             height=18,
             selectmode="extended"
         )
-        self._ltree.heading(COMPANY_COL, text=COMPANY_COL)
-        self._ltree.column(COMPANY_COL, width=240, anchor="w", stretch=False)
+        self._ltree.heading(client_COL, text=client_COL)
+        self._ltree.column(client_COL, width=240, anchor="w", stretch=False)
 
-        # --- Double-click opens company detail page
-        def _on_company_dbl(e=None):
+        # --- Double-click opens client detail page
+        def _on_client_dbl(e=None):
             # Which row did we double-click?
             iid = self._ltree.identify_row(e.y) if e else None
             if not iid:
                 return
 
-            # Map row -> company key (populated in _refresh_tree)
+            # Map row -> client key (populated in _refresh_tree)
             key = getattr(self, "_ltree_iid_to_key", {}).get(iid)
             if not key or not getattr(self, "app", None) or not getattr(self.app, "items", None):
                 return
@@ -273,7 +273,7 @@ class _ChecklistTab(ttk.Frame):
                 except Exception as ex:
                     print("[checklist] navigate(detail) failed:", ex)  # tiny breadcrumb
 
-        self._ltree.bind("<Double-1>", _on_company_dbl)
+        self._ltree.bind("<Double-1>", _on_client_dbl)
 
         # RIGHT tree: months/quarters (scrollable)
         self._rtree = ttk.Treeview(
@@ -397,7 +397,7 @@ class _ChecklistTab(ttk.Frame):
         self.after_idle(self._apply_pending_focus)
 
     def _apply_pending_focus(self):
-        """Scroll/select the pending company in the LEFT tree (if any), then clear it."""
+        """Scroll/select the pending client in the LEFT tree (if any), then clear it."""
         key = getattr(self, "_pending_focus_key", None)
         if not key or not getattr(self, "_ltree", None) or not self._ltree.winfo_exists():
             return
@@ -522,7 +522,7 @@ class _ChecklistTab(ttk.Frame):
             tgt_keys, tgt_cells = _load_tab_year_state(self.storage_key, tgt)
             before = set(tgt_keys)
 
-            # Union without overwriting existing company rows
+            # Union without overwriting existing client rows
             for k in self._keys:
                 if k not in before:
                     tgt_keys.append(k)
@@ -541,7 +541,7 @@ class _ChecklistTab(ttk.Frame):
     def _on_add(self):
         label_typed = (self._combo.get() or "").strip()
         if not label_typed:
-            messagebox.showinfo("Pick a company", "Choose a company from the dropdown (or type to filter).")
+            messagebox.showinfo("Pick a client", "Choose a client from the dropdown (or type to filter).")
             return
 
         pair = next(((lbl, k) for (lbl, k) in self._clients if lbl == label_typed), None)
@@ -550,7 +550,7 @@ class _ChecklistTab(ttk.Frame):
             if len(matches) == 1:
                 pair = matches[0]
             else:
-                messagebox.showerror("Not found", f"Could not resolve a single company for:\n{label_typed}")
+                messagebox.showerror("Not found", f"Could not resolve a single client for:\n{label_typed}")
                 return
 
         label, key = pair
@@ -571,7 +571,7 @@ class _ChecklistTab(ttk.Frame):
             messagebox.showerror("Save failed", f"Could not write monthly_state.json\n\n{err}")
 
     def _on_remove(self):
-        """Remove the selected company from current year, persist, and keep selection sane."""
+        """Remove the selected client from current year, persist, and keep selection sane."""
         idx, key = self._get_current_selection_key()
         if key is None:
             # use your toast label if you have one
@@ -1042,9 +1042,9 @@ class ChecklistPage:
             tab = _ChecklistTab(nb, title=title, storage_key=key, app=self.app)
             nb.add(tab, text=title)
 
-    def focus_company_by_key(self, key: str):
-        """One-shot: when returning from Detail, ask the ACTIVE tab to focus this company."""
-        self.log.info("focus_company_by_key(%s)", key)
+    def focus_client_by_key(self, key: str):
+        """One-shot: when returning from Detail, ask the ACTIVE tab to focus this client."""
+        self.log.info("focus_client_by_key(%s)", key)
         if not key:
             return
         try:

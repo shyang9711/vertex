@@ -193,13 +193,13 @@ class TasksStore:
             t.setdefault("is_paused", False)
             t.setdefault("pause_from", "")
             t.setdefault("resume_from", "")
-            if t.get("company_idx") is None and t.get("company_name") and self.app:
+            if t.get("client_idx") is None and t.get("client_name") and self.app:
                 idx = next(
                     (i for i, c in enumerate(getattr(self.app, "items", []))
-                    if c.get("name") == t["company_name"]),
+                    if c.get("name") == t["client_name"]),
                     None,
                 )
-                t["company_idx"] = idx
+                t["client_idx"] = idx
         self.tasks = data
 
     def save(self) -> None:
@@ -415,8 +415,8 @@ class TasksStore:
 
     def batch_pause_for_companies(
         self,
-        company_idxs: list[int],
-        company_names: list[str],
+        client_idxs: list[int],
+        client_names: list[str],
     ) -> int:
         """
         Pause all *active* recurring tasks for the given companies.
@@ -427,12 +427,12 @@ class TasksStore:
         - pause_from is computed from the most recent done/cancelled occurrence,
           as per compute_pause_start_date().
         """
-        if not company_idxs and not company_names:
+        if not client_idxs and not client_names:
             return 0
 
         today = _dt.date.today()
-        idx_set = set(company_idxs)
-        name_cf_set = { (n or "").strip().casefold() for n in company_names if n }
+        idx_set = set(client_idxs)
+        name_cf_set = { (n or "").strip().casefold() for n in client_names if n }
 
         changed = 0
 
@@ -454,9 +454,9 @@ class TasksStore:
             if t.get("is_paused"):
                 continue
 
-            # Check company match by index or name
-            idx = t.get("company_idx")
-            cname_cf = (t.get("company_name") or "").strip().casefold()
+            # Check client match by index or name
+            idx = t.get("client_idx")
+            cname_cf = (t.get("client_name") or "").strip().casefold()
             if (idx not in idx_set) and (cname_cf not in name_cf_set):
                 continue
 
@@ -473,8 +473,8 @@ class TasksStore:
 
     def batch_resume_for_companies(
         self,
-        company_idxs: list[int],
-        company_names: list[str],
+        client_idxs: list[int],
+        client_names: list[str],
     ) -> int:
         """
         Resume all paused recurring tasks for the given companies.
@@ -485,12 +485,12 @@ class TasksStore:
         - resume_from is set to today; occurrences between pause_from and
           resume_from remain permanently skipped (per occurs_on()).
         """
-        if not company_idxs and not company_names:
+        if not client_idxs and not client_names:
             return 0
 
         today = _dt.date.today()
-        idx_set = set(company_idxs)
-        name_cf_set = { (n or "").strip().casefold() for n in company_names if n }
+        idx_set = set(client_idxs)
+        name_cf_set = { (n or "").strip().casefold() for n in client_names if n }
 
         changed = 0
 
@@ -507,8 +507,8 @@ class TasksStore:
             if not t.get("is_paused"):
                 continue
 
-            idx = t.get("company_idx")
-            cname_cf = (t.get("company_name") or "").strip().casefold()
+            idx = t.get("client_idx")
+            cname_cf = (t.get("client_name") or "").strip().casefold()
             if (idx not in idx_set) and (cname_cf not in name_cf_set):
                 continue
 

@@ -115,8 +115,8 @@ def _ensure_row_tags(tv: ttk.Treeview, dark: bool):
         "active": 'active_dark' if dark else 'active_light',
     }
 
-def init_logs_tab(notebook: ttk.Notebook, app, company: dict, save_clients_cb):
-    """Builds the Logs tab for a given company inside the provided notebook."""
+def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
+    """Builds the Logs tab for a given client inside the provided notebook."""
     logs_tab = ttk.Frame(notebook, padding=8)
     notebook.add(logs_tab, text="Logs")
 
@@ -151,7 +151,7 @@ def init_logs_tab(notebook: ttk.Notebook, app, company: dict, save_clients_cb):
     def refresh_tv():
         tv.delete(*tv.get_children())
         iids = []
-        for entry in (company.get("logs") or []):
+        for entry in (client.get("logs") or []):
             done_mark = "☑" if entry.get("done") else "☐"
             iid = tv.insert("", "end", values=(
                 done_mark,
@@ -180,7 +180,7 @@ def init_logs_tab(notebook: ttk.Notebook, app, company: dict, save_clients_cb):
         d = LogDialog(app.winfo_toplevel(), "Add Log")
         app.wait_window(d)
         if d.result:
-            company.setdefault("logs", []).append(d.result)
+            client.setdefault("logs", []).append(d.result)
             save_clients_cb(app.items)
             refresh_tv()
 
@@ -190,11 +190,11 @@ def init_logs_tab(notebook: ttk.Notebook, app, company: dict, save_clients_cb):
         if i is None:
             messagebox.showinfo("Edit Log", "Select a log row to edit.")
             return
-        entry = (company.get("logs") or [])[i]
+        entry = (client.get("logs") or [])[i]
         d = LogDialog(app.winfo_toplevel(), "Edit Log", initial=entry)
         app.wait_window(d)
         if d.result:
-            company["logs"][i] = d.result
+            client["logs"][i] = d.result
             save_clients_cb(app.items)
             refresh_tv()
 
@@ -206,7 +206,7 @@ def init_logs_tab(notebook: ttk.Notebook, app, company: dict, save_clients_cb):
             return
         if not messagebox.askyesno("Delete Log", "Delete the selected log entry?"):
             return
-        del company["logs"][i]
+        del client["logs"][i]
         save_clients_cb(app.items)
         refresh_tv()
 
@@ -225,9 +225,9 @@ def init_logs_tab(notebook: ttk.Notebook, app, company: dict, save_clients_cb):
             idx = tv.index(iid)
         except Exception:
             return
-        company.setdefault("logs", [])
-        if 0 <= idx < len(company["logs"]):
-            company["logs"][idx]["done"] = not bool(company["logs"][idx].get("done"))
+        client.setdefault("logs", [])
+        if 0 <= idx < len(client["logs"]):
+            client["logs"][idx]["done"] = not bool(client["logs"][idx].get("done"))
             save_clients_cb(app.items)
             refresh_tv()
             # keep focus/selection on the same row post-refresh
@@ -252,7 +252,7 @@ def init_logs_tab(notebook: ttk.Notebook, app, company: dict, save_clients_cb):
         t = v_quick.get().strip()
         if not t:
             return
-        company.setdefault("logs", []).append({
+        client.setdefault("logs", []).append({
             "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             "user": "",
             "text": t,
