@@ -14,7 +14,7 @@ from tkinter import ttk, messagebox
 import re, unicodedata
 
 try:
-    from functions.utils.app_logging import get_logger
+    from vertex.utils.app_logging import get_logger
 except ModuleNotFoundError:
     from utils.app_logging import get_logger
 LOG = get_logger("checklist")

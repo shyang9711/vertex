@@ -11,7 +11,7 @@ from tkinter import messagebox, ttk
 
 # Optional logger if your app has one; safe fallback
 try:
-    from functions.utils.app_logging import get_logger
+    from vertex.utils.app_logging import get_logger
 except Exception:
     from utils.app_logging import get_logger
 

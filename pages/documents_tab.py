@@ -11,7 +11,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 try:
-    from functions.utils.app_logging import get_logger
+    from vertex.utils.app_logging import get_logger
     
 except ModuleNotFoundError:
     from utils.app_logging import get_logger

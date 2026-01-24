@@ -13,7 +13,7 @@ import json
 import calendar as _cal
 import datetime as _dt
 try:
-    from functions.models.tasks_model import (
+    from vertex.models.tasks_model import (
         adjust_if_weekend_or_holiday,
         next_monthly_on_or_after,
         next_semi_monthly_on_or_after,
@@ -22,7 +22,8 @@ try:
         calc_tags_for_occurrence,
         display_date_for,
     )
-    from functions.utils.app_logging import get_logger
+    from vertex.utils.app_logging import get_logger
+    from vertex.utils.helpers import ensure_relation_dict
     
 except ModuleNotFoundError:
     from models.tasks_model import (
@@ -35,36 +36,9 @@ except ModuleNotFoundError:
         display_date_for,
     )
     from utils.app_logging import get_logger
+    from utils.helpers import ensure_relation_dict
+
 LOG = get_logger("profile")
-
-
-def _ensure_officer_dict(x: dict) -> dict:
-    if not isinstance(x, dict):
-        x = {"name": str(x).strip()}
-    o = {
-        "name":        str(x.get("name","")).strip(),
-        "first_name":  str(x.get("first_name","")).strip(),
-        "middle_name": str(x.get("middle_name","")).strip(),
-        "last_name":   str(x.get("last_name","")).strip(),
-        "nickname":    str(x.get("nickname","")).strip(),
-        "email":       str(x.get("email","")).strip(),
-        "phone":       str(x.get("phone","")).strip(),
-        "addr1":       str(x.get("addr1","")).strip(),
-        "addr2":       str(x.get("addr2","")).strip(),
-        "city":        str(x.get("city","")).strip(),
-        "state":       str(x.get("state","")).strip(),
-        "zip":         str(x.get("zip","")).strip(),
-        "dob":         str(x.get("dob","")).strip(),
-    }
-    
-    if not o["name"]:
-        parts = [o["first_name"], o["middle_name"], o["last_name"]]
-        base = " ".join([p for p in parts if p]).strip()
-        if o["nickname"]:
-            o["name"] = f'{base} ("{o["nickname"]}")' if base else o["nickname"]
-        else:
-            o["name"] = base
-    return o
 
 def _parse_date_flex_local(s):
     s = (s or "").strip()
@@ -93,7 +67,7 @@ WD_NAME_TO_INT = {name: i for i, name in enumerate(WEEKDAY_NAMES)}
 def init_profile_tab(
     nb: ttk.Notebook,
     app,                    # the App instance (needs .navigate, ._edit_rates, ._refresh_sales_tax_for)
-    company: dict,
+    client: dict,
     edit_rates_cb=None,     # optional callback for "Edit Rates"
     refresh_sales_cb=None   # optional callback for "Refresh Sales Tax"
 ):
@@ -110,6 +84,73 @@ def init_profile_tab(
     left = ttk.Frame(prof); left.grid(row=0, column=0, sticky="nsew", padx=(0,8))
     right = ttk.Frame(prof); right.grid(row=0, column=1, sticky="nsew")
 
+    def _resolve_client_idx_from_client():
+        items = getattr(app, "items", [])
+        name = (client.get("name") or "").strip()
+        for i, c in enumerate(items):
+            if (c.get("name") or "").strip() == name:
+                return i
+        return getattr(app, "_current_detail_idx", None)
+    
+    def _normalize_ein_9(x: str) -> str:
+        s = "".join(ch for ch in (x or "") if ch.isdigit())
+        return s[:9] if len(s) >= 9 else s
+
+    def _linked_id_to_client_idx(link_id: str):
+        """
+        Supported link_id formats:
+        - client:<client_id>
+        - ein:<9digits>
+        - idx:<int>
+        Returns int idx or None.
+        """
+        link_id = (link_id or "").strip()
+        if not link_id:
+            return None
+
+        if ":" not in link_id:
+            # treat as client:<id>
+            kind, val = "client", link_id
+        else:
+            kind, val = link_id.split(":", 1)
+
+        kind, val = link_id.split(":", 1)
+        kind = (kind or "").strip().lower()
+        val = (val or "").strip()
+
+        items = getattr(app, "items", []) or []
+
+        if kind == "idx":
+            try:
+                i = int(val)
+                return i if 0 <= i < len(items) else None
+            except Exception:
+                return None
+
+        if kind == "client":
+            for i, c in enumerate(items):
+                if str(c.get("id", "") or "").strip() == val:
+                    return i
+            return None
+
+        if kind == "ein":
+            target = _normalize_ein_9(val)
+            if not target:
+                return None
+            for i, c in enumerate(items):
+                if _normalize_ein_9(c.get("ein", "")) == target:
+                    return i
+            return None
+
+        return None
+
+
+    def _get_live_client():
+        idx = _resolve_client_idx_from_client()
+        items = getattr(app, "items", None)
+        if isinstance(items, list) and idx is not None and 0 <= idx < len(items):
+            return items[idx]
+        return client  # fallback
     # ---------- RIGHT: Personnel ----------
     ttk.Label(right, text="Personnel", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     people_cols = ("role","first","last","email","phone")
@@ -133,11 +174,26 @@ def init_profile_tab(
 
     def _add_people(role_key: str, items_list):
         for i, o in enumerate(items_list or []):
-            o2 = _ensure_officer_dict(o)
+            o2 = ensure_relation_dict(o)
+
+            # ✅ Use saved role if present; otherwise fallback by list
+            role = (o2.get("role") or "").strip().lower()
+            if not role:
+                if role_key == "officers":
+                    role = "officer"
+                elif role_key == "employees":
+                    role = "employee"
+                elif role_key == "spouses":
+                    role = "spouse"
+                else:
+                    role = "officer"
+
+            role_display = role[:1].upper() + role[1:]  # Officer/Employee/Spouse
+
             iid = people_tree.insert(
                 "", "end",
                 values=(
-                    "Officer" if role_key == "officers" else "Employee",
+                    role_display,
                     o2.get("first_name",""),
                     o2.get("last_name",""),
                     o2.get("email",""),
@@ -146,26 +202,41 @@ def init_profile_tab(
             )
             person_index_map[iid] = (role_key, i)
 
-    _add_people("officers",  company.get("officers", []))
-    _add_people("employees", company.get("employees", []))
-    people_tree.configure(height=min(5, len(person_index_map)))
-
     def _open_person_page(_e=None):
         LOG.info("Open person detail from Profile")
         sel = people_tree.selection()
-        if not sel: return
+        if not sel:
+            return
         iid = sel[0]
-        role_key, pidx = person_index_map.get(iid, ("officers", 0))
-        # delegate navigation to app
-        # NOTE: app.navigate("person", (idx, role_key, pidx), push=True) requires current company idx.
-        # The caller (client_manager) attaches this tab inside a detail page where app._current_detail_idx is set.
-        company_idx = _resolve_company_idx_from_company()
-        if company_idx is not None:
-            app.navigate("person", payload=(company_idx, role_key, pidx), push=True)
 
-    people_tree.bind("<Double-1>", _open_person_page)
+        client_idx = _resolve_client_idx_from_client()
+        if client_idx is None:
+            return
 
-    # ---------- RIGHT: Company Tasks (Dashboard-like) ----------
+        # Find the person in the LIVE client data
+        c = _get_live_client()
+        role_key, pidx = person_index_map.get(iid, (None, None))
+        if role_key is None or pidx is None:
+            return
+
+        arr = c.get(role_key, []) or []
+        if not (0 <= pidx < len(arr)):
+            return
+
+        p = ensure_relation_dict(arr[pidx])
+
+        # If linked, go to linked client detail page
+        link_id = (p.get("linked_client_id") or "").strip()
+        if link_id:
+            tgt_idx = _linked_id_to_client_idx(link_id)
+            if tgt_idx is not None:
+                app.navigate("detail", tgt_idx, push=True)
+                return
+
+        # Otherwise go to the normal person detail page
+        app.navigate("person", payload=(client_idx, role_key, pidx), push=True)
+
+    # ---------- RIGHT: client Tasks (Dashboard-like) ----------
     ttk.Label(right, text="Tasks", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(8,2))
 
     toolbar = ttk.Frame(right)
@@ -178,45 +249,45 @@ def init_profile_tab(
         val = bool(_show_all_past_var.get())
         if hasattr(app, "dashboard") and getattr(app.dashboard, "_show_all_past", None) is not None:
             app.dashboard._show_all_past = val
-        _refresh_company_tasks_tv()
+        _refresh_client_tasks_tv()
 
     ttk.Checkbutton(toolbar, text="Show all past", variable=_show_all_past_var,
                     command=_flip_show_all_past).pack(side="left")
     ttk.Button(toolbar, text="Add Task", command=lambda: _open_add_task_dialog()).pack(side="left", padx=(8,0))
-    ttk.Button(toolbar, text="Edit",   command=lambda: _edit_company_task()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Delete", command=lambda: _delete_company_task()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Stop Recurrence", command=lambda: _stop_company_recurring()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Pause Recurrence",  command=lambda: _pause_company_recurring()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Resume Recurrence", command=lambda: _resume_company_recurring()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="Edit",   command=lambda: _edit_client_task()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="Delete", command=lambda: _delete_client_task()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="Stop Recurrence", command=lambda: _stop_client_recurring()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="Pause Recurrence",  command=lambda: _pause_client_recurring()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="Resume Recurrence", command=lambda: _resume_client_recurring()).pack(side="left", padx=(6,0))
 
     cols = ("mark","title","kind","due")
-    company_tasks_tv = ttk.Treeview(right, columns=cols, show="headings", height=10, selectmode="browse", style="Profile.Treeview")
-    company_tasks_tv.heading("mark", text="")
-    company_tasks_tv.heading("title", text="Task")
-    company_tasks_tv.heading("kind", text="Type")
-    company_tasks_tv.heading("due",  text="Deadline")
+    client_tasks_tv = ttk.Treeview(right, columns=cols, show="headings", height=10, selectmode="browse", style="Profile.Treeview")
+    client_tasks_tv.heading("mark", text="")
+    client_tasks_tv.heading("title", text="Task")
+    client_tasks_tv.heading("kind", text="Type")
+    client_tasks_tv.heading("due",  text="Deadline")
 
-    company_tasks_tv.column("mark", width=28, anchor="center", stretch=False)
-    company_tasks_tv.column("title", width=280, anchor="w")
-    company_tasks_tv.column("kind",  width=120, anchor="w")
-    company_tasks_tv.column("due",   width=120, anchor="w", stretch=False)
+    client_tasks_tv.column("mark", width=28, anchor="center", stretch=False)
+    client_tasks_tv.column("title", width=280, anchor="w")
+    client_tasks_tv.column("kind",  width=120, anchor="w")
+    client_tasks_tv.column("due",   width=120, anchor="w", stretch=False)
 
-    company_tasks_tv.pack(fill="both", expand=True)
-    company_tasks_tv.tag_configure("done", foreground="#6B7280")
-    company_tasks_tv.tag_configure("cancelled", foreground="#6B7280")
-    company_tasks_tv.tag_configure("due",  background="#FEF3C7")
-    company_tasks_tv.tag_configure("todo", foreground="")
-    company_tasks_tv.tag_configure("submission", background="#FFEDD5")
+    client_tasks_tv.pack(fill="both", expand=True)
+    client_tasks_tv.tag_configure("done", foreground="#6B7280")
+    client_tasks_tv.tag_configure("cancelled", foreground="#6B7280")
+    client_tasks_tv.tag_configure("due",  background="#FEF3C7")
+    client_tasks_tv.tag_configure("todo", foreground="")
+    client_tasks_tv.tag_configure("submission", background="#FFEDD5")
 
     try:
         import tkinter.font as tkfont
         _base = tkfont.nametofont("TkDefaultFont")
         _cancel_font = tkfont.Font(**_base.configure()); _cancel_font.configure(overstrike=1)
-        company_tasks_tv.tag_configure("cancelled", font=_cancel_font)
+        client_tasks_tv.tag_configure("cancelled", font=_cancel_font)
     except Exception:
         pass
     
-    _company_todo_rows = {}
+    _client_todo_rows = {}
 
     def _safe_redraw_dashboard():
         try:
@@ -226,8 +297,8 @@ def init_profile_tab(
         except Exception:
             pass
 
-    def _company_toggle_row(iid):
-        i_task, orig_date = _company_todo_rows.get(iid, (None, None))
+    def _client_toggle_row(iid):
+        i_task, orig_date = _client_todo_rows.get(iid, (None, None))
         if i_task is None or orig_date is None:
             return
         dash = getattr(app, "dashboard", None)
@@ -245,53 +316,53 @@ def init_profile_tab(
         dash.store.save()
         dash._refresh_todo_feed()
         _safe_redraw_dashboard()
-        _refresh_company_tasks_tv()
+        _refresh_client_tasks_tv()
 
 
-    def _on_company_tasks_click(e):
+    def _on_client_tasks_click(e):
         # Only toggle when clicking the first column (checkbox column)
-        if company_tasks_tv.identify_region(e.x, e.y) != "cell":
+        if client_tasks_tv.identify_region(e.x, e.y) != "cell":
             return
-        col = company_tasks_tv.identify_column(e.x)  # '#1' = first column
+        col = client_tasks_tv.identify_column(e.x)  # '#1' = first column
         if col != "#1":
             return
-        row_id = company_tasks_tv.identify_row(e.y)
+        row_id = client_tasks_tv.identify_row(e.y)
         if not row_id:
             return
-        _company_toggle_row(row_id)
+        _client_toggle_row(row_id)
         return "break"  # stop default selection flicker
     
-    def _on_company_tasks_dbl(e):
+    def _on_client_tasks_dbl(e):
         # Don’t conflict with the checkbox column
-        if company_tasks_tv.identify_region(e.x, e.y) != "cell":
+        if client_tasks_tv.identify_region(e.x, e.y) != "cell":
             return
-        if company_tasks_tv.identify_column(e.x) == "#1":
+        if client_tasks_tv.identify_column(e.x) == "#1":
             return  # first column = checkbox
-        _edit_company_task()
+        _edit_client_task()
 
-    def _on_company_tasks_delete(e):
-        _delete_company_task()
+    def _on_client_tasks_delete(e):
+        _delete_client_task()
         return "break"
 
-    def _on_company_tasks_enter(e):
-        _edit_company_task()
+    def _on_client_tasks_enter(e):
+        _edit_client_task()
         return "break"
 
-    company_tasks_tv.bind("<Button-1>", _on_company_tasks_click)
-    company_tasks_tv.bind("<Delete>", _on_company_tasks_delete)
-    company_tasks_tv.bind("<Return>", _on_company_tasks_enter)
-    company_tasks_tv.bind("<Double-1>", _on_company_tasks_dbl)
+    client_tasks_tv.bind("<Button-1>", _on_client_tasks_click)
+    client_tasks_tv.bind("<Delete>", _on_client_tasks_delete)
+    client_tasks_tv.bind("<Return>", _on_client_tasks_enter)
+    client_tasks_tv.bind("<Double-1>", _on_client_tasks_dbl)
 
-    _company_ctx = None
+    _client_ctx = None
 
-    def _company_show_context_menu(e):
-        nonlocal _company_ctx
-        row_id = company_tasks_tv.identify_row(e.y)
+    def _client_show_context_menu(e):
+        nonlocal _client_ctx
+        row_id = client_tasks_tv.identify_row(e.y)
         if not row_id:
             return
-        company_tasks_tv.selection_set(row_id)
+        client_tasks_tv.selection_set(row_id)
 
-        i_task, orig_date = _company_todo_rows.get(row_id, (None, None))
+        i_task, orig_date = _client_todo_rows.get(row_id, (None, None))
         if i_task is None:
             return
         dash = getattr(app, "dashboard", None)
@@ -301,38 +372,38 @@ def init_profile_tab(
 
         import tkinter as tk
         # ✅ Build fresh each time (or delete all items if you prefer to reuse the instance)
-        if _company_ctx is None:
-            _company_ctx = tk.Menu(company_tasks_tv, tearoff=False)
+        if _client_ctx is None:
+            _client_ctx = tk.Menu(client_tasks_tv, tearoff=False)
         else:
-            _company_ctx.delete(0, "end")  # <<< IMPORTANT: clear old commands
+            _client_ctx.delete(0, "end")  # <<< IMPORTANT: clear old commands
 
         def _set_state(state):
             dash.store.set_state_for_date(t, orig_date, state)
             dash._refresh_todo_feed()
             _safe_redraw_dashboard()
-            _refresh_company_tasks_tv()
+            _refresh_client_tasks_tv()
 
-        _company_ctx.add_command(label="Done",    command=lambda: _set_state("done"))
-        _company_ctx.add_command(label="To-do",   command=lambda: _set_state("todo"))
-        _company_ctx.add_command(label="Cancel",  command=lambda: _set_state("cancel"))
+        _client_ctx.add_command(label="Done",    command=lambda: _set_state("done"))
+        _client_ctx.add_command(label="To-do",   command=lambda: _set_state("todo"))
+        _client_ctx.add_command(label="Cancel",  command=lambda: _set_state("cancel"))
 
-        _company_ctx.tk_popup(e.x_root, e.y_root)
+        _client_ctx.tk_popup(e.x_root, e.y_root)
 
 
-    company_tasks_tv.bind("<Button-3>", _company_show_context_menu)
+    client_tasks_tv.bind("<Button-3>", _client_show_context_menu)
 
-    def _selected_company_task_ref():
-        sel = company_tasks_tv.selection()
+    def _selected_client_task_ref():
+        sel = client_tasks_tv.selection()
         if not sel:
-            focus = company_tasks_tv.focus()
+            focus = client_tasks_tv.focus()
             if not focus:
                 return (None, None)
             sel = (focus,)
         iid = sel[0]
-        return _company_todo_rows.get(iid, (None, None))
+        return _client_todo_rows.get(iid, (None, None))
 
-    def _selected_company_task_index():
-        i_task, _ = _selected_company_task_ref()
+    def _selected_client_task_index():
+        i_task, _ = _selected_client_task_ref()
         return i_task
     
     # ---- Helpers
@@ -343,16 +414,22 @@ def init_profile_tab(
     def _parse_date_local(s):
         try: return _dt.date.fromisoformat(s) if s else None
         except Exception: return None
-
-    def _resolve_company_idx_from_company():
-        items = getattr(app, "items", [])
-        name = (company.get("name") or "").strip()
-        for i, c in enumerate(items):
-            if (c.get("name") or "").strip() == name:
-                return i
-        return getattr(app, "_current_detail_idx", None)
     
     import uuid
+
+    def _refresh_people_tree():
+        people_tree.delete(*people_tree.get_children())
+        person_index_map.clear()
+
+        c = _get_live_client()
+        _add_people("officers",  c.get("officers", []))
+        _add_people("employees", c.get("employees", []))
+        _add_people("spouses",   c.get("spouses", []))
+
+        people_tree.configure(height=min(5, len(person_index_map)))
+
+    _refresh_people_tree()
+    people_tree.bind("<Double-1>", _open_person_page)
 
     def _monday_of_this_week(d):
         return d - _dt.timedelta(days=d.weekday())  # Monday
@@ -372,7 +449,7 @@ def init_profile_tab(
 
     def _open_add_task_dialog():
         """
-        Use the Dashboard's modern task dialog, prefilled for this company.
+        Use the Dashboard's modern task dialog, prefilled for this client.
         """
         dash = getattr(app, "dashboard", None)
         if not dash or not getattr(dash, "store", None):
@@ -380,15 +457,15 @@ def init_profile_tab(
             return
     
         import uuid
-        comp_idx = _resolve_company_idx_from_company()
-        comp_name = company.get("name") or ""
+        comp_idx = _resolve_client_idx_from_client()
+        comp_name = client.get("name") or ""
     
         # Default the Type to PAYROLL (you can change this)
         init = {
             "title": "",
             "kind": "PAYROLL",
-            "company_idx": comp_idx,
-            "company_name": comp_name,
+            "client_idx": comp_idx,
+            "client_name": comp_name,
             "is_enabled": True,
             "notify_days": 4,
             "method": "none",
@@ -410,7 +487,7 @@ def init_profile_tab(
         # Refresh both places
         dash._refresh_todo_feed()
         _safe_redraw_dashboard()
-        _refresh_company_tasks_tv()
+        _refresh_client_tasks_tv()
 
     def _occurs_on_local(t, day):
         rec = t.get("recurrence", {"freq":"one-off"})
@@ -460,10 +537,10 @@ def init_profile_tab(
         return _occurs_on_local(t, day)
 
 
-    # Source of tasks for THIS company (match by idx OR by normalized name)
-    def _company_tasks_source():
-        idx = _resolve_company_idx_from_company()
-        name_key = (company.get("name") or "").strip().lower()
+    # Source of tasks for THIS client (match by idx OR by normalized name)
+    def _client_tasks_source():
+        idx = _resolve_client_idx_from_client()
+        name_key = (client.get("name") or "").strip().lower()
         out = []
         dash = getattr(app, "dashboard", None)
         if dash and getattr(dash, "store", None):
@@ -471,18 +548,18 @@ def init_profile_tab(
                 if not t.get("is_enabled", True):
                     continue
                 
-                task_idx  = t.get("client_idx", t.get("company_idx"))
-                task_name = (t.get("client_name") or t.get("company_name") or "").strip().lower()
+                task_idx  = t.get("client_idx", t.get("client_idx"))
+                task_name = (t.get("client_name") or t.get("client_name") or "").strip().lower()
 
                 if (idx is not None and task_idx == idx) or (task_name == name_key):
                     out.append(t)
         return out
 
-    def _stop_company_recurring():
+    def _stop_client_recurring():
         dash = getattr(app, "dashboard", None)
         if not dash or not getattr(dash, "store", None):
             return
-        i_task = _selected_company_task_index()
+        i_task = _selected_client_task_index()
         if i_task is None:
             messagebox.showinfo("Stop Recurrence", "Select a task first.")
             return
@@ -495,13 +572,13 @@ def init_profile_tab(
         dash.store.save()
         dash._refresh_todo_feed()
         _safe_redraw_dashboard()
-        _refresh_company_tasks_tv()
+        _refresh_client_tasks_tv()
 
-    def _pause_company_recurring():
+    def _pause_client_recurring():
         dash = getattr(app, "dashboard", None)
         if not dash or not getattr(dash, "store", None):
             return
-        i_task = _selected_company_task_index()
+        i_task = _selected_client_task_index()
         if i_task is None:
             messagebox.showinfo("Pause Recurrence", "Select a task first.")
             return
@@ -525,13 +602,13 @@ def init_profile_tab(
         dash.store.save()
         dash._refresh_todo_feed()
         _safe_redraw_dashboard()
-        _refresh_company_tasks_tv()
+        _refresh_client_tasks_tv()
 
-    def _resume_company_recurring():
+    def _resume_client_recurring():
         dash = getattr(app, "dashboard", None)
         if not dash or not getattr(dash, "store", None):
             return
-        i_task = _selected_company_task_index()
+        i_task = _selected_client_task_index()
         if i_task is None:
             messagebox.showinfo("Resume Recurrence", "Select a task first.")
             return
@@ -553,15 +630,15 @@ def init_profile_tab(
         dash.store.save()
         dash._refresh_todo_feed()
         _safe_redraw_dashboard()
-        _refresh_company_tasks_tv()
+        _refresh_client_tasks_tv()
 
 
-    def _edit_company_task():
+    def _edit_client_task():
         dash = getattr(app, "dashboard", None)
         if not dash or not getattr(dash, "store", None):
             return
 
-        i_task, occ_date = _selected_company_task_ref()
+        i_task, occ_date = _selected_client_task_ref()
         if i_task is None:
             messagebox.showinfo("Edit Task", "Select a task first.")
             return
@@ -583,14 +660,14 @@ def init_profile_tab(
 
         dash._refresh_todo_feed()
         _safe_redraw_dashboard()
-        _refresh_company_tasks_tv()
+        _refresh_client_tasks_tv()
 
 
-    def _delete_company_task():
+    def _delete_client_task():
         dash = getattr(app, "dashboard", None)
         if not dash or not getattr(dash, "store", None):
             return
-        i_task = _selected_company_task_index()
+        i_task = _selected_client_task_index()
         if i_task is None:
             messagebox.showinfo("Delete Task", "Select a task first.")
             return
@@ -600,13 +677,13 @@ def init_profile_tab(
         dash.store.save()
         dash._refresh_todo_feed()
         _safe_redraw_dashboard()
-        _refresh_company_tasks_tv()
+        _refresh_client_tasks_tv()
 
-    def _refresh_company_tasks_tv():
-        company_tasks_tv.delete(*company_tasks_tv.get_children())
-        _company_todo_rows.clear()
+    def _refresh_client_tasks_tv():
+        client_tasks_tv.delete(*client_tasks_tv.get_children())
+        _client_todo_rows.clear()
 
-        tasks = _company_tasks_source()
+        tasks = _client_tasks_source()
         if not tasks:
             return
 
@@ -694,9 +771,9 @@ def init_profile_tab(
             else:
                 mark = "☑" if is_done else "☐"
 
-            iid = company_tasks_tv.insert("", "end", values=(mark, title, kind, disp.isoformat()))
+            iid = client_tasks_tv.insert("", "end", values=(mark, title, kind, disp.isoformat()))
             i_task = index_by_id.get(t.get("id"))
-            _company_todo_rows[iid] = (i_task, orig)
+            _client_todo_rows[iid] = (i_task, orig)
 
             tags = list(calc_tags_for_occurrence(t, disp, (is_done or is_cancelled), today))
             if (not is_done) and (not is_cancelled) and int(t.get("action_lead_days", 0) or 0) > 0:
@@ -708,43 +785,53 @@ def init_profile_tab(
                     tags.insert(0, "done")
                 tags.append("cancelled")
 
-            company_tasks_tv.item(iid, tags=tuple(tags))
+            client_tasks_tv.item(iid, tags=tuple(tags))
 
                 
 
     # Build now and once more after mount (in case outer state updates post-build)
-    _refresh_company_tasks_tv()
-    right.after(0, _refresh_company_tasks_tv)
+    _refresh_client_tasks_tv()
+    right.after(0, _refresh_client_tasks_tv)
 
+
+    def _on_tab_changed(_e=None):
+        try:
+            if nb.select() == str(prof):
+                _refresh_people_tree()
+                _refresh_client_tasks_tv()
+        except Exception:
+            pass
+
+    nb.bind("<<NotebookTabChanged>>", _on_tab_changed, add=True)
 
     # ---------- LEFT: IDs/Accounts, Tax Rates, Address, Memo ----------
     ttk.Label(left, text="IDs / Accounts", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     ids = ttk.Frame(left, style="Card.TFrame"); ids.pack(fill=tk.X, pady=(4,8))
     def _line(frame, text): ttk.Label(frame, text=text).pack(anchor="w")
-    _line(ids, f"EIN: {company.get('ein','') or '—'}")
-    _line(ids, f"EDD Number: {company.get('edd_number','') or '—'}")
-    _line(ids, f"Sales Tax Account: {company.get('sales_tax_account','') or '—'}")
-    _line(ids, f"Account Manager: {company.get('acct_mgr','') or '—'}")
+    _line(ids, f"EIN: {client.get('ein','') or '—'}")
+    _line(ids, f"EDD Number: {client.get('edd_number','') or '—'}")
+    _line(ids, f"Sales Tax Account: {client.get('sales_tax_account','') or '—'}")
+    _line(ids, f"Account Manager: {client.get('acct_mgr','') or '—'}")
 
     ttk.Label(left, text="Tax Rates", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     tr = ttk.Frame(left, style="Card.TFrame"); tr.pack(fill="x", pady=(4,8))
-    ttk.Label(tr, text=f"UI Rate (%): {company.get('ui_rate','') or '—'}").grid(row=0, column=0, sticky="w", padx=(0,12))
-    ttk.Label(tr, text=f"Sales Tax Rate (%): {company.get('sales_tax_rate','') or '—'}").grid(row=0, column=1, sticky="w", padx=(0,12))
-    ttk.Label(tr, text=f"Other: {company.get('other_tax_rates','') or '—'}").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2,0))
+    ttk.Label(tr, text=f"UI Rate (%): {client.get('ui_rate','') or '—'}").grid(row=0, column=0, sticky="w", padx=(0,12))
+    ttk.Label(tr, text=f"Sales Tax Rate (%): {client.get('sales_tax_rate','') or '—'}").grid(row=0, column=1, sticky="w", padx=(0,12))
+    ttk.Label(tr, text=f"Other: {client.get('other_tax_rates','') or '—'}").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2,0))
 
     btnr = ttk.Frame(left, style="Card.TFrame"); btnr.pack(fill="x", pady=(2,8))
     ttk.Button(btnr, text="Edit Rates", command=(edit_rates_cb or (lambda: None))).pack(side="left")
     ttk.Button(btnr, text="Refresh Sales Tax (quarterly)", command=(refresh_sales_cb or (lambda: None))).pack(side="left", padx=(6,0))
     
-    acct_mgr_display = (company.get("acct_mgr","") or "—")
-    ttk.Label(left, text=f"Company Address  (Mgr: {acct_mgr_display})", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+    acct_mgr_display = (client.get("acct_mgr","") or "—")
+    ttk.Label(left, text=f"client Address  (Mgr: {acct_mgr_display})", font=("Segoe UI", 11, "bold")).pack(anchor="w")
 
     addr = ttk.Frame(left, style="Card.TFrame"); addr.pack(fill=tk.X, pady=(4,8))
-    a1 = company.get("addr1","") or "—"
-    a2 = company.get("addr2","") or ""
-    city = company.get("city","") or ""
-    st   = company.get("state","") or ""
-    zp   = company.get("zip","") or ""
+    a1 = client.get("addr1","") or "—"
+    a2 = client.get("addr2","") or ""
+    city = client.get("city","") or ""
+    st   = client.get("state","") or ""
+    zp   = client.get("zip","") or ""
     ttk.Label(addr, text=a1).pack(anchor="w")
     if a2:
         ttk.Label(addr, text=a2).pack(anchor="w")
@@ -755,7 +842,7 @@ def init_profile_tab(
     ttk.Label(left, text="Memo", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     memo_txt = ScrolledText(left, width=56, height=4, wrap="word")
     memo_txt.pack(fill=tk.BOTH, expand=True, pady=(4,0))
-    memo_txt.insert("1.0", company.get("memo",""))
+    memo_txt.insert("1.0", client.get("memo",""))
     memo_txt.configure(state="disabled")
 
     return prof

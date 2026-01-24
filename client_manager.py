@@ -22,7 +22,7 @@ _PARENT = _BASE.parent
 if str(_PARENT) not in sys.path:
     sys.path.insert(0, str(_PARENT))
 
-import os, sys, json, re, hashlib, webbrowser, subprocess, datetime, urllib.request, urllib.error, ssl, urllib.parse
+import os, sys, json, re, hashlib, webbrowser, subprocess, datetime as dt, urllib.request, urllib.error, ssl, urllib.parse
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import date, datetime
@@ -30,38 +30,36 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from tkinter.scrolledtext import ScrolledText
 import tkinter.font as tkfont
-from tkinter.scrolledtext import ScrolledText
 import csv
-
-APP_NAME = "Vertex"
-UPDATE_POLICY_ASSET_NAME = "update_policy.json"
-
-
-# 🔢 bump this each time you ship a new version
-APP_VERSION = "0.1.81"
-
-# 🔗 set this to your real GitHub repo once you create it,
-GITHUB_REPO = "shyang9711/vertex"
-GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
-GITHUB_API_LATEST   = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-
-# Optional: name of the EXE asset in GitHub Releases if you want auto-download
-UPDATE_ASSET_NAME = "vertex.exe"
 
 # pages
 try:
-    from functions.pages.dashboard_page import DashboardPage
-    from functions.pages.profile_tab import init_profile_tab
-    from functions.pages.documents_tab import init_documents_tab
-    from functions.pages.logs_tab import init_logs_tab
-    from functions.pages.checklist_page import ChecklistPage
-    from functions.pages.action_page import ActionRunnerPage
-    from functions.pages.reports_page import ReportsPage
-    from functions.pages.note_page import NotePage
+    from vertex.pages.dashboard_page import DashboardPage
+    from vertex.pages.profile_tab import init_profile_tab
+    from vertex.pages.documents_tab import init_documents_tab
+    from vertex.pages.logs_tab import init_logs_tab
+    from vertex.pages.checklist_page import ChecklistPage
+    from vertex.pages.action_page import ActionRunnerPage
+    from vertex.pages.reports_page import ReportsPage
+    from vertex.pages.note_page import NotePage
 
-    from functions.models.taskbar_model import TaskbarModel
-    from functions.utils.app_logging import get_logger
-    from functions.utils.app_update import check_for_updates, enforce_major_update_on_startup
+    from vertex.models.taskbar_model import TaskbarModel
+    from vertex.utils.app_logging import get_logger
+    from vertex.utils.app_update import check_for_updates, enforce_major_update_on_startup
+    from vertex.utils.helpers import (
+        ensure_relation_dict, display_relation_name,
+        ensure_relation_link, merge_relations,
+        migrate_officer_business_links_to_relations,
+        is_migration_done, mark_migration_done,
+    )
+
+    
+    from vertex.config import APP_NAME, UPDATE_POLICY_ASSET_NAME, APP_VERSION, GITHUB_REPO, GITHUB_RELEASES_URL, GITHUB_API_LATEST, UPDATE_ASSET_NAME, ENTITY_TYPES, US_STATES, ROLES
+
+    from vertex.ui.dialogs.clientdialog import ClientDialog
+    from vertex.ui.dialogs.linkdialog import LinkDialog
+    from vertex.ui.components.autocomplete import AutocompletePopup
+    from vertex.ui.components.scrollframe import ScrollFrame
 
 except ModuleNotFoundError:
     from pages.dashboard_page import DashboardPage
@@ -76,6 +74,19 @@ except ModuleNotFoundError:
     from models.taskbar_model import TaskbarModel
     from utils.app_logging import get_logger
     from utils.app_update import check_for_updates, enforce_major_update_on_startup
+    from utils.helpers import (
+    ensure_relation_dict, display_relation_name,
+    ensure_relation_link, merge_relations,
+    migrate_officer_business_links_to_relations,
+    is_migration_done, mark_migration_done,
+    )
+    
+    from config import APP_NAME, UPDATE_POLICY_ASSET_NAME, APP_VERSION, GITHUB_REPO, GITHUB_RELEASES_URL, GITHUB_API_LATEST, UPDATE_ASSET_NAME, ENTITY_TYPES, US_STATES, ROLES
+
+    from ui.dialogs.clientdialog import ClientDialog
+    from ui.dialogs.linkdialog import LinkDialog
+    from ui.components.autocomplete import AutocompletePopup
+    from ui.components.scrollframe import ScrollFrame
 
 # NewUI preference from styles/, fallback to functions/
 try:
@@ -140,19 +151,6 @@ def enforce_single_instance(app_id: str = "Vertex") -> bool:
 
     return True
 
-# -------------------- Constants --------------------
-ENTITY_TYPES = [
-    "", "Individual / Sole Proprietor", "Partnership", "LLC",
-    "S-Corporation", "Corporation (C-Corp)", "Exempt Organization",
-    "Trust / Estate", "Nonprofit", "Other"
-]
-US_STATES = [
-    "", "AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN",
-    "IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
-    "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA",
-    "WA","WV","WI","WY"
-]
-
 # -------------------- Storage paths --------------------
 def portable_root() -> Path:
     # For EXE: folder that contains vertex.exe (NOT _MEI)
@@ -215,6 +213,9 @@ def normalize_phone_digits(s: str) -> str:
 def normalize_ein_digits(s: str) -> str:
     return "".join(PHONE_DIGITS_RE.findall(s or ""))[-9:]
 
+def normalize_ssn_digits(s: str) -> str:
+    return "".join(PHONE_DIGITS_RE.findall(s or ""))[-9:]
+
 def normalize_logs(logs):
     out = []
     for x in logs or []:
@@ -254,62 +255,25 @@ def tokenize(s: str) -> List[str]:
 def norm_text(s: str) -> str:
     return " ".join(tokenize(s))
 
-def compose_person_name(first: str, middle: str, last: str, nickname: str) -> str:
-    parts = [first.strip(), middle.strip(), last.strip()]
-    base = " ".join([p for p in parts if p])
-    if nickname.strip():
-        return f'{base} ("{nickname.strip()}")' if base else nickname.strip()
-    return base
-
-def ensure_officer_dict(x) -> Dict[str, str]:
-    """
-    Normalize personnel dict.
-    If only 'name' exists, move it to first_name (migration) and compose display 'name'.
-    """
-    if not isinstance(x, dict):
-        x = {"name": str(x).strip()}
-
-    o = {
-        "name":        str(x.get("name","")).strip(),
-        "first_name":  str(x.get("first_name","")).strip(),
-        "middle_name": str(x.get("middle_name","")).strip(),
-        "last_name":   str(x.get("last_name","")).strip(),
-        "nickname":    str(x.get("nickname","")).strip(),
-        "email":       str(x.get("email","")).strip(),
-        "phone":       str(x.get("phone","")).strip(),
-        "addr1":       str(x.get("addr1","")).strip(),
-        "addr2":       str(x.get("addr2","")).strip(),
-        "city":        str(x.get("city","")).strip(),
-        "state":       str(x.get("state","")).strip(),
-        "zip":         str(x.get("zip","")).strip(),
-        "dob":         str(x.get("dob","")).strip(),
-    }
-    if o["name"] and not (o["first_name"] or o["middle_name"] or o["last_name"] or o["nickname"]):
-        o["first_name"] = o["name"]
-    composed = compose_person_name(o["first_name"], o["middle_name"], o["last_name"], o["nickname"])
-    if composed:
-        o["name"] = composed
-    return o
-
-def display_officer_name(o: Dict[str, str]) -> str:
-    o = ensure_officer_dict(o)
+def display_relation_name(o: Dict[str, str]) -> str:
+    o = ensure_relation_dict(o)
     return o.get("name","").strip()
 
-def officers_to_display_lines(officers: List[Dict[str,str]]) -> List[str]:
-    return [display_officer_name(o) for o in (officers or []) if display_officer_name(o)]
+def relations_to_display_lines(relations: List[Dict[str,str]]) -> List[str]:
+    return [display_relation_name(o) for o in (relations or []) if display_relation_name(o)]
 
-def officers_to_flat_emails(officers: List[Dict[str,str]]) -> List[str]:
+def relations_to_flat_emails(relations: List[Dict[str,str]]) -> List[str]:
     seen, out = set(), []
-    for o in officers or []:
-        e = str(ensure_officer_dict(o).get("email","")).strip()
+    for o in relations or []:
+        e = str(ensure_relation_dict(o).get("email","")).strip()
         if e and e not in seen:
             seen.add(e); out.append(e)
     return out
 
-def officers_to_flat_phones(officers: List[Dict[str,str]]) -> List[str]:
+def relations_to_flat_phones(relations: List[Dict[str,str]]) -> List[str]:
     seen, out = set(), []
-    for o in officers or []:
-        p = str(ensure_officer_dict(o).get("phone","")).strip()
+    for o in relations or []:
+        p = str(ensure_relation_dict(o).get("phone","")).strip()
         if p and p not in seen:
             seen.add(p); out.append(p)
     return out
@@ -318,19 +282,19 @@ def is_valid_person_payload(data):
     return isinstance(data, (tuple, list)) and len(data) == 3 and data[0] is not None
 
 # ---- Quarter / Tax helpers ---------------------------------------------------
-def today_date() -> datetime.date:
-    return datetime.date.today()
+def today_date() -> dt.date:
+    return dt.date.today()
 
-def quarter_start(d: datetime.date) -> datetime.date:
+def quarter_start(d: dt.date) -> dt.date:
     q = (d.month - 1) // 3
-    first_month = q*3 + 1
-    return datetime.date(d.year, first_month, 1)
+    first_month = q * 3 + 1
+    return dt.date(d.year, first_month, 1)
 
 def new_quarter_started(last_checked_iso: str | None) -> bool:
     try:
         if not last_checked_iso:
             return True
-        last = datetime.date.fromisoformat(last_checked_iso)
+        last = dt.date.fromisoformat(last_checked_iso)
     except Exception:
         return True
     start_now = quarter_start(today_date())
@@ -383,6 +347,7 @@ def load_clients() -> List[Dict[str, Any]]:
             c.setdefault("name","")
             c.setdefault("dba","")
             c.setdefault("ein","")
+            c.setdefault("ssn","")
             c.setdefault("file_location","")
             c.setdefault("memo","")
 
@@ -404,27 +369,27 @@ def load_clients() -> List[Dict[str, Any]]:
             c.setdefault("tax_rates_last_checked","")
 
             # Personnel
-            officers = c.get("officers")
-            if officers is None:
+            relations = c.get("relations")
+            if relations is None:
                 legacy = c.get("owner","")
-                officers = [legacy] if legacy else []
+                relations = [legacy] if legacy else []
             norm_offs: List[Dict[str,str]] = []
-            if isinstance(officers, list):
-                for x in officers:
-                    norm_offs.append(ensure_officer_dict(x))
-            elif isinstance(officers, dict):
-                norm_offs.append(ensure_officer_dict(officers))
+            if isinstance(relations, list):
+                for x in relations:
+                    norm_offs.append(ensure_relation_dict(x))
+            elif isinstance(relations, dict):
+                norm_offs.append(ensure_relation_dict(relations))
             else:
-                norm_offs = [ensure_officer_dict(officers)] if officers else []
-            c["officers"] = norm_offs
+                norm_offs = [ensure_relation_dict(relations)] if relations else []
+            c["relations"] = norm_offs
             c.pop("owner", None)
 
             # Optional employees list (if present, normalize same way)
             emps = c.get("employees", [])
             if isinstance(emps, list):
-                c["employees"] = [ensure_officer_dict(x) for x in emps]
+                c["employees"] = [ensure_relation_dict(x) for x in emps]
             elif isinstance(emps, dict):
-                c["employees"] = [ensure_officer_dict(emps)]
+                c["employees"] = [ensure_relation_dict(emps)]
             else:
                 c["employees"] = []
 
@@ -448,18 +413,19 @@ def _normalize_clients_for_io(items: List[Dict[str, Any]]) -> List[Dict[str, Any
     for c in items:
         cc = dict(c)
 
-        # Normalize officers/employees
-        cc["officers"]  = [ensure_officer_dict(o) for o in cc.get("officers", [])]
-        cc["employees"] = [ensure_officer_dict(o) for o in cc.get("employees", [])]
+        # Normalize relations/employees
+        cc["relations"]  = [ensure_relation_dict(o) for o in cc.get("relations", [])]
+        cc["employees"] = [ensure_relation_dict(o) for o in cc.get("employees", [])]
 
         # Ensure keys exist
         for k, v in {
-            "name":"", "dba":"", "ein":"", "file_location":"", "memo":"",
+            "name":"", "dba":"", "ein":"", "ssn":"", "file_location":"", "memo":"",
             "addr1":"", "addr2":"", "city":"", "state":"", "zip":"",
             "acct_mgr":"", "edd_number":"", "sales_tax_account":"", "entity_type":"",
             "ui_rate":"", "sales_tax_rate":"", "other_tax_rates":"",
             "tax_rates_last_checked":"", "logs":[]
         }.items():
+
             if k not in cc:
                 cc[k] = v
 
@@ -499,10 +465,10 @@ def _write_json_file(path: Path, obj) -> None:
 def migrate_tasks_client_to_client(tasks_path: Path, remove_old_keys: bool = True) -> dict:
     """
     Convert tasks.json:
-      client_idx  -> client_idx
-      client_name -> client_name
+      company_idx  -> client_idx
+      company_name -> client_name
 
-    remove_old_keys=True will remove client_* fields after copying.
+    remove_old_keys=True will remove company_* fields after copying.
     """
     tasks = _read_json_file(tasks_path, default=[])
     if not isinstance(tasks, list):
@@ -519,21 +485,21 @@ def migrate_tasks_client_to_client(tasks_path: Path, remove_old_keys: bool = Tru
         changed = False
 
         # idx
-        if "client_idx" not in t and "client_idx" in t:
-            t["client_idx"] = t.get("client_idx")
+        if "client_idx" not in t and "company_idx" in t:
+            t["client_idx"] = t.get("company_idx")
             changed = True
 
         # name
-        if "client_name" not in t and "client_name" in t:
-            t["client_name"] = t.get("client_name")
+        if "client_name" not in t and "company_name" in t:
+            t["client_name"] = t.get("company_name")
             changed = True
 
         if remove_old_keys:
-            if "client_idx" in t:
-                t.pop("client_idx", None)
+            if "company_idx" in t:
+                t.pop("company_idx", None)
                 changed = True
-            if "client_name" in t:
-                t.pop("client_name", None)
+            if "company_name" in t:
+                t.pop("company_name", None)
                 changed = True
 
         if changed:
@@ -544,6 +510,99 @@ def migrate_tasks_client_to_client(tasks_path: Path, remove_old_keys: bool = Tru
     _write_json_file(tasks_path, tasks)
     return {"updated": updated, "skipped": skipped, "path": str(tasks_path)}
 
+def migrate_officers_to_relations(clients: List[Dict[str, Any]], remove_old_key: bool = True) -> dict:
+    """
+    Migrate per-client 'officers' -> 'relations', then optionally remove 'officers'.
+
+    Rules:
+      - Officers are normalized with ensure_relation_dict
+      - Officers are appended into relations if not a duplicate
+      - Deduping prefers linked_client_id if present; else uses (name/email/phone) case-insensitive
+      - Returns stats for UI reporting
+    """
+    updated_clients = 0
+    moved = 0
+    skipped_dupes = 0
+    removed_keys = 0
+
+    def _norm(s: str) -> str:
+        return (s or "").strip().casefold()
+
+    def _dedupe_key(o: dict) -> str:
+        o = ensure_relation_dict(o)
+        lid = str(o.get("linked_client_id") or "").strip()
+        if lid:
+            return f"link:{lid}"
+        email = _norm(str(o.get("email") or ""))
+        phone = normalize_phone_digits(str(o.get("phone") or ""))
+        name = _norm(str(o.get("name") or ""))
+        return f"p:{name}|{email}|{phone}"
+
+    for c in clients or []:
+        if not isinstance(c, dict):
+            continue
+
+        if "officers" not in c:
+            continue
+
+        officers = c.get("officers")
+        if officers is None:
+            officers_list = []
+        elif isinstance(officers, list):
+            officers_list = officers
+        elif isinstance(officers, dict):
+            officers_list = [officers]
+        else:
+            # string/other legacy
+            officers_list = [officers]
+
+        # Ensure relations exists + normalized
+        rels = c.get("relations")
+        if rels is None:
+            rels_list: List[Dict[str, Any]] = []
+        elif isinstance(rels, list):
+            rels_list = rels
+        elif isinstance(rels, dict):
+            rels_list = [rels]
+        else:
+            rels_list = [rels] if rels else []
+
+        rels_list = [ensure_relation_dict(x) for x in rels_list]
+
+        existing = set()
+        for r in rels_list:
+            existing.add(_dedupe_key(r))
+
+        did_change = False
+        for off in officers_list:
+            od = ensure_relation_dict(off)
+            k = _dedupe_key(od)
+            if k in existing:
+                skipped_dupes += 1
+                continue
+            rels_list.append(od)
+            existing.add(k)
+            moved += 1
+            did_change = True
+
+        # Write back normalized relations
+        c["relations"] = rels_list
+
+        # Remove officers key
+        if remove_old_key and "officers" in c:
+            c.pop("officers", None)
+            removed_keys += 1
+            did_change = True
+
+        if did_change:
+            updated_clients += 1
+
+    return {
+        "clients_touched": updated_clients,
+        "officers_moved": moved,
+        "officer_dupes_skipped": skipped_dupes,
+        "officers_keys_removed": removed_keys,
+    }
 
 def _deep_merge_no_overwrite(dst, src):
     """
@@ -719,39 +778,66 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
     def _norm_name(x: str) -> str:
         return " ".join(tokenize(str(x or "")))
 
-    # --- existing client keys (id/ein) ---
+    # --- existing client keys (id/ein/ssn) ---
     existing_client_ids = set()
     existing_client_eins = set()
+    existing_client_ssns = set()
+
+    def _norm_ssn(x: str) -> str:
+        # your project stores some individuals' SSN in ssn or (legacy) ein; normalize to last 9 digits
+        return normalize_ssn_digits(str(x or ""))
+
     for c in clients:
-        if isinstance(c, dict):
-            cid = str(c.get("id", "")).strip()
-            if cid:
-                existing_client_ids.add(cid)
-            ein = _norm_ein(c.get("ein", ""))
-            if ein:
-                existing_client_eins.add(ein)
+        if not isinstance(c, dict):
+            continue
+
+        cid = str(c.get("id", "")).strip()
+        if cid:
+            existing_client_ids.add(cid)
+
+        ein = _norm_ein(c.get("ein", ""))
+        if ein:
+            existing_client_eins.add(ein)
+
+        ssn = _norm_ssn(c.get("ssn", "") or c.get("ein", ""))
+        if ssn:
+            existing_client_ssns.add(ssn)
 
     # --- import clients ---
     clients_added = 0
+    clients_skipped_duplicates = 0
+
     incoming_clients = data.get("clients", [])
     if isinstance(incoming_clients, list):
         for c in incoming_clients:
             if not isinstance(c, dict):
                 continue
+
             cid = str(c.get("id", "")).strip()
             ein = _norm_ein(c.get("ein", ""))
+            ssn = _norm_ssn(c.get("ssn", "") or c.get("ein", ""))
 
+            # Skip if ANY identifier matches an existing client
             if cid and cid in existing_client_ids:
+                clients_skipped_duplicates += 1
                 continue
             if ein and ein in existing_client_eins:
+                clients_skipped_duplicates += 1
+                continue
+            if ssn and ssn in existing_client_ssns:
+                clients_skipped_duplicates += 1
                 continue
 
             clients.append(c)
             clients_added += 1
+
             if cid:
                 existing_client_ids.add(cid)
             if ein:
                 existing_client_eins.add(ein)
+            if ssn:
+                existing_client_ssns.add(ssn)
+
 
     # Build name->idx map AFTER possibly adding clients
     name_to_idx = {}
@@ -887,11 +973,13 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
 
     return {
         "clients_added": clients_added,
+        "clients_skipped_duplicates": clients_skipped_duplicates,
         "account_managers_added": am_added,
         "tasks_added": tasks_added,
         "match_rules_added": mr_added,
         "vendor_lists_written": vl_written,
     }
+
 
 def show_about_dialog(parent: tk.Misc | None = None):
     msg = (
@@ -900,418 +988,6 @@ def show_about_dialog(parent: tk.Misc | None = None):
         f"Data folder:\n{DATA_ROOT}"
     )
     messagebox.showinfo("About", msg, parent=parent)
-
-# -------------------- UI infrastructure --------------------
-class AutocompletePopup(tk.Toplevel):
-    """Small dropdown under an Entry, like Google suggestions (doesn't steal focus)."""
-    def __init__(self, master, anchor_entry: tk.Entry, on_choose):
-        super().__init__(master)
-        self.withdraw()
-        self.overrideredirect(True)
-        self.attributes("-topmost", True)
-        self.anchor = anchor_entry
-        self.on_choose = on_choose
-
-        self.configure(bg=NewUI.BORDER)
-        self.listbox = tk.Listbox(self, height=8, activestyle="none",
-                                  bd=0, highlightthickness=0,
-                                  relief="flat", font=("Segoe UI", 10))
-        self.listbox.pack(fill="both", expand=True, padx=1, pady=1)
-        self.listbox.bind("<ButtonRelease-1>", self._on_click_choose)
-        self.listbox.bind("<Button-1>", self._on_mouse_down)
-        self.listbox.bind("<Double-Button-1>", self._choose)
-
-        self.listbox.unbind("<Up>")
-        self.listbox.unbind("<Down>")
-
-        self.listbox.bind("<Up>", self._lb_up)
-        self.listbox.bind("<Down>", self._lb_down)
-
-        self.listbox.bind("<Return>", self._choose)
-        self.bind("<FocusOut>", self._maybe_hide)
-        self.listbox.bind("<FocusOut>", self._maybe_hide)
-        self.listbox.bind("<Escape>", lambda e: self.hide())
-
-    def show(self, items: List[str]):
-        self.listbox.delete(0, tk.END)
-        for s in items[:20]:
-            self.listbox.insert(tk.END, s)
-        if not items:
-            self.hide(); return
-        x = self.anchor.winfo_rootx()
-        y = self.anchor.winfo_rooty() + self.anchor.winfo_height()
-        w = self.anchor.winfo_width()
-        h = min(256, 22 * len(items))
-        self.geometry(f"{w}x{h}+{x}+{y}")
-        self.deiconify()
-        if self.listbox.size() > 0:
-            self.listbox.selection_clear(0, tk.END)
-            self.listbox.selection_set(0)
-            self.listbox.activate(0)
-
-    def move_selection(self, delta: int):
-        if not self.winfo_viewable(): return
-        if self.listbox.size() == 0: return
-        cur = self.listbox.curselection()
-        i = cur[0] if cur else 0
-        i = max(0, min(self.listbox.size()-1, i + delta))
-        self.listbox.selection_clear(0, tk.END)
-        self.listbox.selection_set(i)
-        self.listbox.activate(i)
-
-    def current_text(self) -> Optional[str]:
-        cur = self.listbox.curselection()
-        if not cur: return None
-        return self.listbox.get(cur[0])
-
-    def _lb_up(self, event=None):
-        self.move_selection(-1)
-        return "break"
-
-    def _lb_down(self, event=None):
-        self.move_selection(+1)
-        return "break"
-
-    def _choose(self, *_):
-        txt = self.current_text()
-        if txt is None: return
-        self.on_choose(txt)
-        self.hide()
-
-    def hide(self):
-        if self.winfo_viewable():
-            self.withdraw()
-
-    def focus_listbox(self):
-        self.listbox.focus_set()
-
-    def _on_mouse_down(self, e):
-        i = self.listbox.nearest(e.y)
-        if 0 <= i < self.listbox.size():
-            self.listbox.selection_clear(0, tk.END)
-            self.listbox.selection_set(i)
-            self.listbox.activate(i)
-
-    def _on_click_choose(self, e):
-        # let the Listbox update selection, then choose
-        self.after(1, self._choose)
-
-    def _maybe_hide(self, _e=None):
-        w = self.focus_get()
-        # If the focus is not inside this toplevel, hide
-        if not w or not str(w).startswith(str(self)):
-            self.hide()
-
-class ScrollFrame(ttk.Frame):
-    """Simple vertical scrollable frame for long dialogs."""
-    def __init__(self, master, height=520):
-        super().__init__(master)
-        self.canvas = tk.Canvas(self, highlightthickness=0, height=height)
-        self.vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=self.vsb.set)
-
-        self.inner = ttk.Frame(self.canvas)
-        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.create_window((0,0), window=self.inner, anchor="nw")
-
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.vsb.pack(side="right", fill="y")
-
-        def _on_mousewheel(event):
-            # Bail if the canvas is gone
-            if not self.canvas.winfo_exists():
-                return
-            if event.delta:  # Windows / macOS
-                self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-            else:  # X11: Button-4/5
-                if event.num == 4:
-                    self.canvas.yview_scroll(-3, "units")
-                elif event.num == 5:
-                    self.canvas.yview_scroll(+3, "units")
-        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        self.canvas.bind_all("<Button-4>", _on_mousewheel)
-        self.canvas.bind_all("<Button-5>", _on_mousewheel)
-
-# -------------------- Officer dialog (reused for editing) --------------------
-class OfficerDialog(tk.Toplevel):
-    def __init__(self, master, title="Officer", initial: Optional[Dict[str,str]]=None):
-        super().__init__(master)
-        self.title(title); self.resizable(False, False); self.result=None
-        init = ensure_officer_dict(initial or {})
-
-        self.v_first = tk.StringVar(value=init.get("first_name",""))
-        self.v_mid   = tk.StringVar(value=init.get("middle_name",""))
-        self.v_last  = tk.StringVar(value=init.get("last_name",""))
-        self.v_nick  = tk.StringVar(value=init.get("nickname",""))
-        self.v_email = tk.StringVar(value=init.get("email",""))
-        self.v_phone = tk.StringVar(value=init.get("phone",""))
-        self.v_addr1 = tk.StringVar(value=init.get("addr1",""))
-        self.v_addr2 = tk.StringVar(value=init.get("addr2",""))
-        self.v_city  = tk.StringVar(value=init.get("city",""))
-        self.v_state = tk.StringVar(value=init.get("state",""))
-        self.v_zip   = tk.StringVar(value=init.get("zip",""))
-        self.v_dob   = tk.StringVar(value=init.get("dob",""))
-
-        frm = ttk.Frame(self, padding=12); frm.grid(row=0, column=0, sticky="nsew")
-
-        def row(lbl, var, r, c=0, width=42, colspan=1):
-            ttk.Label(frm, text=lbl).grid(row=r, column=c, sticky="w", pady=(0,2))
-            ent = ttk.Entry(frm, textvariable=var, width=width)
-            ent.grid(row=r+1, column=c, sticky="we", pady=(0,6), columnspan=colspan); return ent
-
-        e1 = row("First Name", self.v_first, 0, 0, 28)
-        row("Middle Name", self.v_mid, 0, 1, 18)
-        row("Last Name", self.v_last, 0, 2, 28)
-        row("Nickname", self.v_nick, 0, 3, 18)
-
-        row("Email", self.v_email, 2, 0, 40, colspan=2)
-        row("Phone", self.v_phone, 2, 2, 24, colspan=2)
-
-        row("Address 1", self.v_addr1, 4, 0, 50, colspan=4)
-        row("Address 2", self.v_addr2, 6, 0, 50, colspan=4)
-
-        ttk.Label(frm, text="City").grid(row=8, column=0, sticky="w", pady=(0,2))
-        ent_city = ttk.Entry(frm, textvariable=self.v_city, width=32)
-        ent_city.grid(row=9, column=0, sticky="we", pady=(0,6), columnspan=2)
-
-        ttk.Label(frm, text="State").grid(row=8, column=2, sticky="w", pady=(0,2))
-        cb_state = ttk.Combobox(frm, values=US_STATES, textvariable=self.v_state, width=8)
-        cb_state.grid(row=9, column=2, sticky="we", pady=(0,6))
-
-        ttk.Label(frm, text="Zip").grid(row=8, column=3, sticky="w", pady=(0,2))
-        ent_zip = ttk.Entry(frm, textvariable=self.v_zip, width=12)
-        ent_zip.grid(row=9, column=3, sticky="we", pady=(0,6))
-
-        row("DOB (YYYY-MM-DD)", self.v_dob, 10, 0, 20)
-
-        btns = ttk.Frame(frm); btns.grid(row=12, column=0, columnspan=4, sticky="e", pady=(6,0))
-        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=(6,0))
-        ttk.Button(btns, text="Save", command=self._save).pack(side=tk.RIGHT)
-
-        self.bind("<Return>", lambda _e: self._save())
-        self.bind("<Escape>", lambda _e: self.destroy())
-        self.after(50, e1.focus_set); self.grab_set(); self.transient(master)
-
-    def _save(self):
-        first = self.v_first.get().strip()
-        last  = self.v_last.get().strip()
-        nick  = self.v_nick.get().strip()
-        if not (first or last or nick):
-            messagebox.showerror("Required", "Enter at least First or Last name (or Nickname)."); return
-        name = compose_person_name(first, self.v_mid.get(), last, nick)
-        self.result = {
-            "name": name,
-            "first_name": first,
-            "middle_name": self.v_mid.get().strip(),
-            "last_name": last,
-            "nickname": nick,
-            "email": self.v_email.get().strip(),
-            "phone": self.v_phone.get().strip(),
-            "addr1": self.v_addr1.get().strip(),
-            "addr2": self.v_addr2.get().strip(),
-            "city":  self.v_city.get().strip(),
-            "state": self.v_state.get().strip(),
-            "zip":   self.v_zip.get().strip(),
-            "dob":   self.v_dob.get().strip(),
-        }
-        self.destroy()
-
-# -------------------- Client dialog (Add/Edit) with scroll --------------------
-class ClientDialog(tk.Toplevel):
-    def __init__(self, master, title: str, initial: Optional[Dict[str, Any]] = None):
-        super().__init__(master)
-        self.title(title); self.resizable(True, True); self.result=None
-        self.minsize(880, 600)
-        self.maxsize(880, 1200)
-
-        self._initial = dict(initial or {})
-        init = self._initial
-        self.v_name    = tk.StringVar(value=init.get("name",""))
-        self.v_dba     = tk.StringVar(value=init.get("dba",""))
-        self.v_entity  = tk.StringVar(value=init.get("entity_type",""))
-        self.v_ein     = tk.StringVar(value=init.get("ein",""))
-        self.v_edd     = tk.StringVar(value=init.get("edd_number",""))
-        self.v_sales   = tk.StringVar(value=init.get("sales_tax_account",""))
-        self.v_acctmgr = tk.StringVar(value=init.get("acct_mgr",""))
-        self.v_path    = tk.StringVar(value=init.get("file_location",""))
-        self.v_addr1 = tk.StringVar(value=init.get("addr1",""))
-        self.v_addr2 = tk.StringVar(value=init.get("addr2",""))
-        self.v_city  = tk.StringVar(value=init.get("city",""))
-        self.v_state = tk.StringVar(value=init.get("state",""))
-        self.v_zip   = tk.StringVar(value=init.get("zip",""))
-        self.v_ui_rate   = tk.StringVar(value=init.get("ui_rate",""))
-        self.v_stx_rate  = tk.StringVar(value=init.get("sales_tax_rate",""))
-        self.v_other_tax = tk.StringVar(value=init.get("other_tax_rates",""))
-
-        self.memo_init = init.get("memo","")
-
-        sf = ScrollFrame(self, height=520); sf.pack(fill="both", expand=True)
-        frm = sf.inner
-
-        def row(lbl, var, r, c=0, width=52, colspan=1):
-            ttk.Label(frm, text=lbl).grid(row=r, column=c, sticky="w", pady=(0,2))
-            ent = ttk.Entry(frm, textvariable=var, width=width)
-            ent.grid(row=r+1, column=c, sticky="we", pady=(0,6), columnspan=colspan); return ent
-
-        e1 = row("Name", self.v_name, 0, 0, 40, 2)
-        row("DBA", self.v_dba, 0, 2, 30, 2)
-
-        ttk.Label(frm, text="Entity Type").grid(row=2, column=0, sticky="w", pady=(0,2))
-        cb_entity = ttk.Combobox(frm, values=ENTITY_TYPES, textvariable=self.v_entity, width=36)
-        cb_entity.grid(row=3, column=0, sticky="we", pady=(0,6))
-
-        row("EIN (e.g., 12-3456789)", self.v_ein, 2, 1, 26)
-        row("EDD Number", self.v_edd, 2, 2, 20)
-        row("Sales Tax Account", self.v_sales, 2, 3, 20)
-
-        ttk.Label(frm, text="Account Manager").grid(row=4, column=0, sticky="w", pady=(0,2))
-        mgr_cb, self.v_acctmgr = self.master._make_mgr_combobox(frm, initial_name=self.v_acctmgr.get())
-        mgr_cb.grid(row=5, column=0, sticky="we", pady=(0,6), columnspan=2)
-
-        row("File Location (folder path or URL)", self.v_path, 4, 2, 40, 2)
-
-        ttk.Label(frm, text="client Address").grid(row=6, column=0, sticky="w", pady=(8,2))
-        row("Address 1", self.v_addr1, 7, 0, 50, 4)
-        row("Address 2", self.v_addr2, 9, 0, 50, 4)
-
-        ttk.Label(frm, text="City").grid(row=11, column=0, sticky="w", pady=(0,2))
-        ent_city = ttk.Entry(frm, textvariable=self.v_city, width=32)
-        ent_city.grid(row=12, column=0, sticky="we", pady=(0,6), columnspan=2)
-
-        ttk.Label(frm, text="State").grid(row=11, column=2, sticky="w", pady=(0,2))
-        cb_state = ttk.Combobox(frm, values=US_STATES, textvariable=self.v_state, width=10)
-        cb_state.grid(row=12, column=2, sticky="we", pady=(0,6))
-
-        ttk.Label(frm, text="Zip").grid(row=11, column=3, sticky="w", pady=(0,2))
-        ent_zip = ttk.Entry(frm, textvariable=self.v_zip, width=14)
-        ent_zip.grid(row=12, column=3, sticky="we", pady=(0,6))
-
-        ttk.Label(frm, text="Tax Rates").grid(row=14, column=0, sticky="w", pady=(8,2))
-        row("UI Rate (%)", self.v_ui_rate, 15, 0, 12)
-        row("Sales Tax Rate (%)", self.v_stx_rate, 15, 1, 16)
-        row("Other Tax Rates (text)", self.v_other_tax, 15, 2, 36, 2)
-
-        ttk.Label(frm, text="Officers / Personnel").grid(row=17, column=0, sticky="w", pady=(6,2))
-        self.off_cols = ("name","first_name","middle_name","last_name","nickname",
-                         "email","phone","addr1","addr2","city","state","zip","dob")
-        self.off_tree = ttk.Treeview(frm, columns=self.off_cols, show="headings", height=4, selectmode="browse")
-
-        for col, label, w in (("name","Person",220),("email","Email",220),("phone","Phone",120)):
-            self.off_tree.heading(col, text=label); self.off_tree.column(col, width=w, anchor="w")
-        for col in ("first_name","middle_name","last_name","nickname","addr1","addr2","city","state","zip","dob"):
-            self.off_tree.heading(col, text=col); self.off_tree.column(col, width=0, stretch=False)
-
-        self.off_tree.grid(row=18, column=0, columnspan=4, sticky="nsew")
-        off_btns = ttk.Frame(frm); off_btns.grid(row=19, column=0, sticky="w", pady=(4,6), columnspan=4)
-        ttk.Button(off_btns, text="Add", command=self._off_add).pack(side=tk.LEFT)
-        ttk.Button(off_btns, text="Edit", command=self._off_edit).pack(side=tk.LEFT, padx=(6,0))
-        ttk.Button(off_btns, text="Remove", command=self._off_remove).pack(side=tk.LEFT, padx=(6,0))
-
-        ttk.Label(frm, text="Memo").grid(row=21, column=0, sticky="w", pady=(4,2))
-        self.memo_txt = ScrolledText(frm, width=72, height=6, wrap="word")
-        self.memo_txt.grid(row=22, column=0, columnspan=4, sticky="we", pady=(0,6))
-        if self.memo_init: self.memo_txt.insert("1.0", self.memo_init)
-
-        for o in init.get("officers", []):
-            o = ensure_officer_dict(o)
-            vals = (
-                display_officer_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
-                o["email"], o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"]
-            )
-            self.off_tree.insert("", "end", values=vals)
-
-        btns = ttk.Frame(self); btns.pack(fill="x", pady=(6,6))
-        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=(6,0))
-        ttk.Button(btns, text="Save", command=self._save).pack(side=tk.RIGHT)
-
-        self.bind("<Return>", lambda _e: self._save()); self.bind("<Escape>", lambda _e: self.destroy())
-        self.after(50, e1.focus_set); self.grab_set(); self.transient(master)
-
-    def _off_add(self):
-        d = OfficerDialog(self, "Add Personnel"); self.wait_window(d)
-        if d.result:
-            o = ensure_officer_dict(d.result)
-            vals = (
-                display_officer_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
-                o["email"], o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"]
-            )
-            self.off_tree.insert("", "end", values=vals)
-
-    def _off_edit(self):
-        sel = self.off_tree.selection()
-        if not sel:
-            messagebox.showinfo("Edit", "Select a personnel row to edit."); return
-        v = self.off_tree.item(sel[0], "values")
-        init = {
-            "name":        v[0],
-            "first_name":  v[1], "middle_name": v[2], "last_name": v[3], "nickname": v[4],
-            "email":       v[5], "phone": v[6],
-            "addr1":       v[7], "addr2": v[8], "city": v[9], "state": v[10], "zip": v[11],
-            "dob":         v[12],
-        }
-        d = OfficerDialog(self, "Edit Personnel", init); self.wait_window(d)
-        if d.result:
-            o = ensure_officer_dict(d.result)
-            new_vals = (
-                display_officer_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
-                o["email"], o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"]
-            )
-            self.off_tree.item(sel[0], values=new_vals)
-
-    def _off_remove(self):
-        sel = self.off_tree.selection()
-        if not sel:
-            messagebox.showinfo("Remove", "Select a personnel row to remove."); return
-        self.off_tree.delete(sel[0])
-
-    def _gather_officers(self) -> List[Dict[str,str]]:
-        offs = []
-        for iid in self.off_tree.get_children():
-            v = self.off_tree.item(iid, "values")
-            offs.append({
-                "name":        v[0],
-                "first_name":  v[1], "middle_name": v[2], "last_name": v[3], "nickname": v[4],
-                "email":       v[5], "phone": v[6],
-                "addr1":       v[7], "addr2": v[8], "city": v[9], "state": v[10], "zip": v[11],
-                "dob":         v[12],
-            })
-        return offs
-
-    def _save(self):
-        name = self.v_name.get().strip()
-        if not name:
-            messagebox.showerror("Required", "Name is required."); return
-
-        officers = self._gather_officers()
-        memo     = self.memo_txt.get("1.0", "end").strip()
-
-        self.result = {
-            "name": name,
-            "dba": self.v_dba.get().strip(),
-            "entity_type": self.v_entity.get().strip(),
-            "ein": self.v_ein.get().strip(),
-            "edd_number": self.v_edd.get().strip(),
-            "sales_tax_account": self.v_sales.get().strip(),
-            "acct_mgr": self.v_acctmgr.get().strip(),
-            "file_location": self.v_path.get().strip(),
-
-            "addr1": self.v_addr1.get().strip(),
-            "addr2": self.v_addr2.get().strip(),
-            "city":  self.v_city.get().strip(),
-            "state": self.v_state.get().strip(),
-            "zip":   self.v_zip.get().strip(),
-
-            "ui_rate": self.v_ui_rate.get().strip(),
-            "sales_tax_rate": self.v_stx_rate.get().strip(),
-            "other_tax_rates": self.v_other_tax.get().strip(),
-            "tax_rates_last_checked": date.today().isoformat(),
-
-            "officers": officers,
-            "employees": self._initial.get("employees", []),  # keep if existed
-            "memo": memo,
-            "logs": self._initial.get("logs", []),
-        }
-        self.destroy()
 
 # -------------------- Log Dialog --------------------
 class LogDialog(tk.Toplevel):
@@ -1361,7 +1037,7 @@ class LogDialog(tk.Toplevel):
 class App(ttk.Frame):
     COLS = ("name",
             "dba",
-            "officers",
+            "relations",
             "ein",
             "emails",
             "phones",
@@ -1570,6 +1246,46 @@ class App(ttk.Frame):
                 self.search_entry.focus_set()
             return "break"
 
+        def _ensure_bidirectional_link(
+            self,
+            a_id: str,
+            b_id: str,
+            a_label: str,
+            b_label: str,
+            a_is_business: bool,
+            b_is_business: bool,
+        ):
+            def find(cid):
+                for c in self.items:
+                    if str(c.get("id", "")) == cid:
+                        return c
+                return None
+
+            a = find(a_id)
+            b = find(b_id)
+            if not a or not b:
+                return
+
+            def ensure_link(src, dst_id, dst_label, role):
+                offs = src.setdefault("relations", [])
+                for o in offs:
+                    if o.get("linked_client_id") == dst_id:
+                        return
+                offs.append({
+                    "name": dst_label,
+                    "first_name": dst_label,
+                    "role": role,
+                    "linked_client_id": dst_id,
+                    "linked_client_label": dst_label,
+                })
+
+            # Role rules
+            role_a_to_b = "business" if b_is_business else ""
+            role_b_to_a = "business" if a_is_business else ""
+
+            ensure_link(a, b_id, b_label, role_a_to_b)
+            ensure_link(b, a_id, a_label, role_b_to_a)
+
         self.search_entry.bind("<KeyPress-Down>", _on_search_down)
         self.search_entry.bind("<KeyPress-Up>", _on_search_up)
         self.search_entry.bind("<Return>", _submit_top_search)
@@ -1761,20 +1477,34 @@ class App(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Account Managers", f"Failed to save:\n{e}")
 
-
     def _update_data_dialog(self):
-        # migrate tasks.json keys client_* -> client_*
         try:
             if not messagebox.askyesno(
                 "Update Data",
-                "This will update data file.\n\n"
-                "Proceed?"
+                "This will update data files.\n\nProceed?"
             ):
                 return
 
-            stats = migrate_tasks_client_to_client(TASKS_FILE, remove_old_keys=True)
+            stats_tasks = {"updated": 0, "skipped": 0, "path": str(TASKS_FILE)}
+            stats_off   = {"clients_touched": 0, "officers_moved": 0, "officer_dupes_skipped": 0, "officers_keys_removed": 0}
 
-            # refresh dashboard if present
+            # 1) tasks.json migration (company_* -> client_*)
+            if not is_migration_done(MIG_TASKS_CLIENT_TO_CLIENT):
+                stats_tasks = migrate_tasks_client_to_client(TASKS_FILE, remove_old_keys=True)
+                mark_migration_done(MIG_TASKS_CLIENT_TO_CLIENT, {"path": str(TASKS_FILE)})
+            else:
+                stats_tasks = {"updated": 0, "skipped": -1, "path": str(TASKS_FILE)}  # skipped=-1 => already migrated
+
+            # 2) clients.json migration (officers -> relations)
+            if not is_migration_done(MIG_OFFICERS_TO_RELATIONS):
+                stats_off = migrate_officers_to_relations(self.items, remove_old_key=True)
+                save_clients(self.items)
+                mark_migration_done(MIG_OFFICERS_TO_RELATIONS, {"clients_touched": stats_off.get("clients_touched", 0)})
+            else:
+                # still ensure clients are saved? usually no need
+                stats_off = {"clients_touched": 0, "officers_moved": 0, "officer_dupes_skipped": 0, "officers_keys_removed": 0}
+
+            # refresh UI
             try:
                 dash = getattr(self, "dashboard", None)
                 if dash and hasattr(dash, "reload_from_disk"):
@@ -1782,14 +1512,34 @@ class App(ttk.Frame):
             except Exception:
                 pass
 
+            try:
+                self.populate()
+                self._update_suggestions()
+            except Exception:
+                pass
+
+            # Pretty display for "already migrated"
+            tasks_status = (
+                "Already migrated" if stats_tasks.get("skipped") == -1
+                else f"Updated: {stats_tasks.get('updated', 0)}\n  Skipped: {stats_tasks.get('skipped', 0)}"
+            )
+
             messagebox.showinfo(
                 "Update Data",
-                f"Updated: {stats.get('updated', 0)}\n"
-                f"Skipped: {stats.get('skipped', 0)}\n\n"
-                f"File: {stats.get('path','')}"
+                "tasks.json:\n"
+                f"  {tasks_status}\n\n"
+                "clients.json (officers → relations):\n"
+                f"  Clients touched: {stats_off.get('clients_touched', 0)}\n"
+                f"  Officers moved: {stats_off.get('officers_moved', 0)}\n"
+                f"  Dupes skipped: {stats_off.get('officer_dupes_skipped', 0)}\n"
+                f"  officers keys removed: {stats_off.get('officers_keys_removed', 0)}\n\n"
+                f"migrations flag file: {str(MIGRATIONS_FILE)}"
             )
+
         except Exception as e:
-            messagebox.showerror("Update Data", f"Failed updating tasks.json:\n{e}")
+            messagebox.showerror("Update Data", f"Failed updating data:\n{e}")
+
+
   
     def _mgr_filter_names_ci(self):
         """Case-insensitive set for matching."""
@@ -1856,6 +1606,158 @@ class App(ttk.Frame):
         y = button_widget.winfo_rooty() + button_widget.winfo_height()
         m.tk_popup(x, y)
 
+    def build_link_candidates(self) -> list[dict]:
+        """
+        Build a list of link candidates for LinkDialog autocomplete.
+
+        IMPORTANT:
+        - Clients only (companies + individuals in clients.json). Do NOT include personnels.
+        - Uses SSN for Individual, EIN for Business.
+        - If missing required ID, candidate is shown but NOT linkable (id="").
+        """
+        cands: list[dict] = []
+
+        def _clean(s: str) -> str:
+            return (s or "").strip()
+
+        def _is_individual_client(c: dict) -> bool:
+            if bool(c.get("is_individual")):
+                return True
+            et = (c.get("entity_type") or "").strip().casefold()
+            return et == "individual"
+
+        def _candidate_id_and_label(i: int, c: dict) -> tuple[str, str, bool]:
+            name = _clean(c.get("name", "")) or f"Client #{i}"
+            is_ind = _is_individual_client(c)
+
+            if is_ind:
+                ssn9 = normalize_ssn_digits(c.get("ssn", "") or c.get("ein", ""))
+                if ssn9:
+                    return (f"ssn:{ssn9}", f"{name} — SSN {ssn9}", False)  # is_company=False
+                return ("", f"{name} — (Missing SSN)", False)
+            else:
+                ein9 = normalize_ein_digits(c.get("ein", ""))
+                if ein9:
+                    return (f"ein:{ein9}", f"{name} — EIN {ein9}", True)   # is_company=True
+                return ("", f"{name} — (Missing EIN)", True)
+
+        for i, c in enumerate(getattr(self, "items", []) or []):
+            if not isinstance(c, dict):
+                continue
+            cname = _clean(c.get("name", ""))
+            if not cname:
+                continue
+
+            cid, label, is_company = _candidate_id_and_label(i, c)
+            cands.append({
+                "id": cid,             # "" means not linkable until SSN/EIN exists
+                "label": label,
+                "is_company": is_company,
+            })
+
+        # Dedupe by label (case-insensitive), keep first occurrence
+        seen = set()
+        out = []
+        for x in cands:
+            lab = _clean(x.get("label", ""))
+            if not lab:
+                continue
+            k = lab.casefold()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(x)
+
+        return out
+
+
+    def get_client_by_id(self, client_key: str):
+        """Resolve a client by a key used in link candidates:
+        - 'client:<id>'  -> match client['id']
+        - 'ein:<ein>'    -> match client['ein'] (digits-only compare)
+        - 'idx:<n>'      -> index into self.items
+        - raw id         -> match client['id']
+        Returns the client dict or None.
+        """
+        _, c = self._resolve_client_key(client_key)
+        return c
+
+    def _resolve_client_key(self, client_key: str):
+        """Return (idx, client_dict) for a candidate key; (None, None) if not found.
+
+        Supported keys:
+        - client:<id>
+        - ein:<9>
+        - ssn:<9>
+        - raw id fallback -> match client['id']
+        """
+        key = str(client_key or "").strip()
+        if not key:
+            return (None, None)
+
+        items = getattr(self, "items", []) or []
+
+        # client:<id>
+        if key.startswith("client:"):
+            target_id = key.split(":", 1)[1].strip()
+            for i, c in enumerate(items):
+                if isinstance(c, dict) and str(c.get("id") or "").strip() == target_id:
+                    return (i, c)
+            return (None, None)
+
+        # ein:<ein>
+        if key.startswith("ein:"):
+            want = normalize_ein_digits(key.split(":", 1)[1])
+            if not want:
+                return (None, None)
+            for i, c in enumerate(items):
+                if not isinstance(c, dict):
+                    continue
+                have = normalize_ein_digits(c.get("ein", ""))
+                if have and have == want:
+                    return (i, c)
+            return (None, None)
+
+
+        # ssn:<ssn>
+        if key.startswith("ssn:"):
+            want = normalize_ssn_digits(key.split(":", 1)[1])
+            if not want:
+                return (None, None)
+            for i, c in enumerate(items):
+                if not isinstance(c, dict):
+                    continue
+                have = normalize_ssn_digits(c.get("ssn", "") or c.get("ein", ""))
+
+                if have and have == want:
+                    return (i, c)
+            return (None, None)
+
+        # raw id fallback
+        for i, c in enumerate(items):
+            if isinstance(c, dict) and str(c.get("id") or "").strip() == key:
+                return (i, c)
+
+        return (None, None)
+
+    def _canonical_client_key(self, c: dict, idx: int | None):
+        """Prefer stable keys for storage in linked_client_id.
+
+        - Individual -> ssn:<9>
+        - Business   -> ein:<9>
+        - No idx fallback (do not persist random ids)
+        """
+        if not isinstance(c, dict):
+            return ""
+
+        is_individual = bool(c.get("is_individual")) or ((c.get("entity_type") or "").strip().casefold() == "individual")
+
+        if is_individual:
+            ssn9 = normalize_ssn_digits(c.get("ssn", ""))
+            return f"ssn:{ssn9}" if ssn9 else ""
+        else:
+            ein9 = normalize_ein_digits(c.get("ein", ""))
+            return f"ein:{ein9}" if ein9 else ""
 
 
     # ---------- Main page ----------
@@ -1898,7 +1800,7 @@ class App(ttk.Frame):
             self.tree.heading(c, text=header, command=lambda c=c: self.sort_by(c, False))
             if c in ("phones","ein"):
                 w = 100
-            elif c in ("emails","officers"):
+            elif c in ("emails","relations"):
                 w = 200
             elif c == "name":
                 w = 220
@@ -1931,8 +1833,7 @@ class App(ttk.Frame):
 
     # ---------- client Detail (Notebook) ----------
     def _build_detail_page(self, idx: int):
-        for w in self.page_host.winfo_children():
-            self._clear_page_host()
+        self._clear_page_host()
 
         c = self.items[idx]
         page = ttk.Frame(self.page_host)
@@ -2014,7 +1915,7 @@ class App(ttk.Frame):
 
         # Analysis tab
         ana = ttk.Frame(nb, padding=8); nb.add(ana, text="Analysis")
-        ttk.Label(ana, text=f"Officers: {len(c.get('officers',[]))}").pack(anchor="w")
+        ttk.Label(ana, text=f"relations: {len(c.get('relations',[]))}").pack(anchor="w")
         ttk.Label(ana, text=f"Employees: {len(c.get('employees',[]))}").pack(anchor="w")
         ttk.Label(ana, text=f"Has EIN: {'Yes' if c.get('ein') else 'No'}").pack(anchor="w")
         ttk.Label(ana, text=f"Entity Type: {c.get('entity_type','') or '—'}").pack(anchor="w")
@@ -2026,14 +1927,13 @@ class App(ttk.Frame):
 
     # ---------- Personnel Detail Page ----------
     def _build_person_page(self, client_idx: int, role_key: str, person_idx: int):
-        for w in self.page_host.winfo_children():
-            self._clear_page_host()
+        self._clear_page_host()
 
         c = self.items[client_idx]
         people = c.get(role_key, [])
         if person_idx < 0 or person_idx >= len(people):
             self.navigate("detail", client_idx, replace=True); return
-        p = ensure_officer_dict(people[person_idx])
+        p = ensure_relation_dict(people[person_idx])
 
         page = ttk.Frame(self.page_host)
         page.pack(fill=tk.BOTH, expand=True)
@@ -2042,7 +1942,7 @@ class App(ttk.Frame):
 
         title_box = ttk.Frame(header); title_box.pack(side=tk.LEFT, padx=12, fill=tk.X, expand=True)
         ttk.Label(title_box, text=p.get("name","") or "(Person)", font=("Segoe UI", 13, "bold")).pack(anchor="w")
-        ttk.Label(title_box, text=f"{'Officer' if role_key=='officers' else 'Employee'} — {c.get('name','')}", foreground="#555").pack(anchor="w", pady=(2,0))
+        ttk.Label(title_box, text=f"{'relations' if role_key=='relations' else 'Employee'} — {c.get('name','')}", foreground="#555").pack(anchor="w", pady=(2,0))
 
         actions = ttk.Frame(header); actions.pack(side=tk.RIGHT)
         ttk.Button(actions, text="Edit", command=lambda: self._edit_person(client_idx, role_key, person_idx)).pack(side=tk.TOP, fill=tk.X)
@@ -2085,13 +1985,35 @@ class App(ttk.Frame):
 
     def _edit_person(self, client_idx: int, role_key: str, person_idx: int):
         c = self.items[client_idx]
-        p = ensure_officer_dict(c.get(role_key, [])[person_idx])
-        d = OfficerDialog(self, f"Edit {'Officer' if role_key=='officers' else 'Employee'}", p)
+        p = ensure_relation_dict(c.get(role_key, [])[person_idx])
+
+        prev_link = (p.get("linked_client_id") or "").strip()
+
+        link_cands = []
+        try:
+            link_cands = self.build_link_candidates()
+        except Exception:
+            link_cands = []
+
+        d = LinkDialog(self, f"Edit {'relations' if role_key=='relations' else 'Employee'}", p, link_candidates=link_cands)
         self.wait_window(d)
         if d.result:
-            c[role_key][person_idx] = ensure_officer_dict(d.result)
+            newp = ensure_relation_dict(d.result)
+            if not (newp.get("linked_client_id") or "").strip():
+                newp["linked_client_label"] = ""
+            c[role_key][person_idx] = newp
+
+            # Persist this side first
             save_clients(self.items)
+
+            # Sync other side if link changed
+            new_link = (newp.get("linked_client_id") or "").strip()
+            if prev_link != new_link:
+                self._sync_link_change_for_person(client_idx, prev_link, new_link)
+
             self.navigate("person", (client_idx, role_key, person_idx), replace=True)
+
+
 
     # ---- Rates editing / refresh ----
     def _edit_rates(self, idx: int):
@@ -2332,10 +2254,10 @@ class App(ttk.Frame):
     def _set_row_height_for_items(self, items: List[Dict[str, Any]]):
         max_lines = 1
         for c in items:
-            officers_lines = max(1, len(officers_to_display_lines(c.get("officers", []))))
-            emails_lines   = max(1, len(officers_to_flat_emails(c.get("officers", []))) or 1)
-            phones_lines   = max(1, len(officers_to_flat_phones(c.get("officers",[]))) or 1)
-            max_lines = max(max_lines, officers_lines, emails_lines, phones_lines)
+            relations_lines = max(1, len(relations_to_display_lines(c.get("relations", []))))
+            emails_lines   = max(1, len(relations_to_flat_emails(c.get("relations", []))) or 1)
+            phones_lines   = max(1, len(relations_to_flat_phones(c.get("relations",[]))) or 1)
+            max_lines = max(max_lines, relations_lines, emails_lines, phones_lines)
         row_px = max(self.base_row_px, int(self.base_row_px * 1.45) * max_lines)
         self.style.configure("Treeview", rowheight=row_px)
 
@@ -2438,9 +2360,9 @@ class App(ttk.Frame):
 
             res = []
             for c in self.items:
-                officer_phones = officers_to_flat_phones(c.get("officers",[]))
-                phones_digits_full = ["".join(PHONE_DIGITS_RE.findall(p or "")) for p in officer_phones]
-                phones_norm_last10 = [normalize_phone_digits(p) for p in officer_phones]
+                relations_phones = relations_to_flat_phones(c.get("relations",[]))
+                phones_digits_full = ["".join(PHONE_DIGITS_RE.findall(p or "")) for p in relations_phones]
+                phones_norm_last10 = [normalize_phone_digits(p) for p in relations_phones]
                 phone_hit = False
                 if last10:
                     if any(last10 in p for p in phones_digits_full) or any(p.endswith(last10) for p in phones_norm_last10 if p):
@@ -2458,11 +2380,11 @@ class App(ttk.Frame):
                     norm_text(c.get("sales_tax_account","")),
                     norm_text(c.get("addr1","")), norm_text(c.get("addr2","")),
                     norm_text(c.get("city","")), norm_text(c.get("state","")), norm_text(c.get("zip","")),
-                    " ".join(norm_text(ensure_officer_dict(o).get("name","")) for o in c.get("officers",[])),
-                    " ".join(norm_text(ensure_officer_dict(o).get("first_name","")) for o in c.get("officers",[])),
-                    " ".join(norm_text(ensure_officer_dict(o).get("last_name","")) for o in c.get("officers",[])),
-                    " ".join(norm_text(ensure_officer_dict(o).get("nickname","")) for o in c.get("officers",[])),
-                    " ".join(norm_text(ensure_officer_dict(o).get("email","")) for o in c.get("officers",[])),
+                    " ".join(norm_text(ensure_relation_dict(o).get("name","")) for o in c.get("relations",[])),
+                    " ".join(norm_text(ensure_relation_dict(o).get("first_name","")) for o in c.get("relations",[])),
+                    " ".join(norm_text(ensure_relation_dict(o).get("last_name","")) for o in c.get("relations",[])),
+                    " ".join(norm_text(ensure_relation_dict(o).get("nickname","")) for o in c.get("relations",[])),
+                    " ".join(norm_text(ensure_relation_dict(o).get("email","")) for o in c.get("relations",[])),
                     norm_text(c.get("file_location","")),
                     norm_text(c.get("memo","")),
                 ])
@@ -2490,13 +2412,13 @@ class App(ttk.Frame):
         items = sorted(self.filtered_items(), key=lambda c: (c.get("name","").lower()))
         self._set_row_height_for_items(items)
         for c in items:
-            officer_lines = officers_to_display_lines(c.get("officers",[]))
-            emails_lines  = officers_to_flat_emails(c.get("officers",[]))
-            phones_lines  = officers_to_flat_phones(c.get("officers",[]))
+            relations_lines = relations_to_display_lines(c.get("relations",[]))
+            emails_lines  = relations_to_flat_emails(c.get("relations",[]))
+            phones_lines  = relations_to_flat_phones(c.get("relations",[]))
             vals = (
                 c.get("name",""),
                 c.get("dba",""),
-                "\n".join(officer_lines),
+                "\n".join(relations_lines),
                 c.get("ein",""),
                 "\n".join(emails_lines),
                 "\n".join(phones_lines),
@@ -2591,11 +2513,58 @@ class App(ttk.Frame):
         row = self.tree.item(sel[0], "values")
         return self._find_index_by_row_values(row)
 
+    def _dup_id_conflict(self, candidate: dict, ignore_idx: int | None = None):
+        """
+        Returns (kind, digits, other_idx, other_client) if candidate conflicts with an existing client.
+        kind is "SSN" or "EIN".
+        """
+        if not isinstance(candidate, dict):
+            return None
+
+        is_individual = bool(candidate.get("is_individual")) or ((candidate.get("entity_type") or "").strip().casefold() == "individual")
+
+        cand_ssn = normalize_ssn_digits(candidate.get("ssn", "") or candidate.get("ein", ""))
+        cand_ein = normalize_ein_digits(candidate.get("ein", ""))
+
+        # If individual, enforce SSN uniqueness when present.
+        # If business, enforce EIN uniqueness when present.
+        for i, c in enumerate(getattr(self, "items", []) or []):
+            if ignore_idx is not None and i == ignore_idx:
+                continue
+            if not isinstance(c, dict):
+                continue
+
+            exist_ssn = normalize_ssn_digits(c.get("ssn", "") or c.get("ein", ""))
+            exist_ein = normalize_ein_digits(c.get("ein", ""))
+
+            if cand_ssn and exist_ssn and cand_ssn == exist_ssn:
+                return ("SSN", cand_ssn, i, c)
+            if cand_ein and exist_ein and cand_ein == exist_ein:
+                return ("EIN", cand_ein, i, c)
+
+        return None
+
     def on_new(self):
         dlg = ClientDialog(self, "New Client"); self.wait_window(dlg)
         if dlg.result:
-            self.items.append(dlg.result); save_clients(self.items)
-            self.populate(); self._update_suggestions()
+            conflict = self._dup_id_conflict(dlg.result, ignore_idx=None)
+            if conflict:
+                kind, digits, other_idx, other_client = conflict
+                other_name = (other_client.get("name") or "").strip() or f"Client #{other_idx}"
+                messagebox.showerror(
+                    "Duplicate ID",
+                    f"A client with the same {kind} already exists.\n\n"
+                    f"{kind}: {digits}\n"
+                    f"Existing client: {other_name}\n\n"
+                    f"This client was NOT added."
+                )
+                return
+
+            self.items.append(dlg.result)
+            save_clients(self.items)
+            self.populate()
+            self._update_suggestions()
+
 
     def on_edit(self):
         idx = getattr(self, "_current_detail_idx", None)
@@ -2605,10 +2574,26 @@ class App(ttk.Frame):
                 messagebox.showinfo("Edit", "Select a row to edit."); return
         dlg = ClientDialog(self, "Edit Client", self.items[idx]); self.wait_window(dlg)
         if dlg.result:
-            self.items[idx] = dlg.result; save_clients(self.items)
-            self.populate(); self._update_suggestions()
+            conflict = self._dup_id_conflict(dlg.result, ignore_idx=idx)
+            if conflict:
+                kind, digits, other_idx, other_client = conflict
+                other_name = (other_client.get("name") or "").strip() or f"Client #{other_idx}"
+                messagebox.showerror(
+                    "Duplicate ID",
+                    f"Another client already has this {kind}.\n\n"
+                    f"{kind}: {digits}\n"
+                    f"Existing client: {other_name}\n\n"
+                    f"Your changes were NOT saved."
+                )
+                return
+
+            self.items[idx] = dlg.result
+            save_clients(self.items)
+            self.populate()
+            self._update_suggestions()
             if self._current_page[0] != "main":
                 self.navigate(self._current_page[0], self._current_page[1], replace=True)
+
 
     def _detail_edit(self, idx: int):
         self.on_edit()
@@ -2621,7 +2606,7 @@ class App(ttk.Frame):
         items = self.filtered_items()
         seen, acc = set(), []
         for c in items:
-            for e in officers_to_flat_emails(c.get("officers",[])):
+            for e in relations_to_flat_emails(c.get("relations",[])):
                 if e and e not in seen:
                     seen.add(e); acc.append(e)
         if not acc:
@@ -2712,14 +2697,23 @@ class App(ttk.Frame):
         ):
             return
 
-        del self.items[idx]
-        save_clients(self.items)
+        # Optional safety: if you want to block deleting clients without stable IDs
+        # target_id = self._canonical_client_key(c, idx)
+        # if not target_id:
+        #     messagebox.showerror("Delete Error", "This entity has no ID (EIN/SSN). Cannot safely remove links.")
+        #     return
 
-        # After deletion, return to main and refresh
+        # Delete exactly once
+        del self.items[idx]
+
+        # Persist
+        self.save_clients_data()
+
+        # After deletion, return to search and refresh
         self.navigate("search", None, push=False, replace=True)
         self.populate()
         self._update_suggestions()
-        self.status.set("client deleted.")
+        self.status.set("Client deleted.")
 
     def _on_delete_from_tree(self, event):
         tv = event.widget
@@ -2728,11 +2722,380 @@ class App(ttk.Frame):
         sel = tv.selection()
         if not sel:
             return
-        idx = tv.index(sel[0])
-        self._delete_client_at_index(idx, tv)
 
-    def _delete_client_at_index(self, idx, tv):
-        pass
+        iid = sel[0]
+        self._delete_client_at_index(iid, tv)
+
+
+    def _delete_client_at_index(self, iid, tv):
+        """
+        Delete the client corresponding to a specific Treeview item id (iid).
+        IMPORTANT: Treeview row order != self.items order when sorted/filtered.
+        """
+        try:
+            row_vals = tv.item(iid, "values") or ()
+        except Exception:
+            row_vals = ()
+
+        if not row_vals:
+            return
+
+        real_idx = self._find_index_by_row_values(row_vals)
+        if real_idx is None:
+            messagebox.showwarning("Delete", "Could not resolve the selected client in data.")
+            return
+
+        self._delete_client(real_idx)
+
+
+    def _client_label(self, idx: int) -> str:
+        try:
+            c = self.items[idx]
+            return (c.get("name") or "").strip() or f"Client #{idx}"
+        except Exception:
+            return f"Client #{idx}"
+
+    def _client_link_id(self, idx: int) -> str:
+        """
+        Stable identifier used for linked_client_id.
+
+        Rules:
+        - Individual -> ssn:<9>
+        - Business   -> ein:<9>
+        - If missing required ID, returns "" (caller should block linking)
+        """
+        c = self.items[idx]
+
+        is_individual = bool(c.get("is_individual")) or ((c.get("entity_type") or "").strip().casefold() == "individual")
+
+        if is_individual:
+            ssn9 = normalize_ssn_digits(c.get("ssn", ""))
+            return f"ssn:{ssn9}" if ssn9 else ""
+        else:
+            ein9 = normalize_ein_digits(c.get("ein", ""))
+            return f"ein:{ein9}" if ein9 else ""
+
+    def _ensure_people_list(self, client_idx: int, role_key: str) -> list:
+        c = self.items[client_idx]
+        c.setdefault(role_key, [])
+        if not isinstance(c[role_key], list):
+            c[role_key] = []
+        return c[role_key]
+
+    def _is_link_record_to(self, person_dict: dict, target_link_id: str) -> bool:
+        try:
+            return str(person_dict.get("linked_client_id") or "").strip() == str(target_link_id or "").strip()
+        except Exception:
+            return False
+
+    def _remove_link_record(self, client_idx: int, role_key: str, target_link_id: str) -> bool:
+        """
+        Remove any personnel entry whose linked_client_id == target_link_id.
+        Returns True if anything removed.
+        """
+        people = self._ensure_people_list(client_idx, role_key)
+        before = len(people)
+        people[:] = [ensure_relation_dict(x) for x in people if not self._is_link_record_to(ensure_relation_dict(x), target_link_id)]
+        return len(people) != before
+
+    def _upsert_link_record(self, client_idx: int, role_key: str, record: dict) -> bool:
+        """
+        Insert or replace a link-record in role_key by matching linked_client_id.
+        Returns True if changed.
+        """
+        people = self._ensure_people_list(client_idx, role_key)
+        record = ensure_relation_dict(record)
+        tgt = str(record.get("linked_client_id") or "").strip()
+        if not tgt:
+            return False
+
+        for i, x in enumerate(people):
+            x = ensure_relation_dict(x)
+            if str(x.get("linked_client_id") or "").strip() == tgt:
+                # Replace existing
+                people[i] = record
+                return True
+
+        people.append(record)
+        return True
+
+    def _build_link_record_from_client(self, source_client_idx: int, target_client_idx: int) -> dict:
+        """
+        Create the personnel dict that will be stored on source, pointing to target.
+        Pulls fields from target client (address + contact), and best-effort individual name parts.
+        """
+        target = self.items[target_client_idx]
+        target_label = self._client_label(target_client_idx)
+        target_link_id = self._client_link_id(target_client_idx)
+
+        is_individual = bool(target.get("is_individual")) or ((target.get("entity_type") or "").strip().casefold() == "individual")
+
+        # Prefer target's own email/phone if present
+        email = (target.get("email") or "").strip() if isinstance(target.get("email"), str) else ""
+        phone = (target.get("phone") or "").strip() if isinstance(target.get("phone"), str) else ""
+
+        # Fallback: use the target's first relations contact info
+        if (not email) or (not phone):
+            try:
+                offs = target.get("relations", []) or []
+                if offs:
+                    o0 = ensure_relation_dict(offs[0])
+                    if not email:
+                        email = (o0.get("email") or "").strip()
+                    if not phone:
+                        phone = (o0.get("phone") or "").strip()
+            except Exception:
+                pass
+
+        first_name = ""
+        middle_name = ""
+        last_name = ""
+        nickname = ""
+
+        if is_individual:
+            # Your data pattern: individual nickname often stored in dba
+            nickname = (target.get("dba") or "").strip()
+
+            # Best-effort parse of target["name"] into first/middle/last
+            full = (target.get("name") or "").strip()
+            parts = [p for p in re.split(r"\s+", full) if p]
+            if len(parts) == 1:
+                first_name = parts[0]
+            elif len(parts) == 2:
+                first_name, last_name = parts
+            elif len(parts) >= 3:
+                first_name = parts[0]
+                last_name = parts[-1]
+                middle_name = " ".join(parts[1:-1])
+
+        return ensure_relation_dict({
+            "name": target_label,
+            "nickname": nickname or target_label,
+
+            "first_name": first_name,
+            "middle_name": middle_name,
+            "last_name": last_name,
+
+            "email": email,
+            "phone": phone,
+
+            "addr1": (target.get("addr1") or "").strip(),
+            "addr2": (target.get("addr2") or "").strip(),
+            "city":  (target.get("city") or "").strip(),
+            "state": (target.get("state") or "").strip(),
+            "zip":   (target.get("zip") or "").strip(),
+            "dob": (target.get("dob") or "").strip() if isinstance(target.get("dob"), str) else "",
+
+            "role": "linked",
+
+            "linked_client_id": target_link_id,
+            "linked_client_label": target_label,
+        })
+
+
+    def _sync_bidirectional_link(self, a_idx: int, b_idx: int, *, add: bool) -> bool:
+        """
+        Ensure both sides reflect the same link state.
+        If add=True: add/update link record on both sides.
+        If add=False: remove link record on both sides.
+        Returns True if anything changed.
+        """
+        if a_idx is None or b_idx is None:
+            return False
+        if a_idx == b_idx:
+            return False
+
+        changed = False
+        a_to_b_id = self._client_link_id(b_idx)
+        b_to_a_id = self._client_link_id(a_idx)
+
+        if add:
+            rec_a = self._build_link_record_from_client(a_idx, b_idx)
+            rec_b = self._build_link_record_from_client(b_idx, a_idx)
+
+            # Choose where these link-records live:
+            # - for businesses, you probably want them under "relations"
+            # - if you want "employees" for some cases, pass role_key into caller
+            changed |= self._upsert_link_record(a_idx, "relations", rec_a)
+            changed |= self._upsert_link_record(b_idx, "relations", rec_b)
+        else:
+            changed |= self._remove_link_record(a_idx, "relations", a_to_b_id)
+            changed |= self._remove_link_record(b_idx, "relations", b_to_a_id)
+
+        return changed
+
+    def _sync_link_change_for_person(self, this_client_idx: int, prev_link_id: str, new_link_id: str) -> None:
+        """
+        Called when an relations/Employee's linked_client_id changes.
+        Mirrors unlink/link on BOTH clients.
+        """
+        prev_link_id = (prev_link_id or "").strip()
+        new_link_id  = (new_link_id or "").strip()
+
+        prev_idx = self._find_client_idx_by_id_or_ein(prev_link_id) if prev_link_id else None
+        new_idx  = self._find_client_idx_by_id_or_ein(new_link_id)  if new_link_id else None
+
+        changed = False
+
+        # unlink old
+        if prev_idx is not None:
+            changed |= self._sync_bidirectional_link(this_client_idx, prev_idx, add=False)
+
+        # link new
+        if new_idx is not None:
+            changed |= self._sync_bidirectional_link(this_client_idx, new_idx, add=True)
+
+        if changed:
+            save_clients(self.items)
+            self.populate()
+            self._update_suggestions()
+
+    def link_personnel_from_client(self, client_idx: int):
+        """
+        UI action for your new 'Link' button in Personnel/Business:
+        - user searches for a client to link
+        - relations dialog opens prefilled
+        - on save: record added to this client + bidirectional link ensured
+        """
+        # candidates: clients only (avoid showing personnels)
+        cands = []
+        try:
+            cands = self.build_link_candidates()
+        except Exception:
+            cands = []
+
+        if not cands:
+            messagebox.showinfo("Link", "No clients available to link.")
+            return
+
+        # --- small chooser dialog (Entry + autocomplete) ---
+        win = tk.Toplevel(self)
+        win.title("Link to Client")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+
+        v = tk.StringVar(value="")
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Search client to link:").pack(anchor="w")
+        ent = ttk.Entry(frm, textvariable=v, width=60)
+        ent.pack(fill="x", pady=(4, 8))
+
+        label_to_id = {x.get("label",""): x.get("id","") for x in cands if x.get("label")}
+        labels = [x.get("label","") for x in cands if x.get("label")]
+
+        popup = AutocompletePopup(win, ent, on_choose=lambda txt: v.set(txt))
+
+        def matches(prefix: str) -> list[str]:
+            tokens = (prefix or "").strip().lower().split()
+            if not tokens:
+                return labels
+            out = []
+            for lab in labels:
+                low = lab.lower()
+                if all(t in low for t in tokens):
+                    out.append(lab)
+            return out
+
+        def refresh_popup(*_):
+            popup.show(matches(v.get()))
+            # preselect first
+            if popup.listbox.size() > 0:
+                popup.listbox.selection_clear(0, "end")
+                popup.listbox.selection_set(0)
+                popup.listbox.activate(0)
+
+        def choose_current():
+            # pick selected from popup or exact match
+            if popup.winfo_viewable():
+                cur = popup.listbox.curselection()
+                if cur:
+                    txt = popup.listbox.get(int(cur[0]))
+                    v.set(txt)
+            txt = v.get().strip()
+            if txt not in label_to_id:
+                messagebox.showwarning("Link", "Please choose a client from the list.")
+                return None
+            return txt, label_to_id[txt]
+
+        def on_ok():
+            res = choose_current()
+            if not res:
+                return
+            lab, link_id = res
+
+            target_idx = self._find_client_idx_by_id_or_ein(link_id)
+            if target_idx is None:
+                messagebox.showwarning("Link", "Could not resolve selected client.")
+                return
+
+            # ---- enforce required ID before linking (NO random/idx IDs) ----
+            target = self.items[target_idx]
+            is_individual = bool(target.get("is_individual")) or ((target.get("entity_type") or "").strip().casefold() == "individual")
+
+            if is_individual:
+                ssn9 = normalize_ssn_digits(target.get("ssn", ""))
+                if not ssn9:
+                    messagebox.showerror("Link", "This person client has no SSN.\n\nAdd SSN first before linking.")
+                    return
+            else:
+                ein9 = normalize_ein_digits(target.get("ein", ""))
+                if not ein9:
+                    messagebox.showerror("Link", "This business client has no EIN.\n\nAdd EIN first before linking.")
+                    return
+
+            # Prefill relations record
+            initial = self._build_link_record_from_client(client_idx, target_idx)
+            # ensure dialog shows correct link selection
+            initial["linked_client_id"] = self._client_link_id(target_idx)
+            initial["linked_client_label"] = self._client_label(target_idx)
+            initial["role"] = "linked"
+
+            stable_id = self._client_link_id(target_idx)
+            if not stable_id:
+                messagebox.showerror("Link", "Missing required SSN/EIN. Add it first before linking.")
+                return
+
+            initial["linked_client_id"] = stable_id
+
+            # Open LinkDialog prefilled
+            d = LinkDialog(self, "Linked Person", initial=initial, link_candidates=cands)
+            win.destroy()
+            self.wait_window(d)
+
+            if d.result:
+                newp = ensure_relation_dict(d.result)
+
+                # Add/replace on this client (avoid duplicates by linked_client_id)
+                changed = self._upsert_link_record(client_idx, "relations", newp)
+
+                # Bidirectional mirror (always ensure)
+                target_idx2 = self._find_client_idx_by_id_or_ein(newp.get("linked_client_id", ""))
+                if target_idx2 is not None:
+                    changed |= self._sync_bidirectional_link(client_idx, target_idx2, add=True)
+
+                if changed:
+                    save_clients(self.items)
+                    self.populate()
+                    self._update_suggestions()
+
+        btns = ttk.Frame(frm)
+        btns.pack(fill="x", pady=(6, 0))
+        ttk.Button(btns, text="Cancel", command=lambda: (popup.hide(), win.destroy())).pack(side=tk.RIGHT, padx=(6,0))
+        ttk.Button(btns, text="Link", command=on_ok).pack(side=tk.RIGHT)
+
+        def on_keyrelease(e=None):
+            if e and e.keysym in ("Up","Down","Return","Escape","Prior","Next"):
+                return
+            refresh_popup()
+
+        ent.bind("<KeyRelease>", on_keyrelease)
+        ent.bind("<FocusIn>", lambda e: refresh_popup())
+        ent.bind("<Return>", lambda e: on_ok())
+        ent.bind("<Escape>", lambda e: (popup.hide(), win.destroy(), "break"))
+
+        win.after(50, ent.focus_set)
 
     # ---------- Sorting ----------
     def sort_by(self, col, descending=False):
@@ -3123,42 +3486,14 @@ class App(ttk.Frame):
         self.log.info("nav_back()")
         if not getattr(self, "_history", None):
             return
+        if not self._history:
+            return
+
         prev = self._history.pop()
         self._future.append(self._current_page)
         self._current_page = prev
+
         self._render_current_page()
-
-        self._clear_page_host()
-
-        kind, data = prev
-        if kind == "main":
-            self._ensure_main_page()
-            self.page_main.pack(fill=tk.BOTH, expand=True)
-
-        elif kind == "search":
-            self._ensure_search_page()
-            self.page_search.pack(fill=tk.BOTH, expand=True)
-            self.populate()
-            key = getattr(self, "_return_focus_key", None)
-            if key:
-                self._focus_client_in_search(key)
-                # clear it so it doesn’t keep re-firing
-                self._return_focus_key = None
-        elif kind == "notes":
-            self._ensure_notes_page()
-            self.page_notes.pack(fill=tk.BOTH, expand=True)
-        elif kind == "taxes":
-            ChecklistPage(app=self).ensure(self.page_host)
-        elif kind == "detail":
-            self._build_detail_page(data)
-        else:
-            if self._is_valid_person_payload(data):
-                ci, role_key, pidx = data
-                self._build_person_page(int(ci), str(role_key), int(pidx))
-            else:
-                self._ensure_main_page()
-                self.page_main.pack(fill=tk.BOTH, expand=True)
-        self._update_nav_buttons()
 
     def nav_forward(self):
         self.log.info("nav_forward()")
@@ -3166,41 +3501,245 @@ class App(ttk.Frame):
             return
         if not self._future:
             return
+
         nxt = self._future.pop()
         self._history.append(self._current_page)
         self._current_page = nxt
+
         self._render_current_page()
 
-        self._clear_page_host()
-
-        kind, data = nxt
-        if kind == "main":
-            self._ensure_main_page()
-            self.page_main.pack(fill=tk.BOTH, expand=True)
-        elif kind == "notes":
-            self._ensure_notes_page()
-            self.page_notes.pack(fill=tk.BOTH, expand=True)
-        elif kind == "search":
-            self._ensure_search_page()
-            self.page_search.pack(fill=tk.BOTH, expand=True)
-            self.populate()
-        elif kind == "taxes":
-            ChecklistPage(app=self).ensure(self.page_host)
-        elif kind == "detail":
-            self._build_detail_page(data)
-        else:
-            if self._is_valid_person_payload(data):
-                ci, role_key, pidx = data
-                self._build_person_page(int(ci), str(role_key), int(pidx))
-            else:	
-                # Stale/bad entry in history → safe fallback
-                self._ensure_main_page()
-                self.page_main.pack(fill=tk.BOTH, expand=True)
-        self._update_nav_buttons()
 
     def _update_nav_buttons(self):
         self.btn_back["state"] = tk.NORMAL if bool(getattr(self, "_history", [])) else tk.DISABLED
         self.btn_fwd["state"]  = tk.NORMAL if bool(getattr(self, "_future", [])) else tk.DISABLED
+
+    def _find_client_idx_by_id_or_ein(self, link_id: str) -> int | None:
+        """
+        link_id formats we allow:
+        - "client:<client_id>"     (legacy/support)
+        - "ein:<9digits>"          (business)
+        - "ssn:<9digits>"          (individual)
+        Returns client index in self.items or None.
+        """
+        link_id = (link_id or "").strip()
+        if not link_id:
+            return None
+
+        try:
+            kind, val = link_id.split(":", 1)
+        except ValueError:
+            return None
+
+        kind = kind.strip().lower()
+        val = (val or "").strip()
+
+        if kind == "client":
+            if not val:
+                return None
+            for i, c in enumerate(self.items):
+                if str(c.get("id", "") or "").strip() == val:
+                    return i
+            return None
+
+        if kind == "ein":
+            ein9 = normalize_ein_digits(val)
+            if not ein9:
+                return None
+            for i, c in enumerate(self.items):
+                if normalize_ein_digits(c.get("ein", "")) == ein9:
+                    return i
+            return None
+
+        if kind == "ssn":
+            ssn9 = normalize_ssn_digits(val)
+            if not ssn9:
+                return None
+            for i, c in enumerate(self.items):
+                if normalize_ssn_digits(c.get("ssn", "")) == ssn9:
+                    return i
+            return None
+
+        return None
+
+
+    def open_linked_target(self, linked_client_id: str) -> bool:
+        """
+        If linked_client_id resolves to a client, navigate to its Detail page.
+        Returns True if navigation happened.
+        """
+        idx = self._find_client_idx_by_id_or_ein(linked_client_id)
+        if idx is None:
+            return False
+        self.navigate("detail", idx, push=True)
+        return True
+    
+    def link_clients(self, a_id: str, b_id: str, link: bool, role: str = ""):
+        """
+        Bidirectional linking using stable ids:
+        - Individuals use ssn:<9>
+        - Businesses use ein:<9>
+
+        role:
+        - If linking A -> B and B is a business: A-side role becomes "business"
+        - If linking A -> B and B is an individual: A-side role uses `role` (can be "", spouse, employee, etc.)
+        - Reciprocal B -> A follows the same rule (if A is business -> "business" else `role`)
+        Unlink:
+        - removes links in BOTH directions regardless of role
+        """
+        a_id = str(a_id or "").strip()
+        b_id = str(b_id or "").strip()
+        if not a_id or not b_id or a_id == b_id:
+            return
+
+        ai, a = self._resolve_client_key(a_id)
+        bi, b = self._resolve_client_key(b_id)
+
+        # If unlinking, missing/stale ids should not crash the UI
+        if a is None or b is None:
+            if not link:
+                return
+            raise ValueError("Could not resolve one or both clients for linking.")
+
+        def _ensure_relations_list(c: dict):
+            if c.get("relations") is None or not isinstance(c.get("relations"), list):
+                c["relations"] = []
+            return c["relations"]
+
+        def _remove_link(off_list: list, target_id: str):
+            tid = str(target_id or "").strip()
+            if not tid:
+                return
+            keep = []
+            for o in off_list:
+                if not isinstance(o, dict):
+                    continue
+                if str(o.get("linked_client_id") or "").strip() == tid:
+                    continue
+                keep.append(o)
+            off_list[:] = keep
+
+        def _upsert_link(off_list: list, record: dict):
+            record = ensure_relation_dict(record)
+            tid = str(record.get("linked_client_id") or "").strip()
+            if not tid:
+                return
+            for i, o in enumerate(off_list):
+                if isinstance(o, dict) and str(o.get("linked_client_id") or "").strip() == tid:
+                    off_list[i] = record
+                    return
+            off_list.append(record)
+
+        def _is_individual_client(c: dict) -> bool:
+            return bool(c.get("is_individual")) or ((c.get("entity_type") or "").strip().casefold() == "individual")
+
+        def _pick_contact_from_client(c: dict) -> tuple[str, str]:
+            """
+            Best-effort: use c['email']/c['phone'] if present, else first relations entry.
+            """
+            email = (c.get("email") or "").strip() if isinstance(c.get("email"), str) else ""
+            phone = (c.get("phone") or "").strip() if isinstance(c.get("phone"), str) else ""
+
+            if email and phone:
+                return email, phone
+
+            try:
+                rels = c.get("relations", []) or []
+                if rels:
+                    o0 = ensure_relation_dict(rels[0])
+                    if not email:
+                        email = (o0.get("email") or "").strip()
+                    if not phone:
+                        phone = (o0.get("phone") or "").strip()
+            except Exception:
+                pass
+
+            return email, phone
+
+        def _split_name(full: str) -> tuple[str, str, str]:
+            parts = [p for p in re.split(r"\s+", (full or "").strip()) if p]
+            if len(parts) == 0:
+                return ("", "", "")
+            if len(parts) == 1:
+                return (parts[0], "", "")
+            if len(parts) == 2:
+                return (parts[0], "", parts[1])
+            return (parts[0], " ".join(parts[1:-1]), parts[-1])
+
+        def _record_from_client(src: dict, src_id_key: str, role_value: str) -> dict:
+            """
+            Build a relations-style dict referencing src, stored inside the OTHER client.
+            """
+            src_label = (src.get("name") or "").strip() or src_id_key
+            is_ind = _is_individual_client(src)
+
+            email, phone = _pick_contact_from_client(src)
+
+            first_name = middle_name = last_name = ""
+            nickname = ""
+
+            if is_ind:
+                nickname = (src.get("dba") or "").strip()
+                fn, mn, ln = _split_name(src.get("name") or "")
+                first_name, middle_name, last_name = fn, mn, ln
+
+            rec = {
+                "name": src_label,
+                "nickname": nickname or "",
+                "first_name": first_name,
+                "middle_name": middle_name,
+                "last_name": last_name,
+                "email": email,
+                "phone": phone,
+                "addr1": (src.get("addr1") or "").strip(),
+                "addr2": (src.get("addr2") or "").strip(),
+                "city":  (src.get("city") or "").strip(),
+                "state": (src.get("state") or "").strip(),
+                "zip":   (src.get("zip") or "").strip(),
+                "dob":   (src.get("dob") or "").strip() if isinstance(src.get("dob"), str) else "",
+                "role": role_value or "",
+                "linked_client_id": src_id_key,
+                "linked_client_label": src_label,
+            }
+            return ensure_relation_dict(rec)
+
+        # Compute stable IDs for both sides (must be ssn:<9> or ein:<9>)
+        a_key = self._canonical_client_key(a, ai)
+        b_key = self._canonical_client_key(b, bi)
+
+        # If linking, require stable IDs on both ends.
+        if link:
+            if not a_key or not b_key:
+                raise ValueError("Cannot link: one or both clients are missing required SSN/EIN (stable id).")
+
+            a_rels = _ensure_relations_list(a)
+            b_rels = _ensure_relations_list(b)
+
+            # Decide roles on each side based on the TARGET being business/individual
+            role_a_to_b = "business" if not _is_individual_client(b) else (role or "")
+            role_b_to_a = "business" if not _is_individual_client(a) else (role or "")
+
+            _upsert_link(a_rels, _record_from_client(b, b_key, role_a_to_b))
+            _upsert_link(b_rels, _record_from_client(a, a_key, role_b_to_a))
+
+        else:
+            # Unlink is best-effort; if keys missing, still attempt via provided ids
+            # Prefer computed keys if available.
+            if not a_key:
+                a_key = a_id
+            if not b_key:
+                b_key = b_id
+
+            a_rels = _ensure_relations_list(a)
+            b_rels = _ensure_relations_list(b)
+
+            _remove_link(a_rels, b_key)
+            _remove_link(b_rels, a_key)
+
+        # Persist + refresh UI
+        save_clients(self.items)
+        self.populate()
+        self._update_suggestions()
+
 
 # -------------------- Entrypoint --------------------
 def main():

@@ -11,7 +11,7 @@ from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
 import datetime
 try:
-    from functions.utils.app_logging import get_logger
+    from vertex.utils.app_logging import get_logger
     
 except ModuleNotFoundError:
     from utils.app_logging import get_logger

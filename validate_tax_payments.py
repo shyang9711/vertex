@@ -23,8 +23,8 @@ import os
 # Best-effort: try to make stdout UTF-8 on Windows terminals
 try:
     if os.name == "nt":
-        sys.stdout.reconfigure(encoding="cp1252", errors="replace")
-        sys.stderr.reconfigure(encoding="cp1252", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
@@ -616,7 +616,7 @@ for d in all_dates:
     msg_parts.append(f"ExcelPaid={sorted(ex_list)}")
     msg_parts.append(f"EFTPSPaid={sorted(ef_list)}")
 
-    eftps_flags.append(" — ".join(msg_parts))
+    eftps_flags.append(" - ".join(msg_parts))
 
 
 # --- EFTPS Sum Checks (split into Paid vs Returned) ---
@@ -786,8 +786,8 @@ else:
 
                 # log it as "paid separately"
                 edd_split_paid_logs.append(
-                    f"{OK} EDD paid separately on {pd.to_datetime(d).date()} — "
-                    f"PDF(UI+ETT)={ui_ett} + PDF(P+I)={p_i} — "
+                    f"{OK} EDD paid separately on {pd.to_datetime(d).date()} - "
+                    f"PDF(UI+ETT)={ui_ett} + PDF(P+I)={p_i} - "
                     f"Excel EDD_Total={edd_total}"
                 )
 

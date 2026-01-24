@@ -11,7 +11,7 @@ from pathlib import Path
 import datetime as _dt, json, uuid, calendar as _cal
 from typing import Iterable, Iterator, Tuple, List, Dict, Any
 try:
-    from functions.utils.app_logging import get_logger
+    from vertex.utils.app_logging import get_logger
 except ModuleNotFoundError:
     from utils.app_logging import get_logger
 

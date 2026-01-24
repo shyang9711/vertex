@@ -12,17 +12,19 @@ from pathlib import Path
 import datetime as _dt
 import json, calendar as _cal, uuid
 try:
-    from functions.models.tasks_model import (
+    from vertex.models.tasks_model import (
         TasksStore,
         adjust_if_weekend_or_holiday,
         DUE_DATE,
         calc_tags_for_occurrence,
         display_date_for
     )
-    from functions.pages.checklist_page import ChecklistPage
-    from functions.pages.reports_page import ReportsPage
+    from vertex.pages.checklist_page import ChecklistPage
+    from vertex.pages.reports_page import ReportsPage
 
-    from functions.utils.app_logging import get_logger
+    from vertex.utils.app_logging import get_logger
+    
+    from vertex.ui.components.autocomplete import AutocompletePopup
 
 except ModuleNotFoundError:
     from models.tasks_model import (
@@ -36,6 +38,8 @@ except ModuleNotFoundError:
     from pages.reports_page import ReportsPage
 
     from utils.app_logging import get_logger
+
+    from ui.components.autocomplete import AutocompletePopup
 LOG = get_logger("dashboard")
 
 # --- Theme ---
@@ -1309,8 +1313,74 @@ class DashboardPage:
 
         # client (autocomplete)
         ttk.Label(frm, text="client").grid(row=2, column=0, sticky="w", pady=(6,0))
-        names = [c.get("name","") for c in getattr(self.app, "items", [])]
-        AutoCompleteCombobox(frm, textvariable=v_client_name, values=names, width=48).grid(row=2, column=1, columnspan=4, sticky="we", padx=(6,0), pady=(6,0))
+
+        items = getattr(self.app, "items", []) or []
+        names = [(c.get("name") or "").strip() for c in items if isinstance(c, dict) and (c.get("name") or "").strip()]
+        names.sort(key=lambda s: s.casefold())
+
+        client_entry = ttk.Entry(frm, textvariable=v_client_name, width=48)
+        client_entry.grid(row=2, column=1, columnspan=4, sticky="we", padx=(6,0), pady=(6,0))
+
+        popup = AutocompletePopup(d, client_entry, on_choose=lambda txt: v_client_name.set(txt))
+
+        def _client_matches(q: str) -> list[str]:
+            q = (q or "").strip().casefold()
+            if not q:
+                return []
+            # contains match; you can switch to startswith if you prefer
+            out = [n for n in names if q in n.casefold()]
+            return out[:20]
+
+        def _on_client_change(*_):
+            q = v_client_name.get()
+            matches = _client_matches(q)
+            if matches:
+                popup.show(matches)
+            else:
+                popup.hide()
+
+        # update on typing, pasting, programmatic set, etc.
+        v_client_name.trace_add("write", lambda *_: _on_client_change())
+
+        def _on_client_down(e=None):
+            # if popup visible, move selection; else open if there are matches
+            if popup.winfo_viewable():
+                popup.move_selection(+1)
+                popup.focus_listbox()
+            else:
+                matches = _client_matches(v_client_name.get())
+                if matches:
+                    popup.show(matches)
+                    popup.focus_listbox()
+            return "break"
+
+        def _on_client_up(e=None):
+            if popup.winfo_viewable():
+                popup.move_selection(-1)
+                popup.focus_listbox()
+                return "break"
+            return None
+
+        def _on_client_enter(e=None):
+            # If popup is visible, choose highlighted item; otherwise keep default Enter behavior
+            if popup.winfo_viewable():
+                popup._choose()
+                client_entry.icursor("end")
+                return "break"
+            return None
+
+        def _on_client_escape(e=None):
+            popup.hide()
+            return "break"
+
+        client_entry.bind("<Down>", _on_client_down)
+        client_entry.bind("<Up>", _on_client_up)
+        client_entry.bind("<Return>", _on_client_enter)
+        client_entry.bind("<Escape>", _on_client_escape)
+
+        # Ensure popup hides when dialog closes
+        d.bind("<Destroy>", lambda _e: popup.destroy() if popup.winfo_exists() else None)
+
 
         ttk.Separator(frm).grid(row=3, column=0, columnspan=5, sticky="we", pady=10)
 
