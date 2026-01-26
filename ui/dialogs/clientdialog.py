@@ -11,12 +11,14 @@ try:
         ensure_relation_dict, display_relation_name,
         ensure_relation_link, merge_relations,
         migrate_officer_business_links_to_relations,
+        normalize_ein_digits, normalize_ssn_digits,
     )
 except ModuleNotFoundError:
     from utils.helpers import (
         ensure_relation_dict, display_relation_name,
         ensure_relation_link, merge_relations,
         migrate_officer_business_links_to_relations,
+        normalize_ein_digits, normalize_ssn_digits,
     )
 
 
@@ -686,13 +688,45 @@ class ClientDialog(tk.Toplevel):
             "role":        (v[13] or "").strip().lower(),
             "id": v[14] or "",  # Use "id" instead of "linked_client_id"
         }
+        
+        # For editing, we need to get the linked_client_label from the relation data
+        # The label might be stored in the relation or we need to resolve it from the id
+        linked_id = o.get("id", "").strip()
+        if linked_id:
+            # Try to resolve the label from the id
+            if callable(getattr(self.master, "get_client_by_id", None)):
+                try:
+                    linked_client = self.master.get_client_by_id(linked_id)
+                    if isinstance(linked_client, dict):
+                        # Build label similar to build_link_candidates
+                        name = (linked_client.get("name") or "").strip()
+                        is_ind = bool(linked_client.get("is_individual")) or ((linked_client.get("entity_type") or "").strip().lower() == "individual")
+                        if is_ind:
+                            ssn9 = "".join(ch for ch in (linked_client.get("ssn") or linked_client.get("ein") or "") if ch.isdigit())[:9]
+                            if ssn9:
+                                o["linked_client_label"] = f"{name} — SSN {ssn9}"
+                        else:
+                            ein9 = "".join(ch for ch in (linked_client.get("ein") or "") if ch.isdigit())[:9]
+                            if ein9:
+                                o["linked_client_label"] = f"{name} — EIN {ein9}"
+                except Exception as e:
+                    print(f"[ClientDialog][EDIT] Error resolving linked client label: {e}")
+        
+        print(f"[ClientDialog][EDIT] _rel_edit: initial data for LinkDialog: {o}")
 
         this_id = self._compute_required_client_id()
         link_cands = []
+        print(f"[ClientDialog][EDIT] _rel_edit: Getting link candidates, this_id={this_id}")
         try:
             if hasattr(self.master, "build_link_candidates"):
                 link_cands = self.master.build_link_candidates(exclude_client_id=this_id)
-        except Exception:
+                print(f"[ClientDialog][EDIT] _rel_edit: Got {len(link_cands)} candidates from build_link_candidates")
+            else:
+                print(f"[ClientDialog][EDIT] _rel_edit: WARNING - master has no build_link_candidates method")
+        except Exception as e:
+            print(f"[ClientDialog][EDIT] _rel_edit: ERROR getting candidates: {e}")
+            import traceback
+            traceback.print_exc()
             link_cands = []
 
         already = []
@@ -705,7 +739,9 @@ class ClientDialog(tk.Toplevel):
             lid = (vv[14] or "").strip()
             if lid:
                 already.append(lid)
+        print(f"[ClientDialog][EDIT] _rel_edit: Already linked IDs: {already}")
 
+        print(f"[ClientDialog][EDIT] _rel_edit: Opening LinkDialog with {len(link_cands)} candidates")
         dlg = LinkDialog(
             self,
             title="Edit Link",
@@ -845,21 +881,61 @@ class ClientDialog(tk.Toplevel):
         if self._is_new_client():
             return None
         
-        # Find the client index by matching the id
-        init_id = str(self._initial.get("id") or "").strip()
-        if not init_id:
-            return None
-        
         if not hasattr(self.master, "items"):
             return None
         
-        for i, c in enumerate(self.master.items):
-            if not isinstance(c, dict):
-                continue
-            c_id = str(c.get("id") or "").strip()
-            if c_id == init_id:
-                return i
+        # Try multiple methods to find the client index:
+        # 1. Match by ID
+        init_id = str(self._initial.get("id") or "").strip()
+        if init_id:
+            for i, c in enumerate(self.master.items):
+                if not isinstance(c, dict):
+                    continue
+                c_id = str(c.get("id") or "").strip()
+                if c_id == init_id:
+                    print(f"[ClientDialog][SAVE] Found client idx={i} by ID match: '{init_id}'")
+                    return i
         
+        # 2. Match by EIN/SSN and name (more robust fallback)
+        init_name = str(self._initial.get("name", "")).strip()
+        init_ein = str(self._initial.get("ein", "")).strip()
+        init_ssn = str(self._initial.get("ssn", "")).strip()
+        
+        if init_name or init_ein or init_ssn:
+            try:
+                from utils.helpers import normalize_ein_digits, normalize_ssn_digits
+            except ImportError:
+                from vertex.utils.helpers import normalize_ein_digits, normalize_ssn_digits
+            
+            init_ein_norm = normalize_ein_digits(init_ein) if init_ein else ""
+            init_ssn_norm = normalize_ssn_digits(init_ssn) if init_ssn else ""
+            
+            for i, c in enumerate(self.master.items):
+                if not isinstance(c, dict):
+                    continue
+                
+                # Match by name
+                c_name = str(c.get("name", "")).strip()
+                if init_name and c_name == init_name:
+                    # Also verify EIN/SSN matches if available
+                    c_ein = str(c.get("ein", "")).strip()
+                    c_ssn = str(c.get("ssn", "")).strip()
+                    c_ein_norm = normalize_ein_digits(c_ein) if c_ein else ""
+                    c_ssn_norm = normalize_ssn_digits(c_ssn) if c_ssn else ""
+                    
+                    # If we have EIN/SSN in initial, verify it matches
+                    if init_ein_norm and c_ein_norm and init_ein_norm == c_ein_norm:
+                        print(f"[ClientDialog][SAVE] Found client idx={i} by name+EIN match: '{init_name}' / '{init_ein_norm}'")
+                        return i
+                    elif init_ssn_norm and c_ssn_norm and init_ssn_norm == c_ssn_norm:
+                        print(f"[ClientDialog][SAVE] Found client idx={i} by name+SSN match: '{init_name}' / '{init_ssn_norm}'")
+                        return i
+                    elif not init_ein_norm and not init_ssn_norm:
+                        # No EIN/SSN to verify, just match by name
+                        print(f"[ClientDialog][SAVE] Found client idx={i} by name match: '{init_name}'")
+                        return i
+        
+        print(f"[ClientDialog][SAVE] WARNING: Could not find current client index!")
         return None
 
     def _persist_client_if_possible(self, client_payload: Dict[str, Any]) -> bool:
@@ -1130,40 +1206,138 @@ class ClientDialog(tk.Toplevel):
         # Check for duplicate ID before saving
         # This allows the user to continue editing if a duplicate is found
         if hasattr(self.master, "_dup_id_conflict"):
-            # Determine if this is a new client or editing existing
-            is_new = self._is_new_client()
-            ignore_idx = None if is_new else self._get_current_client_idx()
+            # Get current EIN/SSN values from the form
+            current_ein = self.v_ein.get().strip()
+            current_entity_type = self.v_entity.get().strip().lower()
+            is_individual = current_entity_type == "individual"
+            current_ssn = current_ein if is_individual else ""
             
-            # Build candidate dict for duplicate check
-            this_id = self._compute_required_client_id()
-            candidate = {
-                "is_individual": self.v_entity.get().strip().lower() == "individual",
-                "entity_type": "Individual" if self.v_entity.get().strip().lower() == "individual" else self.v_entity.get().strip(),
-                "ein": self.v_ein.get().strip(),
-                "ssn": self.v_ein.get().strip() if self.v_entity.get().strip().lower() == "individual" else "",
-            }
+            # Get original entity type and EIN/SSN from initial data
+            original_entity_type = str(self._initial.get("entity_type", "")).strip().lower()
+            original_is_individual = original_entity_type == "individual" or bool(self._initial.get("is_individual", False))
+            original_ein = str(self._initial.get("ein", "")).strip()
+            original_ssn = str(self._initial.get("ssn", "")).strip()
             
-            conflict = self.master._dup_id_conflict(candidate, ignore_idx=ignore_idx)
-            if conflict:
-                kind, digits, other_idx, other_client = conflict
-                other_name = (other_client.get("name") or "").strip() or f"Client #{other_idx}"
-                if is_new:
-                    messagebox.showerror(
-                        "Duplicate ID",
-                        f"A client with the same {kind} already exists.\n\n"
-                        f"{kind}: {digits}\n"
-                        f"Existing client: {other_name}\n\n"
-                        f"Please change the {kind} or cancel."
-                    )
+            # For individuals, SSN might be stored in ein field in initial data
+            if original_is_individual and not original_ssn and original_ein:
+                original_ssn = original_ein
+            
+            # Normalize for comparison
+            current_ein_norm = normalize_ein_digits(current_ein) if not is_individual else ""
+            current_ssn_norm = normalize_ssn_digits(current_ssn) if is_individual else ""
+            original_ein_norm = normalize_ein_digits(original_ein) if not original_is_individual else ""
+            original_ssn_norm = normalize_ssn_digits(original_ssn) if original_is_individual else ""
+            
+            # Determine if this is a new client
+            # Check both: explicit id field AND if EIN/SSN matches existing client
+            has_explicit_id = bool(str(self._initial.get("id") or self._initial.get("client_id") or "").strip())
+            
+            # Also check if the original EIN/SSN matches an existing client (even without explicit id)
+            matching_existing_idx = None
+            if (original_ein_norm or original_ssn_norm) and hasattr(self.master, "items"):
+                for i, c in enumerate(self.master.items):
+                    if not isinstance(c, dict):
+                        continue
+                    c_ein = normalize_ein_digits(str(c.get("ein", "")).strip())
+                    c_ssn = normalize_ssn_digits(str(c.get("ssn", "")).strip())
+                    c_is_ind = bool(c.get("is_individual")) or (str(c.get("entity_type", "")).strip().lower() == "individual")
+                    
+                    # Match by EIN for businesses
+                    if not original_is_individual and not c_is_ind and original_ein_norm and c_ein == original_ein_norm:
+                        matching_existing_idx = i
+                        break
+                    # Match by SSN for individuals
+                    elif original_is_individual and c_is_ind and original_ssn_norm and c_ssn == original_ssn_norm:
+                        matching_existing_idx = i
+                        break
+            
+            # It's a new client only if there's no explicit id AND no matching EIN/SSN
+            is_new = not has_explicit_id and matching_existing_idx is None
+            
+            print(f"[ClientDialog][SAVE] Duplicate check:")
+            print(f"  has_explicit_id: {has_explicit_id}")
+            print(f"  matching_existing_idx: {matching_existing_idx}")
+            print(f"  is_new: {is_new}")
+            print(f"  current_entity: {current_entity_type}, original_entity: {original_entity_type}")
+            print(f"  current_is_individual: {is_individual}, original_is_individual: {original_is_individual}")
+            print(f"  current_ein: '{current_ein}' -> normalized: '{current_ein_norm}'")
+            print(f"  current_ssn: '{current_ssn}' -> normalized: '{current_ssn_norm}'")
+            print(f"  original_ein: '{original_ein}' -> normalized: '{original_ein_norm}'")
+            print(f"  original_ssn: '{original_ssn}' -> normalized: '{original_ssn_norm}'")
+            
+            # Only check for duplicates if:
+            # 1. It's a new client, OR
+            # 2. The EIN/SSN has actually changed from the original, OR
+            # 3. The entity type has changed (Individual <-> Business)
+            entity_type_changed = is_individual != original_is_individual
+            
+            # Compare the appropriate ID based on entity type
+            # If entity type hasn't changed, compare same type of ID
+            # If entity type changed, we need to check for duplicates
+            if not entity_type_changed:
+                # Same entity type - compare the appropriate ID
+                if is_individual:
+                    # Individual: compare SSN
+                    id_changed = current_ssn_norm != original_ssn_norm
                 else:
-                    messagebox.showerror(
-                        "Duplicate ID",
-                        f"Another client already has this {kind}.\n\n"
-                        f"{kind}: {digits}\n"
-                        f"Existing client: {other_name}\n\n"
-                        f"Please change the {kind} or cancel."
-                    )
-                return  # Don't save, keep dialog open
+                    # Business: compare EIN
+                    id_changed = current_ein_norm != original_ein_norm
+            else:
+                # Entity type changed - always check for duplicates
+                id_changed = True
+            
+            print(f"  entity_type_changed: {entity_type_changed}")
+            print(f"  id_changed: {id_changed}")
+            
+            if is_new or id_changed:
+                # Determine ignore_idx: use explicit method first, then fall back to matching index
+                if is_new:
+                    ignore_idx = None
+                else:
+                    ignore_idx = self._get_current_client_idx()
+                    # If _get_current_client_idx() failed but we found a matching index, use that
+                    if ignore_idx is None and matching_existing_idx is not None:
+                        ignore_idx = matching_existing_idx
+                        print(f"  Using matching_existing_idx as ignore_idx: {ignore_idx}")
+                
+                print(f"  Running duplicate check, ignore_idx: {ignore_idx}")
+                if ignore_idx is None and not is_new:
+                    print(f"  WARNING: ignore_idx is None for existing client! This might cause false duplicates.")
+                
+                # Build candidate dict for duplicate check
+                candidate = {
+                    "is_individual": is_individual,
+                    "entity_type": "Individual" if is_individual else self.v_entity.get().strip(),
+                    "ein": current_ein,
+                    "ssn": current_ssn,
+                }
+                
+                conflict = self.master._dup_id_conflict(candidate, ignore_idx=ignore_idx)
+                if conflict:
+                    kind, digits, other_idx, other_client = conflict
+                    other_name = (other_client.get("name") or "").strip() or f"Client #{other_idx}"
+                    print(f"  CONFLICT FOUND: {kind} {digits} with client {other_idx} ({other_name})")
+                    if is_new:
+                        messagebox.showerror(
+                            "Duplicate ID",
+                            f"A client with the same {kind} already exists.\n\n"
+                            f"{kind}: {digits}\n"
+                            f"Existing client: {other_name}\n\n"
+                            f"Please change the {kind} or cancel."
+                        )
+                    else:
+                        messagebox.showerror(
+                            "Duplicate ID",
+                            f"Another client already has this {kind}.\n\n"
+                            f"{kind}: {digits}\n"
+                            f"Existing client: {other_name}\n\n"
+                            f"Please change the {kind} or cancel."
+                        )
+                    return  # Don't save, keep dialog open
+                else:
+                    print(f"  No conflict found")
+            else:
+                print(f"  Skipping duplicate check - EIN/SSN unchanged")
         
         if self.v_entity.get().strip().lower() == "individual":
             first = self.v_first.get().strip()

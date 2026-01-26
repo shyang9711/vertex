@@ -816,7 +816,7 @@ class App(ttk.Frame):
         y = button_widget.winfo_rooty() + button_widget.winfo_height()
         m.tk_popup(x, y)
 
-    def build_link_candidates(self) -> list[dict]:
+    def build_link_candidates(self, exclude_client_id: str = None) -> list[dict]:
         """
         Build a list of link candidates for LinkDialog autocomplete.
 
@@ -824,8 +824,41 @@ class App(ttk.Frame):
         - Clients only (companies + individuals in clients.json). Do NOT include personnels.
         - Uses SSN for Individual, EIN for Business.
         - If missing required ID, candidate is shown but NOT linkable (id="").
+        
+        Args:
+            exclude_client_id: Optional client ID to exclude from candidates (can be in any format, will be normalized)
         """
         cands: list[dict] = []
+        exclude_id_norm = None
+        if exclude_client_id:
+            # Normalize the exclude ID - exclude_client_id might be in various formats
+            exclude_id_str = str(exclude_client_id or "").strip()
+            # If it's already in normalized format (ein:xxx or ssn:xxx), use it directly
+            if exclude_id_str.startswith(("ein:", "ssn:")):
+                exclude_id_norm = exclude_id_str
+            else:
+                # Try to find the client and get its normalized ID
+                for i, c in enumerate(getattr(self, "items", []) or []):
+                    if not isinstance(c, dict):
+                        continue
+                    # Check if this is the client to exclude by comparing various ID formats
+                    client_ein = normalize_ein_digits(c.get("ein", ""))
+                    client_ssn = normalize_ssn_digits(c.get("ssn", "") or c.get("ein", ""))
+                    client_id = str(c.get("id", "")).strip()
+                    client_name = str(c.get("name", "")).strip()
+                    
+                    # Check various formats - EIN, SSN, ID, or name match
+                    if (exclude_id_str == client_id or 
+                        exclude_id_str == client_ein or 
+                        exclude_id_str == client_ssn or
+                        exclude_id_str == client_name or
+                        exclude_id_str == f"ein:{client_ein}" or 
+                        exclude_id_str == f"ssn:{client_ssn}"):
+                        if client_ein:
+                            exclude_id_norm = f"ein:{client_ein}"
+                        elif client_ssn:
+                            exclude_id_norm = f"ssn:{client_ssn}"
+                        break
 
         def _clean(s: str) -> str:
             return (s or "").strip()
@@ -859,6 +892,11 @@ class App(ttk.Frame):
                 continue
 
             cid, label, is_company = _candidate_id_and_label(i, c)
+            
+            # Exclude the specified client if provided
+            if exclude_id_norm and cid == exclude_id_norm:
+                continue
+            
             cands.append({
                 "id": cid,             # "" means not linkable until SSN/EIN exists
                 "label": label,

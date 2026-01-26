@@ -100,16 +100,29 @@ class LinkDialog(tk.Toplevel):
         self._labels: List[str] = []
         self._label_to_id: Dict[str, str] = {}
         self._label_to_is_company: Dict[str, bool] = {}
-        for c in self._cands:
+        print(f"[LinkDialog] Initializing with {len(self._cands)} candidates")
+        for i, c in enumerate(self._cands):
             if not isinstance(c, dict):
+                print(f"[LinkDialog] Candidate {i} is not a dict: {type(c)}")
                 continue
             lab = str(c.get("label") or "").strip()
-            cid = _norm_link_id(str(c.get("id") or "").strip())
-            if not lab or not cid:
+            if not lab:
+                print(f"[LinkDialog] Candidate {i} missing label")
                 continue
+            cid = _norm_link_id(str(c.get("id") or "").strip())
+            # Allow candidates without IDs to be searchable (they just can't be linked)
+            # Only require label for searchability
             self._labels.append(lab)
-            self._label_to_id[lab] = cid
-            self._label_to_is_company[lab] = bool(c.get("is_company", False))
+            if cid:
+                # Only add to mapping if it has a valid ID (can be linked)
+                self._label_to_id[lab] = cid
+                self._label_to_is_company[lab] = bool(c.get("is_company", False))
+            else:
+                # Candidate without ID - can be searched but not linked
+                print(f"[LinkDialog] Candidate {i} has no valid ID (label='{lab}') - searchable but not linkable")
+        print(f"[LinkDialog] Built {len(self._labels)} searchable labels")
+        print(f"[LinkDialog] Labels: {self._labels[:10]}...")  # Show first 10
+        print(f"[LinkDialog] Linkable labels (with ID): {len(self._label_to_id)}")
 
         # ---------------- UI vars ----------------
         self.v_link = tk.StringVar(value=str(self._initial.get("linked_client_label") or "").strip())
@@ -169,6 +182,7 @@ class LinkDialog(tk.Toplevel):
 
         # IMPORTANT: do NOT show suggestions on FocusIn (fixes “always on / can’t type”)
         self.ent_link.bind("<KeyRelease>", self._on_link_key)
+        self.ent_link.bind("<Key>", self._on_link_key_press)  # Trigger on key press to enable search
         self.ent_link.bind("<Down>", self._on_link_down)
         self.ent_link.bind("<Up>", self._on_link_up)
         self.ent_link.bind("<Return>", self._on_link_return)
@@ -269,26 +283,42 @@ class LinkDialog(tk.Toplevel):
             self._popup.listbox.selection_set(0)
             self._popup.listbox.activate(0)
 
+    def _on_link_key_press(self, event=None):
+        """Triggered on key press to enable search even when there's an initial value"""
+        # Allow search to work when user starts typing
+        if event and event.keysym in ("Up", "Down", "Return", "Escape", "Tab", "Shift_L", "Shift_R", "Control_L", "Control_R"):
+            return
+        # Schedule the search to happen after the key is processed
+        self.after_idle(self._on_link_key, event)
+
     def _on_link_key(self, event=None):
         # Ignore navigation keys
         if event:
-            if event.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
+            if event.keysym in ("Up", "Down", "Return", "Escape", "Tab", "Shift_L", "Shift_R", "Control_L", "Control_R"):
                 return
 
-        typed = self.v_link.get().strip().lower()
+        typed = self.v_link.get().strip()
+        print(f"[LinkDialog] _on_link_key: typed='{typed}', total labels={len(self._labels)}")
         if not typed:
             self._popup.hide()
             return
 
-        tokens = typed.split()
+        typed_lower = typed.lower()
+        tokens = typed_lower.split()
+        print(f"[LinkDialog] _on_link_key: tokens={tokens}")
         matches = [
             lab for lab in self._labels
             if all(t in lab.lower() for t in tokens)
         ]
+        print(f"[LinkDialog] _on_link_key: found {len(matches)} matches")
+        if len(matches) > 0:
+            print(f"[LinkDialog] _on_link_key: first few matches: {matches[:5]}")
 
         if matches:
+            print(f"[LinkDialog] _on_link_key: showing popup with {len(matches)} matches")
             self._popup.show(matches)
         else:
+            print(f"[LinkDialog] _on_link_key: no matches, hiding popup")
             self._popup.hide()
 
 
@@ -357,7 +387,11 @@ class LinkDialog(tk.Toplevel):
 
         cid = _norm_link_id(self._label_to_id.get(label, ""))
         if not cid:
-            messagebox.showerror("Link", "That entity does not have a valid EIN/SSN id.")
+            # Check if this label exists but just doesn't have an ID (not linkable)
+            if label in self._labels:
+                messagebox.showerror("Link", "That entity does not have a valid EIN/SSN id and cannot be linked.")
+            else:
+                messagebox.showerror("Link", "That entity does not have a valid EIN/SSN id.")
             return
 
         if cid in self._already_linked_ids:

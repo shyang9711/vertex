@@ -750,17 +750,60 @@ def init_profile_tab(
         idx = _resolve_client_idx_from_client()
         name_key = (client.get("name") or "").strip().lower()
         out = []
+        
+        # Ensure dashboard is initialized
+        if not hasattr(app, "dashboard") or app.dashboard is None:
+            print(f"[PROFILE] _client_tasks_source: WARNING - dashboard not initialized, attempting to initialize")
+            try:
+                from vertex.pages.dashboard_page import DashboardPage
+            except ModuleNotFoundError:
+                from pages.dashboard_page import DashboardPage
+            try:
+                app.dashboard = DashboardPage(app)
+                print(f"[PROFILE] _client_tasks_source: Dashboard initialized successfully")
+            except Exception as e:
+                print(f"[PROFILE] _client_tasks_source: ERROR - Failed to initialize dashboard: {e}")
+                import traceback
+                traceback.print_exc()
+                return out
+        
         dash = getattr(app, "dashboard", None)
-        if dash and getattr(dash, "store", None):
-            for t in dash.store.tasks:
-                if not t.get("is_enabled", True):
-                    continue
+        print(f"[PROFILE] _client_tasks_source: client name={client.get('name', 'N/A')}, idx={idx}")
+        print(f"[PROFILE] _client_tasks_source: has dashboard={dash is not None}")
+        if dash:
+            store = getattr(dash, "store", None)
+            print(f"[PROFILE] _client_tasks_source: has store={store is not None}")
+            if store:
+                # Ensure store is loaded
+                if not hasattr(store, "tasks") or store.tasks is None:
+                    print(f"[PROFILE] _client_tasks_source: WARNING - store.tasks is None, attempting to reload")
+                    try:
+                        store.load()
+                        print(f"[PROFILE] _client_tasks_source: Store reloaded, tasks count={len(store.tasks)}")
+                    except Exception as e:
+                        print(f"[PROFILE] _client_tasks_source: ERROR - Failed to reload store: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        return out
                 
-                task_idx  = t.get("client_idx", t.get("client_idx"))
-                task_name = (t.get("client_name") or t.get("client_name") or "").strip().lower()
+                tasks = getattr(store, "tasks", [])
+                print(f"[PROFILE] _client_tasks_source: total tasks in store={len(tasks)}")
+                for i, t in enumerate(tasks):
+                    if not t.get("is_enabled", True):
+                        continue
+                    
+                    task_idx  = t.get("client_idx")
+                    task_name = (t.get("client_name") or "").strip().lower()
+                    print(f"[PROFILE] _client_tasks_source: task {i}: client_idx={task_idx}, client_name='{task_name}', matches_idx={idx is not None and task_idx == idx}, matches_name={task_name == name_key}")
 
-                if (idx is not None and task_idx == idx) or (task_name == name_key):
-                    out.append(t)
+                    if (idx is not None and task_idx == idx) or (task_name == name_key):
+                        print(f"[PROFILE] _client_tasks_source: Task {i} matches! Adding to output")
+                        out.append(t)
+            else:
+                print(f"[PROFILE] _client_tasks_source: WARNING - dashboard exists but store is None")
+        else:
+            print(f"[PROFILE] _client_tasks_source: WARNING - dashboard is None, cannot load tasks")
+        print(f"[PROFILE] _client_tasks_source: returning {len(out)} tasks")
         return out
 
     def _stop_client_recurring():
@@ -891,9 +934,16 @@ def init_profile_tab(
         client_tasks_tv.delete(*client_tasks_tv.get_children())
         _client_todo_rows.clear()
 
+        print("=" * 80)
+        print(f"[PROFILE] _refresh_client_tasks_tv: Refreshing tasks treeview")
         tasks = _client_tasks_source()
+        print(f"[PROFILE] _refresh_client_tasks_tv: Got {len(tasks)} tasks from source")
         if not tasks:
+            print(f"[PROFILE] _refresh_client_tasks_tv: No tasks found, returning early")
+            print("=" * 80)
             return
+        print(f"[PROFILE] _refresh_client_tasks_tv: Processing {len(tasks)} tasks")
+        print("=" * 80)
 
         today = _dt.date.today()
         past_days = 9999 if (hasattr(app, "dashboard") and getattr(app.dashboard, "_show_all_past", False)) else 7

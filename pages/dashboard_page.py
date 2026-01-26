@@ -94,20 +94,68 @@ class DashboardPage:
         data_dir = None
         try:
             data_dir = getattr(app, "TASKS_DIR", None)
-            data_dir = Path(data_dir) if data_dir else None
-        except Exception:
+            if data_dir:
+                data_dir = Path(data_dir)
+                print(f"[Dashboard] TASKS_DIR from app: {data_dir}")
+            else:
+                print(f"[Dashboard] TASKS_DIR not found on app")
+        except Exception as e:
+            print(f"[Dashboard] Error getting TASKS_DIR: {e}")
+            import traceback
+            traceback.print_exc()
             data_dir = None
 
         if not data_dir:
-            # Fallback for dev mode
-            pages_dir     = Path(__file__).resolve().parent
-            functions_dir = pages_dir.parent
-            data_dir      = functions_dir / "data" / "tasks"
+            # Fallback for dev mode or exe mode
+            try:
+                # Try to use the app's DATA_ROOT if available
+                if hasattr(app, "DATA_ROOT") and app.DATA_ROOT:
+                    data_dir = Path(app.DATA_ROOT) / "tasks"
+                    print(f"[Dashboard] Using DATA_ROOT/tasks: {data_dir}")
+                else:
+                    # Try to import TASKS_DIR from utils.io
+                    try:
+                        from vertex.utils.io import TASKS_DIR
+                        data_dir = TASKS_DIR
+                        print(f"[Dashboard] Using TASKS_DIR from utils.io: {data_dir}")
+                    except ModuleNotFoundError:
+                        from utils.io import TASKS_DIR
+                        data_dir = TASKS_DIR
+                        print(f"[Dashboard] Using TASKS_DIR from utils.io (fallback): {data_dir}")
+                    except Exception as e2:
+                        print(f"[Dashboard] Error importing TASKS_DIR: {e2}")
+                        # Fallback: use relative to script location
+                        pages_dir     = Path(__file__).resolve().parent
+                        functions_dir = pages_dir.parent
+                        data_dir      = functions_dir / "data" / "tasks"
+                        print(f"[Dashboard] Using fallback path: {data_dir}")
+            except Exception as e:
+                print(f"[Dashboard] Error setting up data_dir: {e}")
+                import traceback
+                traceback.print_exc()
+                # Last resort: use current directory
+                data_dir = Path("data") / "tasks"
+                print(f"[Dashboard] Using last resort path: {data_dir}")
 
-        data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[Dashboard] Created/verified data_dir: {data_dir}")
+        except Exception as e:
+            print(f"[Dashboard] ERROR: Failed to create data_dir {data_dir}: {e}")
+            import traceback
+            traceback.print_exc()
 
         self._data_dir = data_dir
-        self.store = TasksStore(self._data_dir, app=self.app)
+        print(f"[Dashboard] Initializing TasksStore with data_dir: {data_dir}")
+        try:
+            self.store = TasksStore(self._data_dir, app=self.app)
+            print(f"[Dashboard] TasksStore initialized, tasks count: {len(self.store.tasks)}")
+        except Exception as e:
+            print(f"[Dashboard] ERROR: Failed to initialize TasksStore: {e}")
+            import traceback
+            traceback.print_exc()
+            # Create a minimal store to prevent crashes
+            self.store = None
         self._row_tags = {}
 
         self._cal_year = None
