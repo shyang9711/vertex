@@ -113,29 +113,38 @@ class DashboardPage:
                     data_dir = Path(app.DATA_ROOT) / "tasks"
                     print(f"[Dashboard] Using DATA_ROOT/tasks: {data_dir}")
                 else:
-                    # Try to import TASKS_DIR from utils.io
+                    # Try to import TASKS_DIR from utils.io (this has proper exe path resolution)
                     try:
                         from vertex.utils.io import TASKS_DIR
                         data_dir = TASKS_DIR
                         print(f"[Dashboard] Using TASKS_DIR from utils.io: {data_dir}")
                     except ModuleNotFoundError:
-                        from utils.io import TASKS_DIR
-                        data_dir = TASKS_DIR
-                        print(f"[Dashboard] Using TASKS_DIR from utils.io (fallback): {data_dir}")
-                    except Exception as e2:
-                        print(f"[Dashboard] Error importing TASKS_DIR: {e2}")
-                        # Fallback: use relative to script location
-                        pages_dir     = Path(__file__).resolve().parent
-                        functions_dir = pages_dir.parent
-                        data_dir      = functions_dir / "data" / "tasks"
-                        print(f"[Dashboard] Using fallback path: {data_dir}")
+                        try:
+                            from utils.io import TASKS_DIR
+                            data_dir = TASKS_DIR
+                            print(f"[Dashboard] Using TASKS_DIR from utils.io (fallback): {data_dir}")
+                        except Exception as e2:
+                            print(f"[Dashboard] Error importing TASKS_DIR: {e2}")
+                            import traceback
+                            traceback.print_exc()
+                            # Fallback: use relative to script location
+                            pages_dir     = Path(__file__).resolve().parent
+                            functions_dir = pages_dir.parent
+                            data_dir      = functions_dir / "data" / "tasks"
+                            print(f"[Dashboard] Using fallback path: {data_dir}")
             except Exception as e:
                 print(f"[Dashboard] Error setting up data_dir: {e}")
                 import traceback
                 traceback.print_exc()
-                # Last resort: use current directory
-                data_dir = Path("data") / "tasks"
-                print(f"[Dashboard] Using last resort path: {data_dir}")
+                # Last resort: try to get from utils.io again
+                try:
+                    from utils.io import TASKS_DIR
+                    data_dir = TASKS_DIR
+                    print(f"[Dashboard] Last resort: Using TASKS_DIR from utils.io: {data_dir}")
+                except Exception:
+                    # Final fallback: use current directory
+                    data_dir = Path("data") / "tasks"
+                    print(f"[Dashboard] Using final fallback path: {data_dir}")
 
         try:
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -147,9 +156,40 @@ class DashboardPage:
 
         self._data_dir = data_dir
         print(f"[Dashboard] Initializing TasksStore with data_dir: {data_dir}")
+        print(f"[Dashboard] data_dir exists: {data_dir.exists() if data_dir else False}")
+        print(f"[Dashboard] data_dir is absolute: {data_dir.is_absolute() if data_dir else False}")
+        if data_dir:
+            tasks_file = data_dir / "tasks.json"
+            print(f"[Dashboard] tasks.json path: {tasks_file}")
+            print(f"[Dashboard] tasks.json exists: {tasks_file.exists()}")
+            if tasks_file.exists():
+                try:
+                    import json
+                    with open(tasks_file, 'r', encoding='utf-8') as f:
+                        tasks_data = json.load(f)
+                        print(f"[Dashboard] tasks.json contains {len(tasks_data) if isinstance(tasks_data, list) else 'non-list'} items")
+                except Exception as e:
+                    print(f"[Dashboard] ERROR reading tasks.json: {e}")
+        
         try:
             self.store = TasksStore(self._data_dir, app=self.app)
-            print(f"[Dashboard] TasksStore initialized, tasks count: {len(self.store.tasks)}")
+            print(f"[Dashboard] TasksStore initialized")
+            if hasattr(self.store, 'tasks'):
+                print(f"[Dashboard] TasksStore.tasks count: {len(self.store.tasks) if self.store.tasks else 0}")
+                print(f"[Dashboard] TasksStore.tasks type: {type(self.store.tasks)}")
+            else:
+                print(f"[Dashboard] WARNING: TasksStore has no 'tasks' attribute")
+            # Force load if tasks is None or empty
+            if not hasattr(self.store, 'tasks') or self.store.tasks is None or len(self.store.tasks) == 0:
+                print(f"[Dashboard] Attempting to force load tasks...")
+                try:
+                    if hasattr(self.store, 'load'):
+                        self.store.load()
+                        print(f"[Dashboard] After force load, tasks count: {len(self.store.tasks) if self.store.tasks else 0}")
+                except Exception as e:
+                    print(f"[Dashboard] ERROR during force load: {e}")
+                    import traceback
+                    traceback.print_exc()
         except Exception as e:
             print(f"[Dashboard] ERROR: Failed to initialize TasksStore: {e}")
             import traceback

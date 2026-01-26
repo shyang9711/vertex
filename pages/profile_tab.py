@@ -761,6 +761,9 @@ def init_profile_tab(
             try:
                 app.dashboard = DashboardPage(app)
                 print(f"[PROFILE] _client_tasks_source: Dashboard initialized successfully")
+                # Give it a moment to fully initialize
+                import time
+                time.sleep(0.1)
             except Exception as e:
                 print(f"[PROFILE] _client_tasks_source: ERROR - Failed to initialize dashboard: {e}")
                 import traceback
@@ -787,8 +790,39 @@ def init_profile_tab(
                         return out
                 
                 tasks = getattr(store, "tasks", [])
-                print(f"[PROFILE] _client_tasks_source: total tasks in store={len(tasks)}")
+                print(f"[PROFILE] _client_tasks_source: total tasks in store={len(tasks) if tasks else 0}")
+                
+                # If tasks is empty, try to check the file directly
+                if not tasks or len(tasks) == 0:
+                    print(f"[PROFILE] _client_tasks_source: WARNING - tasks list is empty, checking file directly")
+                    try:
+                        if hasattr(store, "path") and store.path:
+                            import json
+                            from pathlib import Path
+                            tasks_file = Path(store.path)
+                            print(f"[PROFILE] _client_tasks_source: Checking tasks file: {tasks_file}")
+                            print(f"[PROFILE] _client_tasks_source: File exists: {tasks_file.exists()}")
+                            if tasks_file.exists():
+                                with open(tasks_file, 'r', encoding='utf-8') as f:
+                                    file_tasks = json.load(f)
+                                    print(f"[PROFILE] _client_tasks_source: File contains {len(file_tasks) if isinstance(file_tasks, list) else 'non-list'} tasks")
+                                    # Try to reload store
+                                    if hasattr(store, "load"):
+                                        store.load()
+                                        tasks = getattr(store, "tasks", [])
+                                        print(f"[PROFILE] _client_tasks_source: After reload, tasks count: {len(tasks) if tasks else 0}")
+                    except Exception as e:
+                        print(f"[PROFILE] _client_tasks_source: ERROR checking file: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                if not tasks:
+                    print(f"[PROFILE] _client_tasks_source: No tasks found after all attempts")
+                    return out
+                
                 for i, t in enumerate(tasks):
+                    if not isinstance(t, dict):
+                        continue
                     if not t.get("is_enabled", True):
                         continue
                     
