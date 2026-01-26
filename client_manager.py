@@ -78,6 +78,7 @@ try:
         relations_to_display_lines, relations_to_flat_emails, relations_to_flat_phones,
         is_valid_person_payload, today_date, quarter_start, new_quarter_started,
         safe_fetch_sales_tax_rate, _account_manager_key, _account_manager_id_from_key,
+        PHONE_DIGITS_RE,
     )
 
 except ModuleNotFoundError:
@@ -124,6 +125,7 @@ except ModuleNotFoundError:
         relations_to_display_lines, relations_to_flat_emails, relations_to_flat_phones,
         is_valid_person_payload, today_date, quarter_start, new_quarter_started,
         safe_fetch_sales_tax_rate, _account_manager_key, _account_manager_id_from_key,
+        PHONE_DIGITS_RE,
     )
 
 # NewUI preference from styles/, fallback to functions/
@@ -1040,10 +1042,16 @@ class App(ttk.Frame):
             self.page_main = self.dashboard.ensure(self.page_host)
 
     # ---------- client Detail (Notebook) ----------
-    def _build_detail_page(self, idx: int):
+    def _build_detail_page(self, idx: int, restore_tab: str = None):
         self._clear_page_host()
 
         c = self.items[idx]
+        print("=" * 80)
+        print(f"[DETAIL] Building detail page for idx={idx}, client={c.get('name', 'N/A')}")
+        print(f"[DETAIL] Client relations count: {len(c.get('relations', []))}")
+        print(f"[DETAIL] Client relations: {c.get('relations', [])}")
+        print(f"[DETAIL] Client keys: {list(c.keys())}")
+        print("=" * 80)
         page = ttk.Frame(self.page_host)
         page.pack(fill=tk.BOTH, expand=True)
 
@@ -1128,10 +1136,37 @@ class App(ttk.Frame):
         ttk.Label(ana, text=f"Has EIN: {'Yes' if c.get('ein') else 'No'}").pack(anchor="w")
         ttk.Label(ana, text=f"Entity Type: {c.get('entity_type','') or '—'}").pack(anchor="w")
 
+        # Restore the active tab if specified
+        if restore_tab:
+            print(f"[NAV] Attempting to restore tab: '{restore_tab}'")
+            try:
+                found = False
+                all_tabs = []
+                for tab_id in nb.tabs():
+                    tab_text = nb.tab(tab_id, "text")
+                    all_tabs.append(tab_text)
+                    print(f"[NAV] Found tab: '{tab_text}'")
+                    if tab_text == restore_tab:
+                        nb.select(tab_id)
+                        print(f"[NAV] Successfully restored tab: '{restore_tab}'")
+                        found = True
+                        break
+                if not found:
+                    print(f"[NAV] WARNING: Tab '{restore_tab}' not found in notebook")
+                    print(f"[NAV] Available tabs: {all_tabs}")
+            except Exception as e:
+                print(f"[NAV] ERROR: Error restoring tab '{restore_tab}': {e}")
+                import traceback
+                traceback.print_exc()
+
         footer = ttk.Frame(page, padding=(8,2)); footer.pack(side=tk.BOTTOM, fill=tk.X)
 
         self._current_detail_idx = idx
-        self._current_page = ("detail", idx)
+        # Store the page with tab info if restore_tab was provided
+        if restore_tab:
+            self._current_page = ("detail", (idx, restore_tab))
+        else:
+            self._current_page = ("detail", idx)
 
     # ---------- Personnel Detail Page ----------
     def _build_person_page(self, client_idx: int, role_key: str, person_idx: int):
@@ -1807,7 +1842,39 @@ class App(ttk.Frame):
             idx = self.selected_index()
             if idx is None:
                 messagebox.showinfo("Edit", "Select a row to edit."); return
-        dlg = ClientDialog(self, "Edit Client", self.items[idx]); self.wait_window(dlg)
+        
+        print("=" * 80)
+        print(f"[EDIT] Opening edit dialog for client idx={idx}")
+        print(f"[EDIT] Total items in self.items: {len(self.items)}")
+        
+        # Ensure we get the latest client data, including relations
+        # Make a deep copy to avoid mutations
+        import copy
+        client_data = copy.deepcopy(self.items[idx])
+        
+        # Debug: Log what we're passing to the dialog
+        relations_count = len(client_data.get("relations", []))
+        print(f"[EDIT] Client data before passing to dialog:")
+        print(f"[EDIT]   - Client name: {client_data.get('name', 'N/A')}")
+        print(f"[EDIT]   - Client EIN: {client_data.get('ein', 'N/A')}")
+        print(f"[EDIT]   - Relations count: {relations_count}")
+        print(f"[EDIT]   - Relations data: {client_data.get('relations', [])}")
+        print(f"[EDIT]   - All keys in client_data: {list(client_data.keys())}")
+        
+        # Check if relations exist in the original items[idx]
+        original_relations = self.items[idx].get("relations", [])
+        print(f"[EDIT] Original self.items[{idx}]['relations'] count: {len(original_relations)}")
+        print(f"[EDIT] Original self.items[{idx}]['relations'] data: {original_relations}")
+        
+        # Ensure relations are included
+        if "relations" not in client_data:
+            print(f"[EDIT] WARNING: Relations field was missing, adding empty list")
+            client_data["relations"] = []
+        else:
+            print(f"[EDIT] Relations field exists with {len(client_data['relations'])} items")
+        
+        print("=" * 80)
+        dlg = ClientDialog(self, "Edit Client", client_data); self.wait_window(dlg)
         if dlg.result:
             # Duplicate check is now done in the dialog's _save() method
             # If dlg.result exists, it means the save was successful (no duplicate)
@@ -1849,8 +1916,24 @@ class App(ttk.Frame):
             print(f"[client_manager][LINK] on_edit: After save_clients, relations: {self.items[idx].get('relations', [])}")
             self.populate()
             self._update_suggestions()
+            
+            # Log the saved relations
+            self.log.info(f"[EDIT] After save - relations count: {len(self.items[idx].get('relations', []))}")
+            self.log.info(f"[EDIT] After save - relations: {self.items[idx].get('relations', [])}")
+            
             if self._current_page[0] != "main":
-                self.navigate(self._current_page[0], self._current_page[1], replace=True)
+                # Handle both old format (int) and new format ((int, tab_name))
+                page_data = self._current_page[1]
+                restore_tab = None
+                if isinstance(page_data, tuple) and len(page_data) == 2:
+                    # New format: extract idx and tab
+                    page_data, restore_tab = page_data
+                # Rebuild the detail page to show updated relations
+                if self._current_page[0] == "detail":
+                    self.log.info(f"[EDIT] Rebuilding detail page with updated data, restore_tab={restore_tab}")
+                    self._build_detail_page(page_data, restore_tab=restore_tab)
+                else:
+                    self.navigate(self._current_page[0], page_data, replace=True)
 
 
     def _detail_edit(self, idx: int):
@@ -2475,7 +2558,12 @@ class App(ttk.Frame):
         kind, data = state
         if kind == "detail":
             try:
-                return (kind, int(data))
+                # Handle both old format (int) and new format ((int, tab_name))
+                if isinstance(data, tuple) and len(data) == 2:
+                    idx, _tab_name = data
+                    return (kind, int(idx))
+                else:
+                    return (kind, int(data))
             except Exception:
                 return (kind, None)
         elif kind == "person":
@@ -2581,7 +2669,12 @@ class App(ttk.Frame):
             self.page_actions.pack(fill=tk.BOTH, expand=True)
 
         elif kind == "detail":
-            self._build_detail_page(int(data))
+            # Handle both old format (int) and new format ((int, tab_name))
+            if isinstance(data, tuple) and len(data) == 2:
+                idx, tab_name = data
+                self._build_detail_page(int(idx), restore_tab=tab_name)
+            else:
+                self._build_detail_page(int(data))
 
         else:  # person / unknown
             if hasattr(self, "_is_valid_person_payload") and self._is_valid_person_payload(data):
@@ -2670,6 +2763,7 @@ class App(ttk.Frame):
 
     def navigate(self, page: str, idx=None, payload=None, push: bool = True, replace: bool = False):
         target = None
+        print(f"[NAV] navigate() called: page={page}, idx={idx}, payload={payload}, push={push}, replace={replace}")
         if page == "main":
             target = ("main", None)
         elif page == "search":
@@ -2685,21 +2779,110 @@ class App(ttk.Frame):
             target = ("taxes", None)
         elif page == "detail":
             # accept either idx or payload for backwards-compat
+            # Also accept tuple format (idx, tab_name) for tab restoration
             sel = idx if idx is not None else payload
             if sel is None:
                 # nothing to open; just ignore
                 return
-            try:
-                sel = int(sel)
-            except Exception:
-                # if it can't be coerced, abort quietly
-                return
-            self._last_viewed_idx = sel
-            target = ("detail", sel)
+            
+            # Handle tuple format (idx, tab_name) - but this shouldn't happen from profile tab anymore
+            if isinstance(sel, tuple) and len(sel) == 2:
+                print(f"[NAV] WARNING: Received tuple as sel: {sel}, extracting idx and tab")
+                sel_idx, tab_name = sel
+                print(f"[NAV] Extracted: sel_idx={sel_idx} (type: {type(sel_idx)}), tab_name={tab_name}")
+                try:
+                    sel_idx = int(sel_idx)
+                    print(f"[NAV] Converted sel_idx to int: {sel_idx}")
+                except Exception as e:
+                    print(f"[NAV] ERROR: Failed to convert sel_idx to int: {e}")
+                    return
+                self._last_viewed_idx = sel_idx
+                target = ("detail", (sel_idx, tab_name))
+                print(f"[NAV] Detail page with tab: ('detail', ({sel_idx}, '{tab_name}'))")
+                # Skip the tab capture logic since we already have the tab
+            else:
+                try:
+                    sel = int(sel)
+                except Exception:
+                    # if it can't be coerced, abort quietly
+                    return
+                self._last_viewed_idx = sel
+                # Track which tab was active if we're currently on a detail page
+                active_tab = None
+                print("=" * 80)
+                print(f"[NAV] Navigating to detail page idx={sel}")
+                print(f"[NAV] Current page: {self._current_page}")
+                print(f"[NAV] Has detail_notebook: {hasattr(self, '_detail_notebook')}")
+                if self._current_page[0] == "detail" and hasattr(self, "_detail_notebook"):
+                    try:
+                        selected_tab = self._detail_notebook.select()
+                        print(f"[NAV] Selected tab ID: {selected_tab}")
+                        if selected_tab:
+                            # Get the tab text
+                            active_tab = self._detail_notebook.tab(selected_tab, "text")
+                            print(f"[NAV] Captured active tab: '{active_tab}' when navigating from detail page")
+                    except Exception as e:
+                        print(f"[NAV] Failed to capture active tab: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print(f"[NAV] Not capturing tab - current_page={self._current_page[0]}, has_notebook={hasattr(self, '_detail_notebook')}")
+                # Store active tab in the target if we're navigating from detail to detail
+                if active_tab:
+                    target = ("detail", (sel, active_tab))
+                    print(f"[NAV] Target with tab: ('detail', ({sel}, '{active_tab}'))")
+                else:
+                    target = ("detail", sel)
+                    print(f"[NAV] Target without tab: ('detail', {sel})")
+                print("=" * 80)
         elif page == "person":
             if self._is_valid_person_payload(payload):
                 cmp_idx, role_key, pidx = payload
                 target = ("person", (int(cmp_idx), str(role_key), int(pidx)))
+                print(f"[NAV] Navigating to person page: client_idx={cmp_idx}, role_key={role_key}, person_idx={pidx}")
+                current_page = getattr(self, "_current_page", None)
+                print(f"[NAV] Current page before person navigation: {current_page}")
+                # When navigating to person page, we should push the current detail page to history
+                # if we're currently on a detail page
+                if current_page and current_page[0] == "detail" and push:
+                    # Capture tab info if available
+                    detail_data = current_page[1]
+                    active_tab = None
+                    if isinstance(detail_data, tuple) and len(detail_data) == 2:
+                        # Already has tab info
+                        detail_with_tab = current_page
+                        print(f"[NAV] Detail page already has tab info: {detail_with_tab}")
+                    elif hasattr(self, "_detail_notebook"):
+                        try:
+                            selected_tab = self._detail_notebook.select()
+                            if selected_tab:
+                                active_tab = self._detail_notebook.tab(selected_tab, "text")
+                                detail_idx = detail_data if isinstance(detail_data, int) else detail_data[0] if isinstance(detail_data, tuple) else None
+                                if detail_idx is not None:
+                                    detail_with_tab = ("detail", (detail_idx, active_tab))
+                                    print(f"[NAV] Captured tab '{active_tab}' for detail page idx={detail_idx}")
+                                else:
+                                    detail_with_tab = current_page
+                            else:
+                                detail_with_tab = current_page
+                        except Exception as e:
+                            print(f"[NAV] Error capturing tab: {e}")
+                            detail_with_tab = current_page
+                    else:
+                        detail_with_tab = current_page
+                    
+                    # Push to history if not already there
+                    if not hasattr(self, "_history"):
+                        self._history = []
+                    if not self._history or self._page_key(self._history[-1]) != self._page_key(detail_with_tab):
+                        self._history.append(detail_with_tab)
+                        print(f"[NAV] Pushed detail page to history before person navigation: {detail_with_tab}")
+                    else:
+                        print(f"[NAV] Detail page already in history, not pushing again")
+            else:
+                # Invalid person payload - return early to avoid errors
+                print(f"[NAV] ERROR: Invalid person payload: {payload}, aborting navigation")
+                return
         elif page == "actions":
             # payload can be a preselected tool key or None
             target = ("actions", payload)
@@ -2707,10 +2890,20 @@ class App(ttk.Frame):
         else:
             target = ("main", None)
     
-        if not hasattr(self, "_current_page"):
+        # Ensure target is set (should never be None at this point, but safety check)
+        if target is None:
+            print(f"[NAV] ERROR: target is None, defaulting to main")
+            target = ("main", None)
+    
+        if not hasattr(self, "_current_page") or self._current_page is None:
             self._current_page = ("main", None)
     
-        if self._page_key(getattr(self, "_current_page", ("main", None))) == self._page_key(target):
+        current_page = getattr(self, "_current_page", ("main", None))
+        if current_page is None:
+            current_page = ("main", None)
+            self._current_page = current_page
+    
+        if self._page_key(current_page) == self._page_key(target):
             # Still render to ensure UI matches requested page
             self._current_page = target
         else:
@@ -2732,6 +2925,10 @@ class App(ttk.Frame):
     
         self._clear_page_host()
     
+        # Ensure _current_page is set before unpacking
+        if not hasattr(self, "_current_page") or self._current_page is None:
+            self._current_page = target
+        
         kind, data = self._current_page
         
         self.log.info("navigate(kind=%s, push=%s)", kind, push)
@@ -2755,7 +2952,31 @@ class App(ttk.Frame):
             ReportsPage(app=self).ensure(self.page_host)
 
         elif kind == "detail":
-            self._build_detail_page(data)
+            # Handle both old format (int) and new format ((int, tab_name))
+            print(f"[NAV] Rendering detail page, data type: {type(data)}, data value: {data}")
+            if isinstance(data, tuple) and len(data) == 2:
+                idx_raw, tab_name = data
+                print(f"[NAV] Unpacked tuple: idx_raw={idx_raw} (type: {type(idx_raw)}), tab_name={tab_name}")
+                # Ensure idx is an integer
+                try:
+                    idx = int(idx_raw)
+                    print(f"[NAV] Converted idx to int: {idx}")
+                except (ValueError, TypeError) as e:
+                    print(f"[NAV] ERROR: Invalid idx in tuple: {idx_raw} (type: {type(idx_raw)}), error: {e}, defaulting to 0")
+                    idx = 0
+                print(f"[NAV] Building detail page for idx={idx} (type: {type(idx)}), restoring tab='{tab_name}'")
+                self._build_detail_page(idx, restore_tab=tab_name)
+            else:
+                # Ensure data is an integer
+                print(f"[NAV] Data is not tuple, data={data} (type: {type(data)})")
+                try:
+                    idx = int(data)
+                    print(f"[NAV] Converted data to int: {idx}")
+                except (ValueError, TypeError) as e:
+                    print(f"[NAV] ERROR: Invalid idx: {data} (type: {type(data)}), error: {e}, defaulting to 0")
+                    idx = 0
+                print(f"[NAV] Building detail page for idx={idx} (type: {type(idx)}), no tab to restore")
+                self._build_detail_page(idx)
         elif kind == "actions":
             self._ensure_actions_page()
             # preselect tool if provided
@@ -2807,15 +3028,23 @@ class App(ttk.Frame):
         self.navigate("main", push=push)
 
     def nav_back(self):
-        self.log.info("nav_back()")
+        print("=" * 80)
+        print(f"[NAV] nav_back() called")
+        print(f"[NAV] Current page: {self._current_page}")
+        print(f"[NAV] History: {getattr(self, '_history', [])}")
         if not getattr(self, "_history", None):
+            print("[NAV] WARNING: No history attribute")
             return
         if not self._history:
+            print("[NAV] WARNING: History is empty")
             return
 
         prev = self._history.pop()
+        print(f"[NAV] Popped from history: {prev}")
         self._future.append(self._current_page)
         self._current_page = prev
+        print(f"[NAV] New current page: {self._current_page}")
+        print("=" * 80)
 
         self._render_current_page()
 

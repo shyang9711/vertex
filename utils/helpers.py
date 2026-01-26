@@ -310,8 +310,10 @@ def merge_relations(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any
     Merge/dedupe relations by id. Prefer non-empty fields from incoming.
     Preserves all relation fields (name, first_name, last_name, email, phone, address, etc.)
     Uses "id" instead of "other_id".
+    IMPORTANT: Also includes relations without id (person relations, not entity links).
     """
     out: Dict[str, Dict[str, Any]] = {}
+    relations_without_id: List[Dict[str, Any]] = []  # Store relations without id separately
 
     # First, add all existing relations (including those without id)
     for r in (existing or []):
@@ -324,9 +326,8 @@ def merge_relations(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any
             out[link_id] = dict(rr)
         else:
             # No id - treat as person relation (not entity link)
-            # Store with a temporary key or handle separately
-            # For now, we'll skip these in the merge (they should be handled separately)
-            pass
+            # Store separately to preserve them
+            relations_without_id.append(dict(rr))
 
     # Then, merge incoming relations (prefer incoming data)
     for r in (incoming or []):
@@ -335,6 +336,17 @@ def merge_relations(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any
         link_id = rr.get("id") or ""
         
         if not link_id:
+            # Incoming relation without id - add to relations_without_id if not duplicate
+            # Check for duplicates by comparing key fields
+            is_duplicate = False
+            for existing_no_id in relations_without_id:
+                if (existing_no_id.get("first_name") == rr.get("first_name") and
+                    existing_no_id.get("last_name") == rr.get("last_name") and
+                    existing_no_id.get("email") == rr.get("email")):
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                relations_without_id.append(dict(rr))
             continue
         
         # If existing, prefer incoming non-empty fields (especially data fields)
@@ -351,8 +363,8 @@ def merge_relations(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any
         else:
             out[link_id] = dict(rr)
 
-    # stable order
-    return list(out.values())
+    # Return relations with id first, then relations without id
+    return list(out.values()) + relations_without_id
 
 
 def migrate_officer_business_links_to_relations(client: Dict[str, Any]) -> Dict[str, Any]:

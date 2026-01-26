@@ -49,8 +49,16 @@ class ClientDialog(tk.Toplevel):
         self.maxsize(880, 1200)
         self.debug_links = True
 
-        self._initial = dict(initial or {})
+        # Make a deep copy to avoid mutations from migration functions
+        import copy
+        self._initial = copy.deepcopy(initial or {})
         init = self._initial
+        
+        # Debug logging
+        print(f"[ClientDialog] Initializing with client: {init.get('name', 'N/A')}")
+        print(f"[ClientDialog] Initial relations count: {len(init.get('relations', []))}")
+        print(f"[ClientDialog] Initial relations data: {init.get('relations', [])}")
+        print(f"[ClientDialog] Initial keys: {list(init.keys())}")
         self.v_name    = tk.StringVar(value=init.get("name",""))
         self.v_dba     = tk.StringVar(value=init.get("dba",""))
         self.v_first = tk.StringVar(value=init.get("first_name",""))
@@ -254,21 +262,52 @@ class ClientDialog(tk.Toplevel):
         if self.memo_init: self.memo_txt.insert("1.0", self.memo_init)
         
         # --- Legacy migration (if some business links were stored in officers) ---
+        print(f"[ClientDialog] BEFORE migrate_officer_business_links_to_relations:")
+        print(f"[ClientDialog]   Relations count: {len(init.get('relations', []))}")
+        print(f"[ClientDialog]   Relations data: {init.get('relations', [])}")
+        print(f"[ClientDialog]   Officers count: {len(init.get('officers', []))}")
+        print(f"[ClientDialog]   Officers data: {init.get('officers', [])}")
+        print(f"[ClientDialog]   init id: {id(init)}")
+        print(f"[ClientDialog]   self._initial id: {id(self._initial)}")
+        print(f"[ClientDialog]   init is self._initial: {init is self._initial}")
         try:
-            migrate_officer_business_links_to_relations(init)
-        except Exception:
-            pass
+            result = migrate_officer_business_links_to_relations(init)
+            print(f"[ClientDialog] AFTER migrate_officer_business_links_to_relations:")
+            print(f"[ClientDialog]   Relations count: {len(init.get('relations', []))}")
+            print(f"[ClientDialog]   Relations data: {init.get('relations', [])}")
+            print(f"[ClientDialog]   Officers count: {len(init.get('officers', []))}")
+            print(f"[ClientDialog]   Returned result relations count: {len(result.get('relations', [])) if isinstance(result, dict) else 'N/A'}")
+        except Exception as e:
+            print(f"[ClientDialog] ERROR in migrate_officer_business_links_to_relations: {e}")
+            import traceback
+            traceback.print_exc()
 
         # --- Build combined rows for the tree: all relations (people + entity links) ---
         combined_rows = []
+        
+        print("=" * 80)
+        print(f"[ClientDialog] Building relations tree...")
+        print(f"[ClientDialog] Officers count: {len(init.get('officers', []))}")
+        print(f"[ClientDialog] Officers data: {init.get('officers', [])}")
+        print(f"[ClientDialog] Relations count: {len(init.get('relations', []))}")
+        print(f"[ClientDialog] Relations data: {init.get('relations', [])}")
+        print(f"[ClientDialog] Type of relations: {type(init.get('relations'))}")
 
         # Migrate any remaining officers to relations display
-        for o in (init.get("officers", []) or []):
+        officers_list = init.get("officers", []) or []
+        print(f"[ClientDialog] Processing {len(officers_list)} officers...")
+        for i, o in enumerate(officers_list):
             if isinstance(o, dict):
+                print(f"[ClientDialog] Officer {i}: {o}")
                 combined_rows.append(ensure_relation_dict(o))
+            else:
+                print(f"[ClientDialog] Officer {i} is not a dict: {type(o)}")
 
         # All relations (both people without links and entity links)
-        for r in (init.get("relations", []) or []):
+        relations_list = init.get("relations", []) or []
+        print(f"[ClientDialog] Processing {len(relations_list)} relations...")
+        for i, r in enumerate(relations_list):
+            print(f"[ClientDialog] Relation {i}: {r} (type: {type(r)})")
             rr = ensure_relation_link(r)
             if rr.get("id"):
                 # Entity relation - link to another client
@@ -294,14 +333,20 @@ class ClientDialog(tk.Toplevel):
                 # Person relation (migrated from officers) - show as-is
                 combined_rows.append(ensure_relation_dict(r))
 
-        for o in combined_rows:
+        print(f"[ClientDialog] Total combined rows to insert: {len(combined_rows)}")
+        for i, o in enumerate(combined_rows):
             o = ensure_relation_dict(o)
+            print(f"[ClientDialog] Row {i}: name={display_relation_name(o)}, role={o.get('role')}, id={o.get('id')}")
+            print(f"[ClientDialog] Row {i} full data: {o}")
             vals = (
                 display_relation_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
                 o["email"], o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
                 o.get("role","officer"), o.get("id",""), "",  # No longer using linked_client_label
             )
             self.off_tree.insert("", "end", values=vals)
+        print(f"[ClientDialog] Inserted {len(combined_rows)} rows into tree")
+        print(f"[ClientDialog] Tree now has {len(self.off_tree.get_children())} children")
+        print("=" * 80)
 
         btns = ttk.Frame(self); btns.pack(fill="x", pady=(6,6))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=(6,0))

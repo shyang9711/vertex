@@ -249,17 +249,67 @@ def init_profile_tab(
             tgt_idx = _linked_id_to_client_idx(link_id)
             if tgt_idx is not None:
                 # Linked client exists - navigate to it
+                # Capture the current active tab before navigating
+                print(f"[PROFILE] Double-clicked relation, navigating to detail idx={tgt_idx}")
+                print(f"[PROFILE] Current app._current_page: {getattr(app, '_current_page', 'N/A')}")
+                # Check if we're on a detail page and capture the active tab
+                current_page = getattr(app, "_current_page", ("main", None))
+                active_tab = None
+                if current_page[0] == "detail" and hasattr(app, "_detail_notebook"):
+                    try:
+                        selected_tab = app._detail_notebook.select()
+                        if selected_tab:
+                            active_tab = app._detail_notebook.tab(selected_tab, "text")
+                            print(f"[PROFILE] Captured active tab: '{active_tab}'")
+                    except Exception as e:
+                        print(f"[PROFILE] Failed to capture tab: {e}")
+                
+                # Navigate with tab info if we captured it
+                # Pass idx as integer, and we'll handle tab restoration in navigate function
+                # The navigate function will capture the current tab and restore it
                 app.navigate("detail", tgt_idx, push=True)
                 return
             else:
                 # Linked client doesn't exist (was unlinked or deleted) - show person details instead
-                # Don't navigate to client, show person details page
-                if hasattr(app, "_build_person_page"):
+                # Use navigate to ensure history is tracked properly
+                print(f"[PROFILE] Linked client doesn't exist, navigating to person page")
+                print(f"[PROFILE] Current app._current_page: {getattr(app, '_current_page', 'N/A')}")
+                # Capture the current active tab before navigating
+                current_page = getattr(app, "_current_page", ("main", None))
+                active_tab = None
+                if current_page[0] == "detail" and hasattr(app, "_detail_notebook"):
                     try:
-                        app._build_person_page(client_idx, role_key, pidx)
-                        return
-                    except Exception:
-                        pass
+                        selected_tab = app._detail_notebook.select()
+                        if selected_tab:
+                            active_tab = app._detail_notebook.tab(selected_tab, "text")
+                            print(f"[PROFILE] Captured active tab for person page: '{active_tab}'")
+                    except Exception as e:
+                        print(f"[PROFILE] Failed to capture tab: {e}")
+                
+                # Navigate to person page - this will push current detail page to history
+                # Store the detail page with tab info in a way navigate can use
+                if current_page[0] == "detail":
+                    # Ensure current detail page is in history with tab info
+                    detail_idx = current_page[1]
+                    if isinstance(detail_idx, tuple):
+                        # Already has tab info
+                        detail_with_tab = current_page
+                    elif active_tab:
+                        # Add tab info
+                        detail_with_tab = ("detail", (detail_idx, active_tab))
+                    else:
+                        detail_with_tab = current_page
+                    
+                    # Push to history if not already there
+                    if not hasattr(app, "_history"):
+                        app._history = []
+                    if not app._history or app._history[-1] != detail_with_tab:
+                        app._history.append(detail_with_tab)
+                        print(f"[PROFILE] Pushed detail page to history: {detail_with_tab}")
+                
+                # Now navigate to person page - pass as payload, not idx
+                app.navigate("person", idx=None, payload=(client_idx, role_key, pidx), push=True)
+                return
 
         # For relations without links (or unlinked entities), show person details
         # This includes unlinked entities that were previously linked
@@ -268,12 +318,44 @@ def init_profile_tab(
             if p.get("first_name") or p.get("last_name") or p.get("name"):
                 # Show person details page (don't navigate to client)
                 # The relation is now treated as a standalone person entity
-                if hasattr(app, "_build_person_page"):
+                print(f"[PROFILE] Navigating to person page for relation without link")
+                print(f"[PROFILE] Current app._current_page: {getattr(app, '_current_page', 'N/A')}")
+                # Capture the current active tab before navigating
+                current_page = getattr(app, "_current_page", ("main", None))
+                active_tab = None
+                if current_page[0] == "detail" and hasattr(app, "_detail_notebook"):
                     try:
-                        app._build_person_page(client_idx, role_key, pidx)
-                        return
-                    except Exception:
-                        pass
+                        selected_tab = app._detail_notebook.select()
+                        if selected_tab:
+                            active_tab = app._detail_notebook.tab(selected_tab, "text")
+                            print(f"[PROFILE] Captured active tab for person page: '{active_tab}'")
+                    except Exception as e:
+                        print(f"[PROFILE] Failed to capture tab: {e}")
+                
+                # Navigate to person page - this will push current detail page to history
+                # Store the detail page with tab info in a way navigate can use
+                if current_page[0] == "detail":
+                    # Ensure current detail page is in history with tab info
+                    detail_idx = current_page[1]
+                    if isinstance(detail_idx, tuple):
+                        # Already has tab info
+                        detail_with_tab = current_page
+                    elif active_tab:
+                        # Add tab info
+                        detail_with_tab = ("detail", (detail_idx, active_tab))
+                    else:
+                        detail_with_tab = current_page
+                    
+                    # Push to history if not already there
+                    if not hasattr(app, "_history"):
+                        app._history = []
+                    if not app._history or app._history[-1] != detail_with_tab:
+                        app._history.append(detail_with_tab)
+                        print(f"[PROFILE] Pushed detail page to history: {detail_with_tab}")
+                
+                # Now navigate to person page - pass as payload, not idx
+                app.navigate("person", idx=None, payload=(client_idx, role_key, pidx), push=True)
+                return
 
     # ---------- RIGHT: client Tasks (Dashboard-like) ----------
     ttk.Label(right, text="Tasks", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(8,2))
@@ -463,6 +545,13 @@ def init_profile_tab(
         c = _get_live_client()
         # Show relations (includes both people and entity links)
         relations = c.get("relations", []) or []
+        print("=" * 80)
+        print(f"[PROFILE] Refreshing people tree for client: {c.get('name', 'N/A')}")
+        print(f"[PROFILE] Client idx: {_resolve_client_idx_from_client()}")
+        print(f"[PROFILE] Relations count: {len(relations)}")
+        print(f"[PROFILE] Relations data: {relations}")
+        print(f"[PROFILE] Client keys: {list(c.keys())}")
+        print("=" * 80)
         for i, rel in enumerate(relations):
             # Try to parse as relation link first (for entity links)
             try:
