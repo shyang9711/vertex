@@ -58,8 +58,27 @@ try:
 
     from vertex.ui.dialogs.clientdialog import ClientDialog
     from vertex.ui.dialogs.linkdialog import LinkDialog
+    from vertex.ui.dialogs.logdialog import LogDialog
     from vertex.ui.components.autocomplete import AutocompletePopup
     from vertex.ui.components.scrollframe import ScrollFrame
+    from vertex.utils.io import (
+        load_clients, save_clients,
+        export_all_to_json, export_selected_to_json, import_all_from_json,
+        migrate_tasks_client_to_client, migrate_officers_to_relations,
+        DATA_FILE, ACCOUNT_MANAGERS_FILE, TASKS_FILE, MONTHLY_STATE_FILE,
+        MATCH_RULES_DIR, VENDOR_LISTS_DIR, CLIENTS_DIR, DATA_ROOT, MIGRATIONS_FILE,
+    )
+    from vertex.utils.helpers import (
+        ensure_relation_dict, display_relation_name,
+        ensure_relation_link, merge_relations,
+        migrate_officer_business_links_to_relations,
+        is_migration_done, mark_migration_done,
+        normalize_phone_digits, normalize_ein_digits, normalize_ssn_digits,
+        normalize_logs, tokenize, norm_text,
+        relations_to_display_lines, relations_to_flat_emails, relations_to_flat_phones,
+        is_valid_person_payload, today_date, quarter_start, new_quarter_started,
+        safe_fetch_sales_tax_rate, _account_manager_key, _account_manager_id_from_key,
+    )
 
 except ModuleNotFoundError:
     from pages.dashboard_page import DashboardPage
@@ -85,8 +104,27 @@ except ModuleNotFoundError:
 
     from ui.dialogs.clientdialog import ClientDialog
     from ui.dialogs.linkdialog import LinkDialog
+    from ui.dialogs.logdialog import LogDialog
     from ui.components.autocomplete import AutocompletePopup
     from ui.components.scrollframe import ScrollFrame
+    from utils.io import (
+        load_clients, save_clients,
+        export_all_to_json, export_selected_to_json, import_all_from_json,
+        migrate_tasks_client_to_client, migrate_officers_to_relations,
+        DATA_FILE, ACCOUNT_MANAGERS_FILE, TASKS_FILE, MONTHLY_STATE_FILE,
+        MATCH_RULES_DIR, VENDOR_LISTS_DIR, CLIENTS_DIR, DATA_ROOT, MIGRATIONS_FILE,
+    )
+    from utils.helpers import (
+        ensure_relation_dict, display_relation_name,
+        ensure_relation_link, merge_relations,
+        migrate_officer_business_links_to_relations,
+        is_migration_done, mark_migration_done,
+        normalize_phone_digits, normalize_ein_digits, normalize_ssn_digits,
+        normalize_logs, tokenize, norm_text,
+        relations_to_display_lines, relations_to_flat_emails, relations_to_flat_phones,
+        is_valid_person_payload, today_date, quarter_start, new_quarter_started,
+        safe_fetch_sales_tax_rate, _account_manager_key, _account_manager_id_from_key,
+    )
 
 # NewUI preference from styles/, fallback to functions/
 try:
@@ -152,46 +190,15 @@ def enforce_single_instance(app_id: str = "Vertex") -> bool:
     return True
 
 # -------------------- Storage paths --------------------
-def portable_root() -> Path:
-    # For EXE: folder that contains vertex.exe (NOT _MEI)
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    # For source run
-    try:
-        return Path(__file__).resolve().parent
-    except NameError:
-        return Path(os.getcwd()).resolve()
+# Data directory constants are now in utils/io.py
+# Migration keys
+MIG_TASKS_CLIENT_TO_CLIENT = "mig_tasks_client_to_client"
+MIG_OFFICERS_TO_RELATIONS = "mig_officers_to_relations"
 
-def appdata_root() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
-    return Path(base) / "Vertex"
-
-# Prefer a sibling "data" folder next to the EXE (portable install),
-# but if it doesn't exist and can't be created, fall back to AppData.
-_PORTABLE = portable_root() / "data"
-try:
-    _PORTABLE.mkdir(parents=True, exist_ok=True)
-    DATA_ROOT = _PORTABLE
-except Exception:
-    DATA_ROOT = appdata_root() / "data"
-    DATA_ROOT.mkdir(parents=True, exist_ok=True)
-
-CLIENTS_DIR      = DATA_ROOT / "clients"
-TASKS_DIR        = DATA_ROOT / "tasks"
-MATCH_RULES_DIR  = DATA_ROOT / "match_rules"
+# Re-export for backward compatibility (in case other modules import from here)
+TASKS_DIR = DATA_ROOT / "tasks"
 MONTHLY_DATA_DIR = DATA_ROOT / "monthly_data"
-VENDOR_LISTS_DIR = DATA_ROOT / "vendor_lists"
-
-for _p in (CLIENTS_DIR, TASKS_DIR, MATCH_RULES_DIR, MONTHLY_DATA_DIR, VENDOR_LISTS_DIR):
-    _p.mkdir(parents=True, exist_ok=True)
-
-DATA_DIR  = CLIENTS_DIR
-DATA_FILE = CLIENTS_DIR / "clients.json"
-
-ACCOUNT_MANAGERS_FILE = CLIENTS_DIR / "account_managers.json"
-TASKS_FILE            = TASKS_DIR / "tasks.json"
-MONTHLY_STATE_FILE    = MONTHLY_DATA_DIR / "monthly_state.json"
-client_LIST_FILE     = MATCH_RULES_DIR / "client_list.json"
+client_LIST_FILE = MATCH_RULES_DIR / "client_list.json"
 
 
 # -------------------- System Fault Handler -----------
@@ -203,783 +210,8 @@ except Exception:
     faulthandler.enable()  # fallback to stderr
 
 
-# -------------------- Helpers --------------------
-PHONE_DIGITS_RE = re.compile(r"\d")
-
-def normalize_phone_digits(s: str) -> str:
-    digits = "".join(PHONE_DIGITS_RE.findall(s or ""))
-    return digits[-10:] if len(digits) >= 10 else digits
-
-def normalize_ein_digits(s: str) -> str:
-    return "".join(PHONE_DIGITS_RE.findall(s or ""))[-9:]
-
-def normalize_ssn_digits(s: str) -> str:
-    return "".join(PHONE_DIGITS_RE.findall(s or ""))[-9:]
-
-def normalize_logs(logs):
-    out = []
-    for x in logs or []:
-        if isinstance(x, dict):
-            out.append({
-                "ts":   str(x.get("ts","")).strip(),
-                "user": str(x.get("user","")).strip(),
-                "text": str(x.get("text","")).strip(),
-                "done": bool(x.get("done", False)),
-            })
-        else:
-            out.append({"ts":"", "user":"", "text":str(x), "done": False})
-    return out
-
-_AM_WS_RE = re.compile(r"\s+")
-
-def _account_manager_key(am: dict) -> str:
-    """Stable, case-insensitive key for deduping account managers."""
-    if not isinstance(am, dict):
-        am = {"name": str(am)}
-    name  = _AM_WS_RE.sub(" ", str(am.get("name", "") or "").strip()).casefold()
-    email = str(am.get("email", "") or "").strip().casefold()
-    phone = normalize_phone_digits(str(am.get("phone", "") or "").strip())
-    return f"{name}|{email}|{phone}"
-
-def _account_manager_id_from_key(key: str) -> str:
-    """Deterministic short id from key (so imports don't create duplicates)."""
-    h = hashlib.sha1((key or "").encode("utf-8", errors="ignore")).hexdigest()
-    return f"am_{h[:12]}"
-
-def tokenize(s: str) -> List[str]:
-    if s is None: return []
-    s = str(s).lower().strip()
-    parts = re.split(r"[^a-z0-9@._\-&]+", s)
-    return [p for p in parts if p]
-
-def norm_text(s: str) -> str:
-    return " ".join(tokenize(s))
-
-def display_relation_name(o: Dict[str, str]) -> str:
-    o = ensure_relation_dict(o)
-    return o.get("name","").strip()
-
-def relations_to_display_lines(relations: List[Dict[str,str]]) -> List[str]:
-    return [display_relation_name(o) for o in (relations or []) if display_relation_name(o)]
-
-def relations_to_flat_emails(relations: List[Dict[str,str]]) -> List[str]:
-    seen, out = set(), []
-    for o in relations or []:
-        e = str(ensure_relation_dict(o).get("email","")).strip()
-        if e and e not in seen:
-            seen.add(e); out.append(e)
-    return out
-
-def relations_to_flat_phones(relations: List[Dict[str,str]]) -> List[str]:
-    seen, out = set(), []
-    for o in relations or []:
-        p = str(ensure_relation_dict(o).get("phone","")).strip()
-        if p and p not in seen:
-            seen.add(p); out.append(p)
-    return out
-
-def is_valid_person_payload(data):
-    return isinstance(data, (tuple, list)) and len(data) == 3 and data[0] is not None
-
-# ---- Quarter / Tax helpers ---------------------------------------------------
-def today_date() -> dt.date:
-    return dt.date.today()
-
-def quarter_start(d: dt.date) -> dt.date:
-    q = (d.month - 1) // 3
-    first_month = q * 3 + 1
-    return dt.date(d.year, first_month, 1)
-
-def new_quarter_started(last_checked_iso: str | None) -> bool:
-    try:
-        if not last_checked_iso:
-            return True
-        last = dt.date.fromisoformat(last_checked_iso)
-    except Exception:
-        return True
-    start_now = quarter_start(today_date())
-    return last < start_now
-
-def safe_fetch_sales_tax_rate(state: str, city: str) -> Optional[float]:
-    """
-    Optional API call to fetch a sales tax rate by state/city.
-    Configure env var TAX_API_URL like:
-      https://example.com/tax?state={state}&city={city}
-    Returns None on failure/offline.
-    """
-    state = (state or "").strip()
-    city  = (city or "").strip()
-    if not state:
-        return None
-    tmpl = os.environ.get("TAX_API_URL", "")
-    if not tmpl:
-        return None
-    url = tmpl.format(state=state, city=urllib.parse.quote(city))
-    try:
-        ctx = ssl.create_default_context()
-        with urllib.request.urlopen(url, timeout=5, context=ctx) as resp:
-            if resp.status != 200:
-                return None
-            data = resp.read().decode("utf-8", errors="ignore")
-            m = re.search(r"(\d+(?:\.\d+)?)", data)
-            if not m: return None
-            val = float(m.group(1))
-            if val <= 0.2:  # treat as fraction
-                val *= 100.0
-            return round(val, 4)
-    except Exception:
-        return None
-
-# -------------------- Data IO --------------------
-def load_clients() -> List[Dict[str, Any]]:
-    if not DATA_FILE.exists():
-        DATA_FILE.write_text("[]", encoding="utf-8")
-        return []
-    try:
-        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            return []
-        out = []
-        for c in data:
-            c = dict(c) if isinstance(c, dict) else {}
-
-            # Core
-            c.setdefault("name","")
-            c.setdefault("dba","")
-            c.setdefault("ein","")
-            c.setdefault("ssn","")
-            c.setdefault("file_location","")
-            c.setdefault("memo","")
-
-            # client extended fields
-            c.setdefault("addr1","")
-            c.setdefault("addr2","")
-            c.setdefault("city","")
-            c.setdefault("state","")
-            c.setdefault("zip","")
-            c.setdefault("acct_mgr","")
-            c.setdefault("edd_number","")
-            c.setdefault("sales_tax_account","")
-            c.setdefault("entity_type","")
-
-            # Tax rates
-            c.setdefault("ui_rate","")
-            c.setdefault("sales_tax_rate","")
-            c.setdefault("other_tax_rates","")
-            c.setdefault("tax_rates_last_checked","")
-
-            # Personnel
-            relations = c.get("relations")
-            if relations is None:
-                legacy = c.get("owner","")
-                relations = [legacy] if legacy else []
-            norm_offs: List[Dict[str,str]] = []
-            if isinstance(relations, list):
-                for x in relations:
-                    norm_offs.append(ensure_relation_dict(x))
-            elif isinstance(relations, dict):
-                norm_offs.append(ensure_relation_dict(relations))
-            else:
-                norm_offs = [ensure_relation_dict(relations)] if relations else []
-            c["relations"] = norm_offs
-            c.pop("owner", None)
-
-            # Optional employees list (if present, normalize same way)
-            emps = c.get("employees", [])
-            if isinstance(emps, list):
-                c["employees"] = [ensure_relation_dict(x) for x in emps]
-            elif isinstance(emps, dict):
-                c["employees"] = [ensure_relation_dict(emps)]
-            else:
-                c["employees"] = []
-
-            # Logs list (optional)
-            c.setdefault("logs", [])
-            c["logs"] = normalize_logs(c.get("logs", []))
-
-            out.append(c)
-        return out
-    except Exception as e:
-        LOG.exception("Failed to load clients.json: %s", e)
-        messagebox.showerror("Load Error", f"Couldn't read clients.json:\n{e}")
-        return []
-
-def _normalize_clients_for_io(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Create a clean list of client dicts ready to be written to JSON.
-    Used by both save_clients() and Export All.
-    """
-    out: List[Dict[str, Any]] = []
-    for c in items:
-        cc = dict(c)
-
-        # Normalize relations/employees
-        cc["relations"]  = [ensure_relation_dict(o) for o in cc.get("relations", [])]
-        cc["employees"] = [ensure_relation_dict(o) for o in cc.get("employees", [])]
-
-        # Ensure keys exist
-        for k, v in {
-            "name":"", "dba":"", "ein":"", "ssn":"", "file_location":"", "memo":"",
-            "addr1":"", "addr2":"", "city":"", "state":"", "zip":"",
-            "acct_mgr":"", "edd_number":"", "sales_tax_account":"", "entity_type":"",
-            "ui_rate":"", "sales_tax_rate":"", "other_tax_rates":"",
-            "tax_rates_last_checked":"", "logs":[]
-        }.items():
-
-            if k not in cc:
-                cc[k] = v
-
-        # Drop derived fields
-        cc.pop("emails", None)
-        cc.pop("phones", None)
-
-        out.append(cc)
-    return out
-
-
-def save_clients(items: List[Dict[str, Any]]) -> None:
-    """
-    Save current in-memory clients to the program's internal clients.json.
-    This is what 'Save Data' uses.
-    """
-    to_save = _normalize_clients_for_io(items)
-    try:
-        DATA_FILE.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
-        LOG.exception("Error writing clients.json: %s", e)
-        messagebox.showerror("Save Error", f"Couldn't save clients.json:\n{e}")
-
-
-def _read_json_file(path: Path, default):
-    try:
-        if not path.exists():
-            return default
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-
-def _write_json_file(path: Path, obj) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
-
-def migrate_tasks_client_to_client(tasks_path: Path, remove_old_keys: bool = True) -> dict:
-    """
-    Convert tasks.json:
-      company_idx  -> client_idx
-      company_name -> client_name
-
-    remove_old_keys=True will remove company_* fields after copying.
-    """
-    tasks = _read_json_file(tasks_path, default=[])
-    if not isinstance(tasks, list):
-        return {"updated": 0, "skipped": 0, "error": "tasks.json is not a list"}
-
-    updated = 0
-    skipped = 0
-
-    for t in tasks:
-        if not isinstance(t, dict):
-            skipped += 1
-            continue
-
-        changed = False
-
-        # idx
-        if "client_idx" not in t and "company_idx" in t:
-            t["client_idx"] = t.get("company_idx")
-            changed = True
-
-        # name
-        if "client_name" not in t and "company_name" in t:
-            t["client_name"] = t.get("company_name")
-            changed = True
-
-        if remove_old_keys:
-            if "company_idx" in t:
-                t.pop("company_idx", None)
-                changed = True
-            if "company_name" in t:
-                t.pop("company_name", None)
-                changed = True
-
-        if changed:
-            updated += 1
-        else:
-            skipped += 1
-
-    _write_json_file(tasks_path, tasks)
-    return {"updated": updated, "skipped": skipped, "path": str(tasks_path)}
-
-def migrate_officers_to_relations(clients: List[Dict[str, Any]], remove_old_key: bool = True) -> dict:
-    """
-    Migrate per-client 'officers' -> 'relations', then optionally remove 'officers'.
-
-    Rules:
-      - Officers are normalized with ensure_relation_dict
-      - Officers are appended into relations if not a duplicate
-      - Deduping prefers linked_client_id if present; else uses (name/email/phone) case-insensitive
-      - Returns stats for UI reporting
-    """
-    updated_clients = 0
-    moved = 0
-    skipped_dupes = 0
-    removed_keys = 0
-
-    def _norm(s: str) -> str:
-        return (s or "").strip().casefold()
-
-    def _dedupe_key(o: dict) -> str:
-        o = ensure_relation_dict(o)
-        lid = str(o.get("linked_client_id") or "").strip()
-        if lid:
-            return f"link:{lid}"
-        email = _norm(str(o.get("email") or ""))
-        phone = normalize_phone_digits(str(o.get("phone") or ""))
-        name = _norm(str(o.get("name") or ""))
-        return f"p:{name}|{email}|{phone}"
-
-    for c in clients or []:
-        if not isinstance(c, dict):
-            continue
-
-        if "officers" not in c:
-            continue
-
-        officers = c.get("officers")
-        if officers is None:
-            officers_list = []
-        elif isinstance(officers, list):
-            officers_list = officers
-        elif isinstance(officers, dict):
-            officers_list = [officers]
-        else:
-            # string/other legacy
-            officers_list = [officers]
-
-        # Ensure relations exists + normalized
-        rels = c.get("relations")
-        if rels is None:
-            rels_list: List[Dict[str, Any]] = []
-        elif isinstance(rels, list):
-            rels_list = rels
-        elif isinstance(rels, dict):
-            rels_list = [rels]
-        else:
-            rels_list = [rels] if rels else []
-
-        rels_list = [ensure_relation_dict(x) for x in rels_list]
-
-        existing = set()
-        for r in rels_list:
-            existing.add(_dedupe_key(r))
-
-        did_change = False
-        for off in officers_list:
-            od = ensure_relation_dict(off)
-            k = _dedupe_key(od)
-            if k in existing:
-                skipped_dupes += 1
-                continue
-            rels_list.append(od)
-            existing.add(k)
-            moved += 1
-            did_change = True
-
-        # Write back normalized relations
-        c["relations"] = rels_list
-
-        # Remove officers key
-        if remove_old_key and "officers" in c:
-            c.pop("officers", None)
-            removed_keys += 1
-            did_change = True
-
-        if did_change:
-            updated_clients += 1
-
-    return {
-        "clients_touched": updated_clients,
-        "officers_moved": moved,
-        "officer_dupes_skipped": skipped_dupes,
-        "officers_keys_removed": removed_keys,
-    }
-
-def _deep_merge_no_overwrite(dst, src):
-    """
-    Merge src into dst WITHOUT overwriting existing values.
-    - dict: recurse; only fill missing keys
-    - list: if both lists, append items that aren't already present (simple equality)
-    - other: keep dst as-is
-    """
-    if isinstance(dst, dict) and isinstance(src, dict):
-        for k, v in src.items():
-            if k not in dst:
-                dst[k] = v
-            else:
-                dst[k] = _deep_merge_no_overwrite(dst[k], v)
-        return dst
-    if isinstance(dst, list) and isinstance(src, list):
-        for item in src:
-            if item not in dst:
-                dst.append(item)
-        return dst
-    return dst
-
-def export_all_to_json(out_path: Path, clients: list[dict]):
-    """
-    Export ALL program data into a single JSON file.
-    Includes:
-      - clients + account_managers
-      - tasks + monthly_state
-      - match_rules/*.json (including vendor_rules_*.json, accounts_*.json, client_list.json)
-      - vendor_lists/*.csv
-    """
-    out_path = Path(out_path)
-
-    def _read_text(p: Path) -> str:
-        return p.read_text(encoding="utf-8", errors="replace")
-
-    payload = {
-        "version": 1,
-        "clients": clients,
-        "account_managers": [],
-        "tasks": [],
-        "monthly_state": {},
-        "match_rules": {},    # filename -> parsed json
-        "vendor_lists": {},   # filename -> csv text
-    }
-
-    # account managers
-    if ACCOUNT_MANAGERS_FILE.exists():
-        payload["account_managers"] = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
-
-    # tasks
-    if TASKS_FILE.exists():
-        payload["tasks"] = _read_json_file(TASKS_FILE, default=[])
-
-    # monthly state
-    if MONTHLY_STATE_FILE.exists():
-        payload["monthly_state"] = _read_json_file(MONTHLY_STATE_FILE, default={})
-
-    # match_rules/*.json
-    if MATCH_RULES_DIR.exists():
-        for p in MATCH_RULES_DIR.glob("*.json"):
-            try:
-                payload["match_rules"][p.name] = _read_json_file(p, default={})
-            except Exception:
-                # If any file is malformed, still export something rather than failing the whole export
-                payload["match_rules"][p.name] = {"__raw__": _read_text(p)}
-
-    # vendor_lists/*.csv
-    if VENDOR_LISTS_DIR.exists():
-        for p in VENDOR_LISTS_DIR.glob("*.csv"):
-            payload["vendor_lists"][p.name] = _read_text(p)
-
-        # some of your files are .CSV uppercase
-        for p in VENDOR_LISTS_DIR.glob("*.CSV"):
-            payload["vendor_lists"][p.name] = _read_text(p)
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-def export_selected_to_json(out_path: Path, clients: list[dict], selections: dict):
-    """
-    Export selected program data into a single JSON file.
-
-    selections keys (bool):
-      - clients
-      - match_rules
-      - monthly_data
-      - tasks
-      - vendor_lists
-    Notes:
-      - "clients" includes account_managers.json too.
-      - vendor_lists are stored as filename -> csv text.
-      - match_rules are stored as filename -> json content.
-    """
-    out_path = Path(out_path)
-
-    payload = {
-        "version": 1,
-        "exported_at": datetime.now().isoformat(timespec="seconds"),
-        "includes": {k: bool(v) for k, v in selections.items()},
-    }
-
-    # Clients (+ account managers)
-    if selections.get("clients"):
-        include_logs = bool(selections.get("include_logs", True))
-
-        if include_logs:
-            payload["clients"] = clients
-        else:
-            import copy
-            cleaned = copy.deepcopy(clients)
-            for c in cleaned:
-                if isinstance(c, dict):
-                    c["logs"] = []
-            payload["clients"] = cleaned
-
-
-        if ACCOUNT_MANAGERS_FILE.exists():
-            payload["account_managers"] = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
-        else:
-            payload["account_managers"] = []
-
-    # Tasks
-    if selections.get("tasks"):
-        payload["tasks"] = _read_json_file(TASKS_FILE, default=[]) if TASKS_FILE.exists() else []
-
-    # Monthly data
-    if selections.get("monthly_data"):
-        payload["monthly_state"] = _read_json_file(MONTHLY_STATE_FILE, default={}) if MONTHLY_STATE_FILE.exists() else {}
-
-    # Match rules (all *.json under match_rules/)
-    if selections.get("match_rules"):
-        rules = {}
-        if MATCH_RULES_DIR.exists():
-            for p in MATCH_RULES_DIR.glob("*.json"):
-                rules[p.name] = _read_json_file(p, default={})
-        payload["match_rules"] = rules
-
-    # Vendor lists (all *.csv or *.CSV under vendor_lists/)
-    if selections.get("vendor_lists"):
-        vendor_lists = {}
-        if VENDOR_LISTS_DIR.exists():
-            for p in list(VENDOR_LISTS_DIR.glob("*.csv")) + list(VENDOR_LISTS_DIR.glob("*.CSV")):
-                vendor_lists[p.name] = p.read_text(encoding="utf-8", errors="replace")
-        payload["vendor_lists"] = vendor_lists
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
-    """
-    Import ALL data from a single export JSON.
-
-    Rules:
-      - clients: do NOT duplicate if EIN or id already exists
-      - account_managers: do NOT duplicate if id already exists
-      - tasks: do NOT duplicate if id already exists
-              AND remap client_idx using client_name against current clients list
-      - match_rules: do NOT overwrite existing json files
-      - vendor_lists: overwrite
-    """
-    in_path = Path(in_path)
-    data = _read_json_file(in_path, default={})
-    if not isinstance(data, dict):
-        return {"clients_added": 0, "account_managers_added": 0, "tasks_added": 0,
-                "match_rules_added": 0, "vendor_lists_written": 0}
-
-    # --- helpers ---
-    def _norm_ein(x: str) -> str:
-        return normalize_ein_digits(str(x or ""))
-
-    def _norm_name(x: str) -> str:
-        return " ".join(tokenize(str(x or "")))
-
-    # --- existing client keys (id/ein/ssn) ---
-    existing_client_ids = set()
-    existing_client_eins = set()
-    existing_client_ssns = set()
-
-    def _norm_ssn(x: str) -> str:
-        # your project stores some individuals' SSN in ssn or (legacy) ein; normalize to last 9 digits
-        return normalize_ssn_digits(str(x or ""))
-
-    for c in clients:
-        if not isinstance(c, dict):
-            continue
-
-        cid = str(c.get("id", "")).strip()
-        if cid:
-            existing_client_ids.add(cid)
-
-        ein = _norm_ein(c.get("ein", ""))
-        if ein:
-            existing_client_eins.add(ein)
-
-        ssn = _norm_ssn(c.get("ssn", "") or c.get("ein", ""))
-        if ssn:
-            existing_client_ssns.add(ssn)
-
-    # --- import clients ---
-    clients_added = 0
-    clients_skipped_duplicates = 0
-
-    incoming_clients = data.get("clients", [])
-    if isinstance(incoming_clients, list):
-        for c in incoming_clients:
-            if not isinstance(c, dict):
-                continue
-
-            cid = str(c.get("id", "")).strip()
-            ein = _norm_ein(c.get("ein", ""))
-            ssn = _norm_ssn(c.get("ssn", "") or c.get("ein", ""))
-
-            # Skip if ANY identifier matches an existing client
-            if cid and cid in existing_client_ids:
-                clients_skipped_duplicates += 1
-                continue
-            if ein and ein in existing_client_eins:
-                clients_skipped_duplicates += 1
-                continue
-            if ssn and ssn in existing_client_ssns:
-                clients_skipped_duplicates += 1
-                continue
-
-            clients.append(c)
-            clients_added += 1
-
-            if cid:
-                existing_client_ids.add(cid)
-            if ein:
-                existing_client_eins.add(ein)
-            if ssn:
-                existing_client_ssns.add(ssn)
-
-
-    # Build name->idx map AFTER possibly adding clients
-    name_to_idx = {}
-    for idx, c in enumerate(clients):
-        nm = _norm_name(c.get("name", ""))
-        if nm and nm not in name_to_idx:
-            name_to_idx[nm] = idx
-
-    # --- import account managers (dedupe by (name/email/phone) + normalize to deterministic ids) ---
-    am_added = 0
-    if isinstance(data.get("account_managers"), list):
-        existing_ams = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
-        if not isinstance(existing_ams, list):
-            existing_ams = []
-
-        # Normalize existing first (adds ids + dedupes)
-        norm_existing = []
-        seen_keys = set()
-        for x in existing_ams:
-            if not isinstance(x, dict):
-                x = {"name": str(x)}
-            key = _account_manager_key(x)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            amid = str(x.get("id", "") or "").strip()
-            if not amid:
-                amid = _account_manager_id_from_key(key)
-            norm_existing.append({
-                "id": amid,
-                "name": str(x.get("name", "") or "").strip(),
-                "email": str(x.get("email", "") or "").strip(),
-                "phone": str(x.get("phone", "") or "").strip(),
-            })
-
-        existing_ams = norm_existing
-        existing_keys = { _account_manager_key(x) for x in existing_ams if isinstance(x, dict) }
-
-        for am in data["account_managers"]:
-            if not isinstance(am, dict):
-                continue
-
-            key = _account_manager_key(am)
-            if key in existing_keys:
-                continue
-
-            amid = str(am.get("id", "") or "").strip()
-            if not amid:
-                amid = _account_manager_id_from_key(key)
-
-            existing_ams.append({
-                "id": amid,
-                "name": str(am.get("name", "") or "").strip(),
-                "email": str(am.get("email", "") or "").strip(),
-                "phone": str(am.get("phone", "") or "").strip(),
-            })
-            existing_keys.add(key)
-            am_added += 1
-
-        ACCOUNT_MANAGERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ACCOUNT_MANAGERS_FILE.write_text(json.dumps(existing_ams, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-    # --- import monthly_state (safe: write if file missing; else keep existing) ---
-    if isinstance(data.get("monthly_state"), dict):
-        if not MONTHLY_STATE_FILE.exists():
-            MONTHLY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            MONTHLY_STATE_FILE.write_text(json.dumps(data["monthly_state"], indent=2, ensure_ascii=False), encoding="utf-8")
-
-    # --- import match_rules (do NOT overwrite existing files) ---
-    mr_added = 0
-    match_rules = data.get("match_rules", {})
-    if isinstance(match_rules, dict):
-        MATCH_RULES_DIR.mkdir(parents=True, exist_ok=True)
-        for fname, contents in match_rules.items():
-            try:
-                fname = str(fname)
-                if not fname.lower().endswith(".json"):
-                    continue
-                dest = MATCH_RULES_DIR / fname
-                if dest.exists():
-                    continue  # do not overwrite
-                # contents can be dict/list/etc.
-                dest.write_text(json.dumps(contents, indent=2, ensure_ascii=False), encoding="utf-8")
-                mr_added += 1
-            except Exception:
-                pass
-
-    # --- import vendor_lists (OVERWRITE) ---
-    vl_written = 0
-    vendor_lists = data.get("vendor_lists", {})
-    if isinstance(vendor_lists, dict):
-        VENDOR_LISTS_DIR.mkdir(parents=True, exist_ok=True)
-        for fname, text in vendor_lists.items():
-            try:
-                fname = str(fname)
-                if not (fname.lower().endswith(".csv")):
-                    continue
-                dest = VENDOR_LISTS_DIR / fname
-                dest.write_text(str(text), encoding="utf-8", errors="replace")
-                vl_written += 1
-            except Exception:
-                pass
-
-    # --- import tasks (no dup by id, AND remap client_idx) ---
-    tasks_added = 0
-    incoming_tasks = data.get("tasks", [])
-    if isinstance(incoming_tasks, list):
-        existing_tasks = _read_json_file(TASKS_FILE, default=[])
-        if not isinstance(existing_tasks, list):
-            existing_tasks = []
-        existing_task_ids = {str(t.get("id", "")).strip() for t in existing_tasks if isinstance(t, dict)}
-
-        for t in incoming_tasks:
-            if not isinstance(t, dict):
-                continue
-            tid = str(t.get("id", "")).strip()
-            if tid and tid in existing_task_ids:
-                continue
-
-            # remap client_idx based on client_name (so tasks show under correct client)
-            cname = _norm_name(t.get("client_name", ""))
-            if cname and cname in name_to_idx:
-                t["client_idx"] = name_to_idx[cname]
-
-            existing_tasks.append(t)
-            tasks_added += 1
-            if tid:
-                existing_task_ids.add(tid)
-
-        TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TASKS_FILE.write_text(json.dumps(existing_tasks, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    return {
-        "clients_added": clients_added,
-        "clients_skipped_duplicates": clients_skipped_duplicates,
-        "account_managers_added": am_added,
-        "tasks_added": tasks_added,
-        "match_rules_added": mr_added,
-        "vendor_lists_written": vl_written,
-    }
-
+# Helper functions moved to utils/helpers.py
+# Data IO functions moved to utils/io.py
 
 def show_about_dialog(parent: tk.Misc | None = None):
     msg = (
@@ -989,48 +221,7 @@ def show_about_dialog(parent: tk.Misc | None = None):
     )
     messagebox.showinfo("About", msg, parent=parent)
 
-# -------------------- Log Dialog --------------------
-class LogDialog(tk.Toplevel):
-    def __init__(self, master, title="Log Entry", initial=None):
-        super().__init__(master)
-        self.title(title); self.resizable(False, False); self.result=None
-        init = initial or {}
-        self.v_ts   = tk.StringVar(value=init.get("ts",""))
-        self.v_user = tk.StringVar(value=init.get("user",""))
-        frm = ttk.Frame(self, padding=12); frm.grid(row=0, column=0, sticky="nsew")
-
-        def row(lbl, var, r, width=40):
-            ttk.Label(frm, text=lbl).grid(row=r, column=0, sticky="w", pady=(0,2))
-            ent = ttk.Entry(frm, textvariable=var, width=width)
-            ent.grid(row=r+1, column=0, sticky="we", pady=(0,6)); return ent
-
-        e1 = row("Timestamp (ISO, optional)", self.v_ts, 0, 40)
-        row("User/Initials", self.v_user, 2, 20)
-
-        ttk.Label(frm, text="Text").grid(row=4, column=0, sticky="w", pady=(0,2))
-        self.txt = ScrolledText(frm, width=56, height=8, wrap="word")
-        self.txt.grid(row=5, column=0, sticky="nsew")
-        if "text" in init: self.txt.insert("1.0", init["text"])
-
-        btns = ttk.Frame(frm); btns.grid(row=6, column=0, sticky="e", pady=(8,0))
-        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=(8,0))
-        ttk.Button(btns, text="Save", command=self._save).pack(side=tk.RIGHT)
-
-        self.bind("<Return>", lambda _e: self._save()); self.bind("<Escape>", lambda _e: self.destroy())
-        self.after(50, e1.focus_set); self.grab_set(); self.transient(master)
-
-    def _save(self):
-        import datetime
-        ts = self.v_ts.get().strip()
-        if not ts:
-            # Fill now in ISO if user left blank
-            ts = datetime.datetime.now().isoformat(timespec="seconds")
-        self.result = {
-            "ts": ts,
-            "user": self.v_user.get().strip(),
-            "text": self.txt.get("1.0", "end").strip(),
-        }
-        self.destroy()
+# LogDialog moved to ui/dialogs/logdialog.py
 
 
 # -------------------- Main App with Navigation --------------------
@@ -1052,6 +243,9 @@ class App(ttk.Frame):
         self.root = master
 
         self.items: List[Dict[str, Any]] = load_clients()
+        
+        # Run migration automatically on load if needed
+        self._run_auto_migration()
 
         self.style = ttk.Style()
         try: self.style.theme_use("clam")
@@ -1477,6 +671,20 @@ class App(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Account Managers", f"Failed to save:\n{e}")
 
+    def _run_auto_migration(self):
+        """Run migrations automatically on startup if needed."""
+        try:
+            # Migrate officers to relations if not already done
+            if not is_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS):
+                stats = migrate_officers_to_relations(self.items, remove_old_key=True)
+                if stats.get("clients_touched", 0) > 0:
+                    save_clients(self.items)
+                    mark_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS, {"clients_touched": stats.get("clients_touched", 0)})
+                    self.log.info(f"Auto-migrated officers to relations: {stats}")
+        except Exception as e:
+            self.log.exception("Auto-migration failed: %s", e)
+            # Don't block startup on migration errors
+
     def _update_data_dialog(self):
         try:
             if not messagebox.askyesno(
@@ -1489,17 +697,17 @@ class App(ttk.Frame):
             stats_off   = {"clients_touched": 0, "officers_moved": 0, "officer_dupes_skipped": 0, "officers_keys_removed": 0}
 
             # 1) tasks.json migration (company_* -> client_*)
-            if not is_migration_done(MIG_TASKS_CLIENT_TO_CLIENT):
+            if not is_migration_done(DATA_ROOT, MIG_TASKS_CLIENT_TO_CLIENT):
                 stats_tasks = migrate_tasks_client_to_client(TASKS_FILE, remove_old_keys=True)
-                mark_migration_done(MIG_TASKS_CLIENT_TO_CLIENT, {"path": str(TASKS_FILE)})
+                mark_migration_done(DATA_ROOT, MIG_TASKS_CLIENT_TO_CLIENT, {"path": str(TASKS_FILE)})
             else:
                 stats_tasks = {"updated": 0, "skipped": -1, "path": str(TASKS_FILE)}  # skipped=-1 => already migrated
 
             # 2) clients.json migration (officers -> relations)
-            if not is_migration_done(MIG_OFFICERS_TO_RELATIONS):
+            if not is_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS):
                 stats_off = migrate_officers_to_relations(self.items, remove_old_key=True)
                 save_clients(self.items)
-                mark_migration_done(MIG_OFFICERS_TO_RELATIONS, {"clients_touched": stats_off.get("clients_touched", 0)})
+                mark_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS, {"clients_touched": stats_off.get("clients_touched", 0)})
             else:
                 # still ensure clients are saved? usually no need
                 stats_off = {"clients_touched": 0, "officers_moved": 0, "officer_dupes_skipped": 0, "officers_keys_removed": 0}
@@ -1794,7 +1002,7 @@ class App(ttk.Frame):
         style.configure("Search.Treeview", rowheight=80)
 
         self.tree = ttk.Treeview(self.page_search, style="Search.Treeview", columns=self.COLS, show="headings", selectmode="browse")
-        label_map = {"dba":"DBA", "ein":"EIN"}
+        label_map = {"dba":"DBA", "ein":"EIN/SSN"}
         for c in self.COLS:
             header = label_map.get(c, c.replace("_"," ").title())
             self.tree.heading(c, text=header, command=lambda c=c: self.sort_by(c, False))
@@ -2517,51 +1725,78 @@ class App(ttk.Frame):
         """
         Returns (kind, digits, other_idx, other_client) if candidate conflicts with an existing client.
         kind is "SSN" or "EIN".
+        
+        IMPORTANT: EIN and SSN are checked separately:
+        - If candidate is Individual (has SSN), only check against existing clients' SSNs (not EINs)
+        - If candidate is Business (has EIN), only check against existing clients' EINs (not SSNs)
+        - EIN and SSN can have the same number and are treated as different identifiers
         """
         if not isinstance(candidate, dict):
             return None
 
         is_individual = bool(candidate.get("is_individual")) or ((candidate.get("entity_type") or "").strip().casefold() == "individual")
 
-        cand_ssn = normalize_ssn_digits(candidate.get("ssn", "") or candidate.get("ein", ""))
-        cand_ein = normalize_ein_digits(candidate.get("ein", ""))
-
-        # If individual, enforce SSN uniqueness when present.
-        # If business, enforce EIN uniqueness when present.
-        for i, c in enumerate(getattr(self, "items", []) or []):
-            if ignore_idx is not None and i == ignore_idx:
-                continue
-            if not isinstance(c, dict):
-                continue
-
-            exist_ssn = normalize_ssn_digits(c.get("ssn", "") or c.get("ein", ""))
-            exist_ein = normalize_ein_digits(c.get("ein", ""))
-
-            if cand_ssn and exist_ssn and cand_ssn == exist_ssn:
-                return ("SSN", cand_ssn, i, c)
-            if cand_ein and exist_ein and cand_ein == exist_ein:
-                return ("EIN", cand_ein, i, c)
+        # For individuals: only check SSN (from ssn field, not ein)
+        # For businesses: only check EIN (from ein field, not ssn)
+        if is_individual:
+            cand_ssn = normalize_ssn_digits(candidate.get("ssn", ""))
+            if not cand_ssn:
+                return None  # No SSN to check
+            
+            # Only check against existing clients' SSNs (not EINs)
+            for i, c in enumerate(getattr(self, "items", []) or []):
+                if ignore_idx is not None and i == ignore_idx:
+                    continue
+                if not isinstance(c, dict):
+                    continue
+                
+                # Only check SSN field for existing clients (not ein field)
+                exist_ssn = normalize_ssn_digits(c.get("ssn", ""))
+                if cand_ssn and exist_ssn and cand_ssn == exist_ssn:
+                    return ("SSN", cand_ssn, i, c)
+        else:
+            cand_ein = normalize_ein_digits(candidate.get("ein", ""))
+            if not cand_ein:
+                return None  # No EIN to check
+            
+            # Only check against existing clients' EINs (not SSNs)
+            for i, c in enumerate(getattr(self, "items", []) or []):
+                if ignore_idx is not None and i == ignore_idx:
+                    continue
+                if not isinstance(c, dict):
+                    continue
+                
+                # Only check EIN field for existing clients (not ssn field)
+                exist_ein = normalize_ein_digits(c.get("ein", ""))
+                if cand_ein and exist_ein and cand_ein == exist_ein:
+                    return ("EIN", cand_ein, i, c)
 
         return None
 
     def on_new(self):
         dlg = ClientDialog(self, "New Client"); self.wait_window(dlg)
         if dlg.result:
-            conflict = self._dup_id_conflict(dlg.result, ignore_idx=None)
-            if conflict:
-                kind, digits, other_idx, other_client = conflict
-                other_name = (other_client.get("name") or "").strip() or f"Client #{other_idx}"
-                messagebox.showerror(
-                    "Duplicate ID",
-                    f"A client with the same {kind} already exists.\n\n"
-                    f"{kind}: {digits}\n"
-                    f"Existing client: {other_name}\n\n"
-                    f"This client was NOT added."
-                )
-                return
+            # Duplicate check is now done in the dialog's _save() method
+            # If dlg.result exists, it means the save was successful (no duplicate)
 
+            # Process post_save_links if present (for new clients with relations)
+            post_links = dlg.result.pop("post_save_links", [])
+            
             self.items.append(dlg.result)
             save_clients(self.items)
+            
+            # Process bidirectional links after client is saved
+            if post_links:
+                this_id = dlg.result.get("id", "")
+                for link_info in post_links:
+                    other_id = link_info.get("other_id", "").strip()
+                    role = link_info.get("role", "").strip()
+                    if this_id and other_id:
+                        try:
+                            self.link_clients_relations(this_id, other_id, link=True, role=role)
+                        except Exception as e:
+                            LOG.exception("Failed to create bidirectional link: %s", e)
+            
             self.populate()
             self._update_suggestions()
 
@@ -2574,21 +1809,44 @@ class App(ttk.Frame):
                 messagebox.showinfo("Edit", "Select a row to edit."); return
         dlg = ClientDialog(self, "Edit Client", self.items[idx]); self.wait_window(dlg)
         if dlg.result:
-            conflict = self._dup_id_conflict(dlg.result, ignore_idx=idx)
-            if conflict:
-                kind, digits, other_idx, other_client = conflict
-                other_name = (other_client.get("name") or "").strip() or f"Client #{other_idx}"
-                messagebox.showerror(
-                    "Duplicate ID",
-                    f"Another client already has this {kind}.\n\n"
-                    f"{kind}: {digits}\n"
-                    f"Existing client: {other_name}\n\n"
-                    f"Your changes were NOT saved."
-                )
-                return
+            # Duplicate check is now done in the dialog's _save() method
+            # If dlg.result exists, it means the save was successful (no duplicate)
 
+            # Remove post_save_links if present (should not be saved)
+            dlg.result.pop("post_save_links", None)
+            
+            print(f"[client_manager][LINK] on_edit: Saving client idx={idx}")
+            print(f"[client_manager][LINK] on_edit: dlg.result relations count: {len(dlg.result.get('relations', []))}")
+            print(f"[client_manager][LINK] on_edit: dlg.result relations: {dlg.result.get('relations', [])}")
+            
+            # Store old client data for comparison
+            old_client = self.items[idx]
+            old_id = old_client.get("id", "")
+            old_relations_count = len(old_client.get("relations", []))
+            print(f"[client_manager][LINK] on_edit: Old client relations count: {old_relations_count}")
+            
             self.items[idx] = dlg.result
+            new_id = dlg.result.get("id", "")
+            new_relations_count = len(self.items[idx].get("relations", []))
+            
+            print(f"[client_manager][LINK] on_edit: After setting items[idx], relations count: {new_relations_count}")
+            print(f"[client_manager][LINK] on_edit: After setting items[idx], relations: {self.items[idx].get('relations', [])}")
+            
+            # BFS update: Update all relations that reference this client
+            if old_id and new_id == old_id:
+                # Client ID hasn't changed, but data might have - update all relations
+                print(f"[client_manager][LINK] on_edit: Calling _update_relations_for_client")
+                self._update_relations_for_client(new_id, dlg.result)
+            
+            print(f"[client_manager][LINK] on_edit: Before save_clients, relations count: {len(self.items[idx].get('relations', []))}")
+            print(f"[client_manager][LINK] on_edit: Before save_clients, relations: {self.items[idx].get('relations', [])}")
             save_clients(self.items)
+            print(f"[client_manager][LINK] on_edit: After save_clients")
+            
+            # Verify relations were saved
+            saved_relations_count = len(self.items[idx].get("relations", []))
+            print(f"[client_manager][LINK] on_edit: After save_clients, relations count: {saved_relations_count}")
+            print(f"[client_manager][LINK] on_edit: After save_clients, relations: {self.items[idx].get('relations', [])}")
             self.populate()
             self._update_suggestions()
             if self._current_page[0] != "main":
@@ -2697,14 +1955,23 @@ class App(ttk.Frame):
         ):
             return
 
-        # Optional safety: if you want to block deleting clients without stable IDs
-        # target_id = self._canonical_client_key(c, idx)
-        # if not target_id:
-        #     messagebox.showerror("Delete Error", "This entity has no ID (EIN/SSN). Cannot safely remove links.")
-        #     return
+        # Get client ID for cleanup
+        target_id = self._client_link_id(idx) if hasattr(self, "_client_link_id") else None
+        if not target_id:
+            # Try to get ID from client dict
+            ein = normalize_ein_digits(c.get("ein", ""))
+            ssn = normalize_ssn_digits(c.get("ssn", ""))
+            if ssn:
+                target_id = f"ssn:{ssn}"
+            elif ein:
+                target_id = f"ein:{ein}"
 
         # Delete exactly once
         del self.items[idx]
+
+        # Clean up relations from all other clients that reference this deleted client
+        if target_id:
+            self._cleanup_relations_for_deleted_client(target_id)
 
         # Persist
         self.save_clients_data()
@@ -2892,6 +2159,56 @@ class App(ttk.Frame):
             "linked_client_label": target_label,
         })
 
+
+    def _cleanup_relations_for_deleted_client(self, deleted_client_id: str):
+        """
+        Remove all relations that reference the deleted client from all remaining clients.
+        This ensures bidirectional links are cleaned up when a client is deleted.
+        For each client in the deleted client's relations, remove the deleted client from their relations.
+        """
+        if not deleted_client_id:
+            return
+        
+        print(f"[client_manager][LINK] _cleanup_relations_for_deleted_client: Cleaning up relations for deleted client '{deleted_client_id}'")
+        
+        # First, get the deleted client's relations before it was deleted (if we can find it)
+        # Since the client is already deleted from self.items, we need to check all clients
+        # and remove references to the deleted client
+        
+        changed = False
+        for client in self.items:
+            if not isinstance(client, dict):
+                continue
+            
+            relations = client.get("relations", []) or []
+            if not relations:
+                continue
+            
+            # Filter out relations that reference the deleted client (using "id" field)
+            cleaned_relations = []
+            for rel in relations:
+                try:
+                    from vertex.utils.helpers import ensure_relation_link
+                except ModuleNotFoundError:
+                    from utils.helpers import ensure_relation_link
+                rel_link = ensure_relation_link(rel)
+                # Check both "id" and "other_id" for backward compatibility
+                rel_id = rel_link.get("id") or rel_link.get("other_id") or ""
+                if rel_id != deleted_client_id:
+                    cleaned_relations.append(rel)
+                else:
+                    print(f"[client_manager][LINK] _cleanup_relations_for_deleted_client: Removing relation to deleted client '{deleted_client_id}' from client '{client.get('name', 'Unknown')}'")
+                    changed = True
+            
+            if len(cleaned_relations) != len(relations):
+                client["relations"] = cleaned_relations
+                changed = True
+        
+        if changed:
+            print(f"[client_manager][LINK] _cleanup_relations_for_deleted_client: Cleaned up relations referencing deleted client: {deleted_client_id}")
+            self.log.info(f"Cleaned up relations referencing deleted client: {deleted_client_id}")
+        else:
+            print(f"[client_manager][LINK] _cleanup_relations_for_deleted_client: No relations found to clean up for deleted client: {deleted_client_id}")
 
     def _sync_bidirectional_link(self, a_idx: int, b_idx: int, *, add: bool) -> bool:
         """
@@ -3224,6 +2541,9 @@ class App(ttk.Frame):
         if kind == "main":
             self._ensure_main_page()
             self.page_main.pack(fill=tk.BOTH, expand=True)
+            # Ensure dashboard is shown and refreshed
+            if hasattr(self, "dashboard") and hasattr(self.dashboard, "show"):
+                self.dashboard.show(self.page_host)
 
         elif kind == "search":
             self._ensure_search_page()
@@ -3454,9 +2774,13 @@ class App(ttk.Frame):
     def save_clients_data(self):
         """Persist current self.items using the existing save_clients() helper."""
         try:
+            print(f"[client_manager][LINK] save_clients_data: Saving {len(self.items)} clients")
             save_clients(self.items)
-        except Exception:
-            pass
+            print(f"[client_manager][LINK] save_clients_data: Successfully saved")
+        except Exception as e:
+            print(f"[client_manager][LINK] save_clients_data: Error saving: {e}")
+            import traceback
+            traceback.print_exc()
 
     def select_detail_tab(self, title: str):
         """
@@ -3573,6 +2897,66 @@ class App(ttk.Frame):
         self.navigate("detail", idx, push=True)
         return True
     
+    def link_clients_relations(self, this_id: str, other_id: str, link: bool = True, role: str = ""):
+        """
+        Bidirectional link/unlink using client['relations'].
+        This is the preferred method for linking clients.
+        """
+        from vertex.utils.helpers import link_clients_relations as link_helper
+        link_helper(self, this_id, other_id, link=link, role=role)
+        if hasattr(self, "save_clients_data"):
+            self.save_clients_data()
+    
+    def _update_relations_for_client(self, client_id: str, updated_client: dict):
+        """
+        BFS update: Update all relations that reference this client.
+        When a client is updated, propagate the changes to all relations that link to it.
+        """
+        from vertex.utils.helpers import find_client_by_uid, ensure_relation_link, _build_full_relation_from_client
+        
+        print(f"[client_manager][LINK] _update_relations_for_client: client_id='{client_id}'")
+        if not client_id:
+            return
+        
+        # Find all clients that have relations to this client
+        visited = set()
+        queue = [client_id]
+        
+        while queue:
+            current_id = queue.pop(0)
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+            
+            # Find the client
+            current_client = find_client_by_uid(self.items, current_id)
+            if not isinstance(current_client, dict):
+                continue
+            
+            # Update relations that point to the updated client
+            relations = current_client.get("relations", []) or []
+            updated = False
+            
+            for i, rel in enumerate(relations):
+                rel_link = ensure_relation_link(rel)
+                rel_id = rel_link.get("id") or ""
+                
+                if rel_id == client_id:
+                    # This relation points to the updated client - update it
+                    role = rel_link.get("role", "")
+                    new_rel = _build_full_relation_from_client(updated_client, client_id, role)
+                    relations[i] = new_rel
+                    updated = True
+                    print(f"[client_manager][LINK] _update_relations_for_client: Updated relation in client '{current_id}'")
+                    
+                    # Add the current client to queue to update its relations too
+                    if current_id not in visited and current_id != client_id:
+                        queue.append(current_id)
+            
+            if updated:
+                current_client["relations"] = relations
+                print(f"[client_manager][LINK] _update_relations_for_client: Saved updated relations for client '{current_id}'")
+
     def link_clients(self, a_id: str, b_id: str, link: bool, role: str = ""):
         """
         Bidirectional linking using stable ids:
@@ -3714,9 +3098,47 @@ class App(ttk.Frame):
             a_rels = _ensure_relations_list(a)
             b_rels = _ensure_relations_list(b)
 
-            # Decide roles on each side based on the TARGET being business/individual
-            role_a_to_b = "business" if not _is_individual_client(b) else (role or "")
-            role_b_to_a = "business" if not _is_individual_client(a) else (role or "")
+            # Determine roles based on relationship type (same logic as link_clients_relations)
+            role_lower = (role or "").strip().lower()
+            
+            if not _is_individual_client(a) and _is_individual_client(b):
+                # Business → Individual
+                # A (business) sees B (individual) with role: business owner, employee, or officer
+                # B (individual) sees A (business) with role: business
+                if role_lower in ("business owner", "businessowner", "employee", "officer"):
+                    role_a_to_b = role_lower
+                    role_b_to_a = "business"
+                else:
+                    # Default to business owner if invalid role
+                    role_a_to_b = "business owner"
+                    role_b_to_a = "business"
+            elif _is_individual_client(a) and not _is_individual_client(b):
+                # Individual → Business
+                # A (individual) sees B (business) with role: business
+                # B (business) sees A (individual) with role: owner
+                role_a_to_b = "business"
+                role_b_to_a = "owner"
+            elif _is_individual_client(a) and _is_individual_client(b):
+                # Individual → Individual
+                # Handle bidirectional roles: spouse, parent/child, relative
+                if role_lower == "parent":
+                    role_a_to_b = "parent"
+                    role_b_to_a = "child"
+                elif role_lower == "child":
+                    role_a_to_b = "child"
+                    role_b_to_a = "parent"
+                elif role_lower in ("spouse", "relative"):
+                    # Symmetric roles
+                    role_a_to_b = role_lower
+                    role_b_to_a = role_lower
+                else:
+                    # Default to relative if invalid
+                    role_a_to_b = "relative"
+                    role_b_to_a = "relative"
+            else:
+                # Business → Business (both are businesses)
+                role_a_to_b = role_lower or "business"
+                role_b_to_a = role_lower or "business"
 
             _upsert_link(a_rels, _record_from_client(b, b_key, role_a_to_b))
             _upsert_link(b_rels, _record_from_client(a, a_key, role_b_to_a))

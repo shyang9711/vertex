@@ -134,6 +134,24 @@ class LinkDialog(tk.Toplevel):
         self._linked_client_id = _norm_link_id(str(self._initial.get("linked_client_id") or ""))
         self._linked_client_label = str(self._initial.get("linked_client_label") or "").strip()
         self._linked_is_company = False
+        
+        # Determine if this client is individual or business
+        self._this_is_individual = False
+        if self._this_client_id:
+            # Check from ID format first (ssn: = individual, ein: = business)
+            if self._this_client_id.startswith("ssn:"):
+                self._this_is_individual = True
+            elif self._this_client_id.startswith("ein:"):
+                self._this_is_individual = False
+            else:
+                # Try to resolve this client to determine type
+                if callable(self._resolve_client):
+                    try:
+                        this_client = self._resolve_client(self._this_client_id)
+                        if isinstance(this_client, dict):
+                            self._this_is_individual = bool(this_client.get("is_individual")) or ((this_client.get("entity_type") or "").strip().casefold() == "individual")
+                    except Exception:
+                        pass
 
         # ---------------- layout ----------------
         outer = ttk.Frame(self, padding=12)
@@ -157,13 +175,17 @@ class LinkDialog(tk.Toplevel):
         self.ent_link.bind("<Escape>", self._on_link_escape)
         self.ent_link.bind("<FocusOut>", self._on_link_focus_out)
 
-        # Role row
+        # Role row - will be updated when a client is linked
         row2 = ttk.Frame(outer)
         row2.pack(fill="x", pady=(10, 0))
         ttk.Label(row2, text="Role:").pack(side="left")
         self.cmb_role = ttk.Combobox(row2, textvariable=self.v_role, width=18, state="readonly")
-        self.cmb_role["values"] = ("spouse", "employee", "officer", "business")
+        # Default values - will be updated based on client types
+        self.cmb_role["values"] = ("spouse", "parent", "child", "relative", "employee", "officer", "business owner", "business")
         self.cmb_role.pack(side="left", padx=(8, 0))
+        
+        # Update role options initially
+        self._update_role_options()
 
         # Fields grid
         grid = ttk.Frame(outer)
@@ -341,12 +363,21 @@ class LinkDialog(tk.Toplevel):
         if cid in self._already_linked_ids:
             messagebox.showerror("Link", "That entity is already linked here.")
             return
+        
+        # Prevent entity from linking to itself
+        if cid == self._this_client_id:
+            messagebox.showerror("Link", "An entity cannot link to itself.")
+            return
 
+        # Store the normalized link ID
         self._linked_client_id = cid
         self._linked_client_label = label
         self._linked_is_company = bool(self._label_to_is_company.get(label, False))
+        
+        # Update role options now that we know the linked client type
+        self._update_role_options()
 
-        # If caller provided a resolver, pull real client data and fill fields
+        # If caller provided a resolver, pull real client data and fill fields as placeholders
         if callable(getattr(self, "_resolve_client", None)):
             try:
                 c = self._resolve_client(cid)
@@ -365,49 +396,72 @@ class LinkDialog(tk.Toplevel):
 
                 is_ind = bool(c.get("is_individual")) or (str(c.get("entity_type") or "").strip().lower() == "individual")
 
+                # For editing, use existing values if present, otherwise use client data as placeholders
                 if is_ind:
-                    self.v_first.set(str(c.get("first_name") or "").strip())
-                    self.v_mid.set(str(c.get("middle_name") or "").strip())
-                    self.v_last.set(str(c.get("last_name") or "").strip())
-                    self.v_nick.set(str(c.get("nickname") or "").strip())
+                    if not self.v_first.get().strip():
+                        self.v_first.set(str(c.get("first_name") or "").strip())
+                    if not self.v_mid.get().strip():
+                        self.v_mid.set(str(c.get("middle_name") or "").strip())
+                    if not self.v_last.get().strip():
+                        self.v_last.set(str(c.get("last_name") or "").strip())
+                    if not self.v_nick.get().strip():
+                        self.v_nick.set(str(c.get("nickname") or "").strip())
                     # display name if you store it
                     if not self.v_name.get().strip():
                         self.v_name.set(str(c.get("name") or "").strip())
                 else:
                     # business
-                    self.v_name.set(str(c.get("name") or "").strip() or self.v_name.get())
+                    if not self.v_name.get().strip():
+                        self.v_name.set(str(c.get("name") or "").strip() or self.v_name.get())
 
-                    # clear person-name fields (optional)
-                    self.v_first.set("")
-                    self.v_mid.set("")
-                    self.v_last.set("")
-                    self.v_nick.set("")
-
-                if str(c.get("email") or "").strip():
+                # Fill contact and address fields as placeholders if empty
+                if not self.v_email.get().strip():
                     self.v_email.set(str(c.get("email") or "").strip())
-
-                self.v_phone.set(str(c.get("phone") or "").strip())
-
-                self.v_addr1.set(str(c.get("addr1") or "").strip())
-                self.v_addr2.set(str(c.get("addr2") or "").strip())
-                self.v_city.set(str(c.get("city") or "").strip())
-                self.v_state.set(str(c.get("state") or "").strip())
-                self.v_zip.set(str(c.get("zip") or "").strip())
-                self.v_dob.set(str(c.get("dob") or "").strip())
+                if not self.v_phone.get().strip():
+                    self.v_phone.set(str(c.get("phone") or "").strip())
+                if not self.v_addr1.get().strip():
+                    self.v_addr1.set(str(c.get("addr1") or "").strip())
+                if not self.v_addr2.get().strip():
+                    self.v_addr2.set(str(c.get("addr2") or "").strip())
+                if not self.v_city.get().strip():
+                    self.v_city.set(str(c.get("city") or "").strip())
+                if not self.v_state.get().strip():
+                    self.v_state.set(str(c.get("state") or "").strip())
+                if not self.v_zip.get().strip():
+                    self.v_zip.set(str(c.get("zip") or "").strip())
+                if not self.v_dob.get().strip():
+                    self.v_dob.set(str(c.get("dob") or "").strip())
 
         # Fallback: if no resolver data (or resolver didn't set name), use label base
         if not self.v_name.get().strip():
             self.v_name.set(label.split(" (", 1)[0].strip())
 
+        # Update role options based on client types
+        self._update_role_options()
+        
         # role rules
         if self._linked_is_company:
-            self.v_role.set("business")
-            self.cmb_role.configure(state="disabled")
+            # If linking to a business
+            if self._this_is_individual:
+                # Individual → Business: only "business" role allowed
+                self.v_role.set("business")
+                self.cmb_role.configure(state="disabled")
+            else:
+                # Business → Business: use provided role or default
+                if not self.v_role.get().strip():
+                    self.v_role.set("business")
+                self.cmb_role.configure(state="readonly")
         else:
-            # must be chosen by user
+            # Linking to an individual
+            if self._this_is_individual:
+                # Individual → Individual: show spouse, parent, child, relative
+                if self.v_role.get().strip().lower() not in ("spouse", "parent", "child", "relative"):
+                    self.v_role.set("")
+            else:
+                # Business → Individual: show business owner, employee, officer
+                if self.v_role.get().strip().lower() not in ("business owner", "employee", "officer"):
+                    self.v_role.set("")
             self.cmb_role.configure(state="readonly")
-            if self.v_role.get().strip().lower() == "business":
-                self.v_role.set("")
 
         self.v_link.set(label)
         self._popup.hide()
@@ -428,11 +482,34 @@ class LinkDialog(tk.Toplevel):
             except Exception:
                 pass
 
+    def _update_role_options(self):
+        """Update role combobox values based on this client and linked client types."""
+        if not self._linked_client_id:
+            # No link yet - show all options
+            self.cmb_role["values"] = ("spouse", "parent", "child", "relative", "employee", "officer", "business owner", "business")
+            return
+        
+        if self._this_is_individual:
+            if self._linked_is_company:
+                # Individual → Business: only "business" role
+                self.cmb_role["values"] = ("business",)
+            else:
+                # Individual → Individual: spouse, parent, child, relative
+                self.cmb_role["values"] = ("spouse", "parent", "child", "relative")
+        else:
+            if self._linked_is_company:
+                # Business → Business: business role
+                self.cmb_role["values"] = ("business",)
+            else:
+                # Business → Individual: business owner, employee, officer
+                self.cmb_role["values"] = ("business owner", "employee", "officer")
+
     def _unlink_current(self):
         # unlink restores editability; does not delete user-entered values
         self._linked_client_id = ""
         self._linked_client_label = ""
         self._linked_is_company = False
+        self._update_role_options()
         self.cmb_role.configure(state="readonly")
         if self.v_role.get().strip().lower() == "business":
             self.v_role.set("")
@@ -463,14 +540,29 @@ class LinkDialog(tk.Toplevel):
 
 
             if self._linked_is_company:
-                role = "business"
+                # Linking to a business
+                if self._this_is_individual:
+                    # Individual → Business: only "business" role
+                    role = "business"
+                else:
+                    # Business → Business: use provided role or default to "business"
+                    role = role or "business"
             else:
-                if role not in ("spouse", "employee", "officer"):
-                    messagebox.showerror("Role", "For linked personnel, you must choose role: spouse, employee, or officer.")
-                    return
+                # Linking to an individual
+                if self._this_is_individual:
+                    # Individual → Individual: spouse, parent, child, relative
+                    if role not in ("spouse", "parent", "child", "relative"):
+                        messagebox.showerror("Role", "For linking individual to individual, you must choose role: spouse, parent, child, or relative.")
+                        return
+                else:
+                    # Business → Individual: business owner, employee, officer
+                    if role not in ("business owner", "employee", "officer"):
+                        messagebox.showerror("Role", "For linking business to individual, you must choose role: business owner, employee, or officer.")
+                        return
         else:
             # manual entry: role optional, but normalize if they typed
-            if role and role not in ("spouse", "employee", "officer", "business"):
+            valid_roles = ("spouse", "parent", "child", "relative", "employee", "officer", "business owner", "business")
+            if role and role not in valid_roles:
                 role = ""
 
         self.result = {
@@ -488,8 +580,7 @@ class LinkDialog(tk.Toplevel):
             "zip": self.v_zip.get().strip(),
             "dob": self.v_dob.get().strip(),
             "role": role,
-            "linked_client_id": self._linked_client_id,
-            "linked_client_label": self._linked_client_label,
+            "id": self._linked_client_id,  # Use "id" instead of "linked_client_id"
         }
 
         self.destroy()

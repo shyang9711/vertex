@@ -18,28 +18,38 @@ except Exception:
 LOG = get_logger("app_update")
 
 
-def _parse_tag(tag_name: str | None) -> tuple[str | None, bool]:
+def _parse_tag(tag_name: str | None) -> tuple[str | None, bool, bool]:
     """
-    Returns (version_without_prefix_or_suffix, is_forced)
+    Returns (version_without_prefix_or_suffix, is_forced, is_update_available)
 
     Supported GitHub release tag formats:
-      - v0.1.55    -> ("0.1.55", False)  [minor update]
-      - v0.1.55f   -> ("0.1.55", True)   [major/forced update]
-      - 0.1.55f    -> ("0.1.55", True)
+      - v0.1.55    -> ("0.1.55", False, False)  [internal only - no update check]
+      - v0.1.55f   -> ("0.1.55", True, False)   [forced update]
+      - v0.1.55u   -> ("0.1.55", False, True)   [update available]
+      - 0.1.55f    -> ("0.1.55", True, False)
+      - 0.1.55u    -> ("0.1.55", False, True)
     """
     if not tag_name:
-        return (None, False)
+        return (None, False, False)
 
     tag = str(tag_name).strip()
     if tag.lower().startswith("v"):
         tag = tag[1:].strip()
 
     forced = False
+    update_available = False
+    
+    # Check for 'f' suffix (forced update) - takes priority
     if tag.lower().endswith("f"):
         forced = True
         tag = tag[:-1].strip()
+    # Check for 'u' suffix (update available)
+    elif tag.lower().endswith("u"):
+        update_available = True
+        tag = tag[:-1].strip()
+    # No suffix = internal only (no update check)
 
-    return (tag or None, forced)
+    return (tag or None, forced, update_available)
 
 
 def _parse_version(v: str) -> tuple[int, int, int]:
@@ -106,16 +116,25 @@ def is_major_update_required_by_tag(
     required becomes True ONLY when:
       - latest tag ends with 'f' (forced), AND
       - latest_version (without 'f') is newer than app_version
+    
+    If tag has no suffix, it's internal only and update check is skipped.
     """
     release_json = _fetch_latest_release_json_silent(github_api_latest, app_name)
     tag_name = _latest_tag_from_release_json(release_json)
-    latest_version, forced = _parse_tag(tag_name)
+    latest_version, forced, update_available = _parse_tag(tag_name)
 
     if LOG:
-        LOG.info("latest_tag=%s latest_version=%s forced=%s app_version=%s", tag_name, latest_version, forced, app_version)
+        LOG.info("latest_tag=%s latest_version=%s forced=%s update_available=%s app_version=%s", 
+                 tag_name, latest_version, forced, update_available, app_version)
 
     if not latest_version:
         return (False, None, None, False)
+    
+    # If no suffix (internal only), skip update check
+    if not forced and not update_available:
+        if LOG:
+            LOG.info("Tag has no suffix - internal only, skipping update check")
+        return (False, None, latest_version, False)
 
     if forced and _is_newer_version(latest_version, app_version):
         reason = (
@@ -246,12 +265,21 @@ def check_for_updates(
         return
 
     raw_tag = str(data.get("tag_name") or "").strip()
-    latest_version, _forced = _parse_tag(raw_tag)
+    latest_version, _forced, update_available = _parse_tag(raw_tag)
 
     if not latest_version:
         messagebox.showinfo(
             "Updates",
-            "Latest release has no tag_name.\nUse tags like v0.1.55 or v0.1.55f on GitHub releases.",
+            "Latest release has no tag_name.\nUse tags like v0.1.55, v0.1.55f (forced), or v0.1.55u (update available) on GitHub releases.",
+            parent=parent,
+        )
+        return
+    
+    # If no suffix (internal only), don't show update
+    if not _forced and not update_available:
+        messagebox.showinfo(
+            "Updates",
+            "The latest release is marked as internal only and is not available for update.",
             parent=parent,
         )
         return
@@ -479,8 +507,14 @@ def check_for_updates_on_startup(
         return
 
     raw_tag = str(data.get("tag_name") or "").strip()
-    latest_version, _forced = _parse_tag(raw_tag)
+    latest_version, _forced, update_available = _parse_tag(raw_tag)
     if not latest_version:
+        return
+    
+    # If no suffix (internal only), skip update check silently
+    if not _forced and not update_available:
+        if LOG:
+            LOG.info("Tag has no suffix - internal only, skipping startup update check")
         return
 
     if not _is_newer_version(latest_version, app_version):
@@ -492,9 +526,10 @@ def check_for_updates_on_startup(
             )
         return
 
-    # Update exists
+    # Update exists (either forced 'f' or available 'u')
+    update_type = "required" if _forced else "available"
     if messagebox.askyesno(
-        "Update available",
+        f"Update {update_type}",
         f"Current version: {app_version}\nLatest version: {latest_version}\n\nUpdate now?",
         parent=parent,
     ):

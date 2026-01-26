@@ -27,4 +27,4 @@ US_STATES = [
     "WA","WV","WI","WY"
 ]
 
-ROLES = ["Officer", "Employee", "Spouse", "Business"]
+ROLES = ["Officer", "Employee", "Spouse", "Parent", "Business Owner", "Business"]

@@ -218,14 +218,14 @@ class ClientDialog(tk.Toplevel):
         self.off_cols = (
             "name","first_name","middle_name","last_name","nickname",
             "email","phone","addr1","addr2","city","state","zip","dob",
-            "role","linked_client_id","linked_client_label"
+            "role","id",""
         )
 
 
         self.off_tree = ttk.Treeview(frm, columns=self.off_cols, show="headings", height=4, selectmode="browse")
 
         for col, label, w in (
-            ("name","Person",220),
+            ("name","Entity",220),
             ("role","Role",110),
             ("email","Email",220),
             ("phone","Phone",120),
@@ -234,7 +234,7 @@ class ClientDialog(tk.Toplevel):
             self.off_tree.column(col, width=w, anchor="w")
 
         for col in ("first_name","middle_name","last_name","nickname","addr1","addr2","city","state","zip","dob",
-                    "linked_client_id","linked_client_label"):
+                    "id"):
             self.off_tree.heading(col, text=col)
             self.off_tree.column(col, width=0, stretch=False)
 
@@ -259,32 +259,47 @@ class ClientDialog(tk.Toplevel):
         except Exception:
             pass
 
-        # --- Build combined rows for the tree: (people officers) + (entity relations as pseudo-rows) ---
+        # --- Build combined rows for the tree: all relations (people + entity links) ---
         combined_rows = []
 
-        # real people
+        # Migrate any remaining officers to relations display
         for o in (init.get("officers", []) or []):
             if isinstance(o, dict):
                 combined_rows.append(ensure_relation_dict(o))
 
-        # entity relations -> pseudo officer rows (so UI can display them in same tree)
+        # All relations (both people without links and entity links)
         for r in (init.get("relations", []) or []):
             rr = ensure_relation_link(r)
-            if not rr.get("other_id"):
-                continue
-            combined_rows.append(ensure_relation_dict({
-                "name": rr.get("other_label", "") or "",
-                "role": rr.get("role", "") or "business",
-                "linked_client_id": rr.get("other_id", ""),
-                "linked_client_label": rr.get("other_label", "") or "",
-            }))
+            if rr.get("id"):
+                # Entity relation - link to another client
+                # Include all data fields from the relation
+                combined_rows.append(ensure_relation_dict({
+                    "name": rr.get("name", "") or "",
+                    "first_name": rr.get("first_name", "") or "",
+                    "middle_name": rr.get("middle_name", "") or "",
+                    "last_name": rr.get("last_name", "") or "",
+                    "nickname": rr.get("nickname", "") or "",
+                    "email": rr.get("email", "") or "",
+                    "phone": rr.get("phone", "") or "",
+                    "addr1": rr.get("addr1", "") or "",
+                    "addr2": rr.get("addr2", "") or "",
+                    "city": rr.get("city", "") or "",
+                    "state": rr.get("state", "") or "",
+                    "zip": rr.get("zip", "") or "",
+                    "dob": rr.get("dob", "") or "",
+                    "role": rr.get("role", "") or "business",
+                    "id": rr.get("id", ""),
+                }))
+            else:
+                # Person relation (migrated from officers) - show as-is
+                combined_rows.append(ensure_relation_dict(r))
 
         for o in combined_rows:
             o = ensure_relation_dict(o)
             vals = (
                 display_relation_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
                 o["email"], o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
-                o.get("role","officer"), o.get("linked_client_id",""), o.get("linked_client_label",""),
+                o.get("role","officer"), o.get("id",""), "",  # No longer using linked_client_label
             )
             self.off_tree.insert("", "end", values=vals)
 
@@ -431,7 +446,7 @@ class ClientDialog(tk.Toplevel):
         return (
             display_relation_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
             o["email"], o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
-            o.get("role", "officer"), o.get("linked_client_id", ""), o.get("linked_client_label", ""),
+            o.get("role", "officer"), o.get("id", ""), "",  # Use "id" instead of "linked_client_id"
         )
 
     def _this_client_link_id(self) -> str:
@@ -506,7 +521,7 @@ class ClientDialog(tk.Toplevel):
 
         dlg = LinkDialog(
             self,
-            title="Add Person (optional link)",
+            title="Add entity",
             initial={},
             link_candidates=cands,
             this_client_id=self._compute_required_client_id(),
@@ -535,12 +550,13 @@ class ClientDialog(tk.Toplevel):
             r.get("addr1", ""), r.get("addr2", ""), r.get("city", ""), r.get("state", ""), r.get("zip", ""),
             r.get("dob", ""),
             (r.get("role", "") or "officer").strip().lower(),
-            r.get("linked_client_id", ""),
-            r.get("linked_client_label", ""),
+            r.get("id", ""),  # Use "id" instead of "linked_client_id"
+            "",  # No longer using linked_client_label
         )
         self.off_tree.insert("", "end", values=values)
 
     def _rel_link(self):
+        print("[ClientDialog][LINK] _rel_link: Starting link process")
         cands = []
         try:
             cands = self.master.build_link_candidates(exclude_client_id=self._this_client_link_id())
@@ -556,7 +572,7 @@ class ClientDialog(tk.Toplevel):
 
         dlg = LinkDialog(
             self,
-            title="Link Entity",
+            title="Add entity",
             initial={},
             link_candidates=cands,
             this_client_id=self._compute_required_client_id(),
@@ -566,20 +582,28 @@ class ClientDialog(tk.Toplevel):
         self.wait_window(dlg)
 
         if not dlg.result:
+            print("[ClientDialog][LINK] _rel_link: LinkDialog returned no result")
             return
 
+        print(f"[ClientDialog][LINK] _rel_link: LinkDialog result: {dlg.result}")
+
         # MUST be linked in this flow
-        linked_id = (dlg.result.get("linked_client_id") or "").strip()
+        linked_id = (dlg.result.get("id") or "").strip()
         if not linked_id:
+            print(f"[ClientDialog][LINK] _rel_link: No linked_id in result: {dlg.result}")
             messagebox.showerror("Link", "Please select an entity from the suggestions to link.")
             return
+
+        print(f"[ClientDialog][LINK] _rel_link: Linked ID: {linked_id}")
 
         # For an EXISTING client you may enforce having EIN/SSN *before* adding linked row
         # (optional), but for NEW client we allow temporary row.
         if (not self._is_new_client()):
             cid = self._require_this_client_id_or_error(action_label="link entities")
             if not cid:
+                print(f"[ClientDialog][LINK] _rel_link: Missing client ID for existing client")
                 return
+            print(f"[ClientDialog][LINK] _rel_link: This client ID: {cid}")
 
         r = dlg.result
 
@@ -590,10 +614,12 @@ class ClientDialog(tk.Toplevel):
             r.get("addr1", ""), r.get("addr2", ""), r.get("city", ""), r.get("state", ""), r.get("zip", ""),
             r.get("dob", ""),
             (r.get("role", "") or "officer").strip().lower(),
-            r.get("linked_client_id", ""),
-            r.get("linked_client_label", ""),
+            r.get("id", ""),  # Use "id" instead of "linked_client_id"
+            "",  # No longer using linked_client_label
         )
+        print(f"[ClientDialog][LINK] _rel_link: Inserting into tree with values: {values}")
         self.off_tree.insert("", "end", values=values)
+        print(f"[ClientDialog][LINK] _rel_link: Successfully added to tree")
 
     def _rel_edit(self):
         sel = self.off_tree.selection()
@@ -613,8 +639,7 @@ class ClientDialog(tk.Toplevel):
             "addr1":       v[7], "addr2": v[8], "city": v[9], "state": v[10], "zip": v[11],
             "dob":         v[12],
             "role":        (v[13] or "").strip().lower(),
-            "linked_client_id": v[14] or "",
-            "linked_client_label": v[15] or "",
+            "id": v[14] or "",  # Use "id" instead of "linked_client_id"
         }
 
         this_id = self._compute_required_client_id()
@@ -638,7 +663,7 @@ class ClientDialog(tk.Toplevel):
 
         dlg = LinkDialog(
             self,
-            title="Edit Personnel",
+            title="Edit Link",
             initial=o,
             link_candidates=link_cands,
             this_client_id=this_id,
@@ -654,6 +679,7 @@ class ClientDialog(tk.Toplevel):
 
 
     def _rel_remove(self):
+        print(f"[ClientDialog][LINK] _rel_remove: Starting removal process")
         sel = self.off_tree.selection()
         if not sel:
             messagebox.showinfo("Remove", "Select a personnel row to remove.")
@@ -663,7 +689,43 @@ class ClientDialog(tk.Toplevel):
         while len(v) < 16:
             v.append("")
 
+        print(f"[ClientDialog][LINK] _rel_remove: Tree values: {v}")
+        
+        # Get the relation ID if it's a linked entity
+        relation_id = (v[14] or "").strip()  # id field is at index 14
+        print(f"[ClientDialog][LINK] _rel_remove: Extracted relation_id='{relation_id}' from index 14")
+        
+        # Check if this is a new client
+        is_new = self._is_new_client()
+        print(f"[ClientDialog][LINK] _rel_remove: Is new client: {is_new}")
+        
+        # Remove from tree
+        print(f"[ClientDialog][LINK] _rel_remove: Removing from tree")
         self.off_tree.delete(sel[0])
+        print(f"[ClientDialog][LINK] _rel_remove: Removed from tree")
+        
+        # If this is a linked entity (has id), we need to bidirectionally unlink
+        # For existing clients, we can handle it immediately
+        # For new clients, it will be handled in _save() when it detects the relation was removed
+        if relation_id:
+            if not is_new:
+                this_id = self._compute_required_client_id()
+                print(f"[ClientDialog][LINK] _rel_remove: Existing client - this_id='{this_id}'")
+                if this_id and hasattr(self.master, "link_clients_relations"):
+                    try:
+                        print(f"[ClientDialog][LINK] _rel_remove: Bidirectionally unlinking this_id='{this_id}' from relation_id='{relation_id}'")
+                        self.master.link_clients_relations(this_id, relation_id, link=False)
+                        print(f"[ClientDialog][LINK] _rel_remove: Successfully unlinked")
+                    except Exception as e:
+                        print(f"[ClientDialog][LINK] _rel_remove: Error unlinking: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print(f"[ClientDialog][LINK] _rel_remove: Cannot unlink - this_id='{this_id}', has link_clients_relations={hasattr(self.master, 'link_clients_relations')}")
+            else:
+                print(f"[ClientDialog][LINK] _rel_remove: New client - unlinking will be handled in _save()")
+        else:
+            print(f"[ClientDialog][LINK] _rel_remove: No relation_id - this is a person relation (not linked entity)")
 
     def _digits_only(self, s: str) -> str:
         return "".join(ch for ch in (s or "") if ch.isdigit())
@@ -729,6 +791,31 @@ class ClientDialog(tk.Toplevel):
         # New client = no persisted id in initial
         init_id = str(self._initial.get("id") or self._initial.get("client_id") or "").strip()
         return not bool(init_id)
+    
+    def _get_current_client_idx(self) -> int | None:
+        """
+        Returns the index of the current client being edited, or None if new client.
+        Used to ignore the current client when checking for duplicates.
+        """
+        if self._is_new_client():
+            return None
+        
+        # Find the client index by matching the id
+        init_id = str(self._initial.get("id") or "").strip()
+        if not init_id:
+            return None
+        
+        if not hasattr(self.master, "items"):
+            return None
+        
+        for i, c in enumerate(self.master.items):
+            if not isinstance(c, dict):
+                continue
+            c_id = str(c.get("id") or "").strip()
+            if c_id == init_id:
+                return i
+        
+        return None
 
     def _persist_client_if_possible(self, client_payload: Dict[str, Any]) -> bool:
         """
@@ -767,10 +854,12 @@ class ClientDialog(tk.Toplevel):
         After this client exists in manager, apply symmetric entity links using relations.
 
         Prefers master.link_clients_relations if present, else falls back to master.link_clients.
-        Each relation item should look like: {"other_id": "...", "other_label": "...", "role": "..."}.
+        Each relation item should look like: {"id": "...", "role": "..."}.
         """
+        print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: this_id='{this_id}', relations count={len(relations or [])}")
         this_id = str(this_id or "").strip()
         if not this_id:
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: No this_id, returning")
             return
 
         m = self.master
@@ -778,32 +867,45 @@ class ClientDialog(tk.Toplevel):
 
         if hasattr(m, "link_clients_relations"):
             link_fn = getattr(m, "link_clients_relations")
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Using link_clients_relations")
         elif hasattr(m, "link_clients"):
             link_fn = getattr(m, "link_clients")
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Using link_clients")
+        else:
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: No link function found")
 
         if not link_fn:
             if getattr(self, "debug_links", False):
                 self._dlog("_apply_symmetric_links_now_if_possible: master has no link function -> skip")
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: No link function, returning")
             return
 
-        for rel in (relations or []):
+        for i, rel in enumerate(relations or []):
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Processing relation {i}: {rel}")
             rr = ensure_relation_link(rel)
-            other_id = str(rr.get("other_id") or "").strip()
-            if not other_id:
+            link_id = str(rr.get("id") or "").strip()
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Relation {i} - link_id: '{link_id}'")
+            if not link_id:
+                print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Relation {i} - No link_id, skipping")
                 continue
 
             role = (str(rr.get("role") or "") or "linked_client").strip().lower()
-
-            if getattr(self, "debug_links", False):
-                self._dlog(f"_apply_symmetric_links_now_if_possible: linking this='{this_id}' <-> other='{other_id}' role='{role}'")
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Linking this='{this_id}' <-> other='{link_id}' role='{role}'")
 
             # keep compatibility with older signatures
             try:
-                link_fn(this_id, other_id, link=True, role=role)
-            except TypeError:
-                link_fn(this_id, other_id, link=True)
+                link_fn(this_id, link_id, link=True, role=role)
+                print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Successfully called link function")
+            except TypeError as e:
+                print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: TypeError, trying without role: {e}")
+                link_fn(this_id, link_id, link=True)
+            except Exception as e:
+                print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Exception during linking: {e}")
+                import traceback
+                traceback.print_exc()
 
         if hasattr(m, "save_clients_data"):
+            print(f"[ClientDialog][LINK] _apply_symmetric_links_now_if_possible: Calling save_clients_data")
             m.save_clients_data()
 
 
@@ -895,45 +997,129 @@ class ClientDialog(tk.Toplevel):
             while len(v) < 16:
                 v.append("")
 
-            rows.append(ensure_relation_dict({
+            # Build dict with id field
+            row_dict = {
                 "name":        v[0],
                 "first_name":  v[1], "middle_name": v[2], "last_name": v[3], "nickname": v[4],
                 "email":       v[5], "phone": v[6],
                 "addr1":       v[7], "addr2": v[8], "city": v[9], "state": v[10], "zip": v[11],
                 "dob":         v[12],
                 "role":        (v[13] or "officer").strip().lower(),
-                "linked_client_id": (v[14] or "").strip(),
-                "linked_client_label": (v[15] or "").strip(),
-            }))
+                "id": (v[14] or "").strip(),  # Use "id" instead of "linked_client_id"
+            }
+            print(f"[ClientDialog][LINK] _gather_rows: Row {len(rows)} - dict before ensure_relation_dict: {row_dict}")
+            # ensure_relation_dict now preserves id field
+            normalized = ensure_relation_dict(row_dict)
+            print(f"[ClientDialog][LINK] _gather_rows: Row {len(rows)} - dict after ensure_relation_dict: {normalized}")
+            rows.append(normalized)
         return rows
 
 
     def _split_officers_and_relations(self, rows: list[Dict[str, str]]):
         """
-        Any row with linked_client_id => entity relation
-        Otherwise => real person (officer/employee/etc) stored under officers.
+        All rows with id => entity relation (stored in relations).
+        All rows without id are also stored in relations (migrated from officers).
+        Officers field is deprecated - everything goes to relations.
         """
-        officers: list[Dict[str, str]] = []
+        print(f"[ClientDialog][LINK] _split_officers_and_relations: Processing {len(rows or [])} rows")
+        officers: list[Dict[str, str]] = []  # Keep empty for backward compatibility
         rels: list[Dict[str, str]] = []
 
-        for o in (rows or []):
-            o = ensure_relation_dict(o)
-            lid = str(o.get("linked_client_id") or "").strip()
+        for i, o in enumerate(rows or []):
+            print(f"[ClientDialog][LINK] _split_officers_and_relations: Row {i} BEFORE ensure_relation_dict: {o}")
+            # Don't call ensure_relation_dict again - it was already called in _gather_rows
+            # Just ensure it's a dict
+            if not isinstance(o, dict):
+                o = ensure_relation_dict(o)
+            else:
+                # Make sure id is preserved
+                if "id" not in o and o.get("linked_client_id"):
+                    o["id"] = o.get("linked_client_id", "")
+            print(f"[ClientDialog][LINK] _split_officers_and_relations: Row {i} AFTER: {o}")
+            # Check for "id" first, then fallback to "linked_client_id" for backward compatibility
+            lid = str(o.get("id") or o.get("linked_client_id") or "").strip()
             role = (str(o.get("role") or "") or "").strip().lower()
+            print(f"[ClientDialog][LINK] _split_officers_and_relations: Row {i} - lid: '{lid}', role: '{role}'")
 
             if lid:
-                rels.append(ensure_relation_link({
-                    "other_id": lid,
-                    "other_label": (o.get("linked_client_label") or o.get("name") or "").strip(),
+                # Entity relation - link to another client
+                # Ensure lid is in proper format (ein: or ssn:)
+                if ":" not in lid:
+                    # If not in proper format, try to normalize it
+                    # This shouldn't happen if LinkDialog is working correctly, but handle it
+                    print(f"[ClientDialog][LINK] _split_officers_and_relations: WARNING - lid '{lid}' doesn't have ':' format")
+                    pass
+                # Build full relation with all data fields
+                rel_dict = {
+                    "id": lid,
+                    "name": (o.get("name") or "").strip(),
+                    "first_name": (o.get("first_name") or "").strip(),
+                    "middle_name": (o.get("middle_name") or "").strip(),
+                    "last_name": (o.get("last_name") or "").strip(),
+                    "nickname": (o.get("nickname") or "").strip(),
+                    "email": (o.get("email") or "").strip(),
+                    "phone": (o.get("phone") or "").strip(),
+                    "addr1": (o.get("addr1") or "").strip(),
+                    "addr2": (o.get("addr2") or "").strip(),
+                    "city": (o.get("city") or "").strip(),
+                    "state": (o.get("state") or "").strip(),
+                    "zip": (o.get("zip") or "").strip(),
+                    "dob": (o.get("dob") or "").strip(),
                     "role": role or "business",
-                }))
+                }
+                print(f"[ClientDialog][LINK] _split_officers_and_relations: Created relation dict: {rel_dict}")
+                rel_link = ensure_relation_link(rel_dict)
+                print(f"[ClientDialog][LINK] _split_officers_and_relations: After ensure_relation_link: {rel_link}")
+                rels.append(rel_link)
             else:
-                officers.append(o)
+                # Person without client link - also store in relations (migrated from officers)
+                # Store as a relation dict with all person details
+                print(f"[ClientDialog][LINK] _split_officers_and_relations: Row {i} - No id, treating as person relation")
+                rels.append(ensure_relation_dict(o))
 
+        print(f"[ClientDialog][LINK] _split_officers_and_relations: Returning {len(rels)} relations")
         return officers, rels
 
 
     def _save(self):
+        # Check for duplicate ID before saving
+        # This allows the user to continue editing if a duplicate is found
+        if hasattr(self.master, "_dup_id_conflict"):
+            # Determine if this is a new client or editing existing
+            is_new = self._is_new_client()
+            ignore_idx = None if is_new else self._get_current_client_idx()
+            
+            # Build candidate dict for duplicate check
+            this_id = self._compute_required_client_id()
+            candidate = {
+                "is_individual": self.v_entity.get().strip().lower() == "individual",
+                "entity_type": "Individual" if self.v_entity.get().strip().lower() == "individual" else self.v_entity.get().strip(),
+                "ein": self.v_ein.get().strip(),
+                "ssn": self.v_ein.get().strip() if self.v_entity.get().strip().lower() == "individual" else "",
+            }
+            
+            conflict = self.master._dup_id_conflict(candidate, ignore_idx=ignore_idx)
+            if conflict:
+                kind, digits, other_idx, other_client = conflict
+                other_name = (other_client.get("name") or "").strip() or f"Client #{other_idx}"
+                if is_new:
+                    messagebox.showerror(
+                        "Duplicate ID",
+                        f"A client with the same {kind} already exists.\n\n"
+                        f"{kind}: {digits}\n"
+                        f"Existing client: {other_name}\n\n"
+                        f"Please change the {kind} or cancel."
+                    )
+                else:
+                    messagebox.showerror(
+                        "Duplicate ID",
+                        f"Another client already has this {kind}.\n\n"
+                        f"{kind}: {digits}\n"
+                        f"Existing client: {other_name}\n\n"
+                        f"Please change the {kind} or cancel."
+                    )
+                return  # Don't save, keep dialog open
+        
         if self.v_entity.get().strip().lower() == "individual":
             first = self.v_first.get().strip()
             mid   = self.v_mid.get().strip()
@@ -965,8 +1151,13 @@ class ClientDialog(tk.Toplevel):
                 return
 
 
+        print(f"[ClientDialog][LINK] _save: About to gather rows from tree")
         rows = self._gather_rows()
+        print(f"[ClientDialog][LINK] _save: Gathered {len(rows)} rows from tree")
+        print(f"[ClientDialog][LINK] _save: Rows data: {rows}")
         officers, new_relations = self._split_officers_and_relations(rows)
+        print(f"[ClientDialog][LINK] _save: After _split_officers_and_relations: {len(new_relations)} relations")
+        print(f"[ClientDialog][LINK] _save: new_relations data: {new_relations}")
         memo     = self.memo_txt.get("1.0", "end").strip()
 
 
@@ -1002,32 +1193,130 @@ class ClientDialog(tk.Toplevel):
             "other_tax_rates": self.v_other_tax.get().strip(),
             "tax_rates_last_checked": "" if self.v_entity.get().strip().lower() == "individual" else date.today().isoformat(),
 
-            "officers": officers,  # real people only
+            "officers": [],  # Deprecated - all data moved to relations
             "employees": self._initial.get("employees", []),
-
-            # merge existing relations + any new links made in the tree
-            "relations": merge_relations(self._initial.get("relations", []) or [], new_relations),
 
             # IMPORTANT: id is the canonical resolver id used for linking
             "id": this_id,
         }
+        
+        # Use ONLY the relations from the tree (new_relations), not from _initial
+        # This ensures that removed relations are actually removed
+        print(f"[ClientDialog][LINK] _save: Processing relations")
+        print(f"[ClientDialog][LINK] _save: Initial relations: {len(self._initial.get('relations', []) or [])}")
+        print(f"[ClientDialog][LINK] _save: New relations from tree: {len(new_relations)}")
+        print(f"[ClientDialog][LINK] _save: New relations data: {new_relations}")
+        
+        # IMPORTANT: Use only new_relations from the tree, not merge with _initial
+        # This ensures that when a relation is removed from the tree, it's actually removed
+        # The tree is the source of truth for what relations should exist
+        merged_rels = new_relations
+        print(f"[ClientDialog][LINK] _save: Using relations from tree (not merged): {len(merged_rels)}")
+        
+        # Normalize to ensure id format
+        normalized_rels = []
+        for r in merged_rels:
+            r_link = ensure_relation_link(r)
+            print(f"[ClientDialog][LINK] _save: Processing relation: {r_link}")
+            if r_link.get("id"):
+                # Entity link - use link format
+                print(f"[ClientDialog][LINK] _save: Found entity link with id: {r_link.get('id')}")
+                normalized_rels.append(r_link)
+            else:
+                # Person relation - use dict format
+                print(f"[ClientDialog][LINK] _save: Found person relation (no id)")
+                normalized_rels.append(ensure_relation_dict(r))
+        
+        print(f"[ClientDialog][LINK] _save: Final normalized relations: {len(normalized_rels)}")
+        print(f"[ClientDialog][LINK] _save: Normalized relations data: {normalized_rels}")
+        self.result["relations"] = normalized_rels
 
-        # --- NEW BEHAVIOR: defer linking until after create ---
+        # --- Process bidirectional links ---
         try:
             if self._is_new_client():
+                # For new clients, store post_save_links to process after client is saved
                 self.result["post_save_links"] = [
                     {
                         "this_id": this_id,
-                        "other_id": str(r.get("other_id") or "").strip(),
+                        "other_id": str(r.get("id") or "").strip(),
                         "role": (str(r.get("role") or "") or "linked_client").strip().lower(),
                     }
-                    for r in (self.result.get("relations") or [])
-                    if this_id and str(r.get("other_id") or "").strip()
+                    for r in normalized_rels
+                    if this_id and str(r.get("id") or "").strip()
                 ]
                 if getattr(self, "debug_links", False):
                     self._dlog("New client: stored post_save_links (relations) for caller.")
             else:
-                self._apply_symmetric_links_now_if_possible(this_id, self.result.get("relations") or [])
+                # For existing clients, handle both additions and removals
+                # Get previous relations to find what was removed
+                prev_relations = self._initial.get("relations", []) or []
+                prev_other_ids = set()
+                for pr in prev_relations:
+                    pr_link = ensure_relation_link(pr)
+                    link_id = pr_link.get("id")
+                    if link_id:
+                        prev_other_ids.add(link_id)
+                
+                # Find relations to unlink (in prev but not in new)
+                current_other_ids = set()
+                for r in normalized_rels:
+                    r_link = ensure_relation_link(r)
+                    link_id = r_link.get("id")
+                    if link_id:
+                        current_other_ids.add(link_id)
+                
+                print(f"[ClientDialog][LINK] _save: Previous relation IDs: {prev_other_ids}")
+                print(f"[ClientDialog][LINK] _save: Current relation IDs: {current_other_ids}")
+                removed_ids = prev_other_ids - current_other_ids
+                print(f"[ClientDialog][LINK] _save: Relations to unlink: {removed_ids}")
+                
+                # Unlink removed relations - bidirectionally remove from both sides
+                for removed_id in removed_ids:
+                    if hasattr(self.master, "link_clients_relations"):
+                        try:
+                            print(f"[ClientDialog][LINK] _save: Unlinking this_id='{this_id}' from removed_id='{removed_id}'")
+                            # This will remove B from A's relations and A from B's relations
+                            self.master.link_clients_relations(this_id, removed_id, link=False)
+                            print(f"[ClientDialog][LINK] _save: Successfully unlinked")
+                        except Exception as e:
+                            print(f"[ClientDialog][LINK] _save: Error unlinking: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print(f"[ClientDialog][LINK] _save: master has no link_clients_relations method")
+                
+                # Link new relations (only those that are actually new, not already linked)
+                # Get currently linked IDs from app.items to avoid re-linking
+                currently_linked_ids = set()
+                if hasattr(self.master, "items") and this_id:
+                    from vertex.utils.helpers import find_client_by_uid
+                    try:
+                        current_client = find_client_by_uid(self.master.items, this_id)
+                        if isinstance(current_client, dict):
+                            for rel in current_client.get("relations", []) or []:
+                                rel_link = ensure_relation_link(rel)
+                                rel_id = rel_link.get("id")
+                                if rel_id:
+                                    currently_linked_ids.add(rel_id)
+                            print(f"[ClientDialog][LINK] _save: Currently linked IDs from app.items: {currently_linked_ids}")
+                    except Exception as e:
+                        print(f"[ClientDialog][LINK] _save: Error getting currently linked IDs: {e}")
+                
+                # Only link relations that aren't already linked
+                new_relations_to_link = [r for r in normalized_rels if ensure_relation_link(r).get("id") not in currently_linked_ids]
+                print(f"[ClientDialog][LINK] _save: About to call _apply_symmetric_links_now_if_possible with {len(new_relations_to_link)} new relations (out of {len(normalized_rels)} total)")
+                if new_relations_to_link:
+                    self._apply_symmetric_links_now_if_possible(this_id, new_relations_to_link)
+                else:
+                    print(f"[ClientDialog][LINK] _save: No new relations to link (all already linked)")
+                print(f"[ClientDialog][LINK] _save: After _apply_symmetric_links_now_if_possible, result relations: {self.result.get('relations', [])}")
+                
+                # IMPORTANT: Use normalized_rels (from tree) as the source of truth for this client's relations.
+                # The tree represents what the user wants, and link_clients_relations has already updated the other side.
+                # Ensure self.result["relations"] is set to normalized_rels (it should already be, but make sure)
+                self.result["relations"] = normalized_rels
+                print(f"[ClientDialog][LINK] _save: Final result relations count: {len(normalized_rels)}")
+                print(f"[ClientDialog][LINK] _save: Final result relations: {normalized_rels}")
 
 
 

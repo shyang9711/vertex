@@ -142,6 +142,17 @@ def init_profile_tab(
                     return i
             return None
 
+        if kind == "ssn":
+            target = _normalize_ein_9(val)  # Same normalization for SSN
+            if not target:
+                return None
+            for i, c in enumerate(items):
+                # Check both ssn and ein fields (some individuals might have SSN in ein field)
+                ssn_val = _normalize_ein_9(c.get("ssn", "") or c.get("ein", ""))
+                if ssn_val == target:
+                    return i
+            return None
+
         return None
 
 
@@ -151,9 +162,9 @@ def init_profile_tab(
         if isinstance(items, list) and idx is not None and 0 <= idx < len(items):
             return items[idx]
         return client  # fallback
-    # ---------- RIGHT: Personnel ----------
-    ttk.Label(right, text="Personnel", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-    people_cols = ("role","first","last","email","phone")
+    # ---------- RIGHT: Relations ----------
+    ttk.Label(right, text="Relations", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+    people_cols = ("role","entity","email","phone")
     people_wrap = ttk.Frame(right)
     people_wrap.pack(fill=tk.BOTH, expand=True, pady=(4,8))
 
@@ -161,7 +172,7 @@ def init_profile_tab(
     _profile_style = ttk.Style(prof)
     _profile_style.configure("Profile.Treeview", rowheight=40)
     people_tree = ttk.Treeview(people_wrap, columns=people_cols, show="headings", height=5, selectmode="browse", style="Profile.Treeview")
-    for col, label, w in (("role","Role",80),("first","First",100),("last","Last",100),("email","Email",200),("phone","Phone",100)):
+    for col, label, w in (("role","Role",80),("entity","Entity",200),("email","Email",200),("phone","Phone",100)):
         people_tree.heading(col, text=label)
         people_tree.column(col, width=w, anchor="w", stretch=True)
     ysb.config(command=people_tree.yview)
@@ -213,7 +224,7 @@ def init_profile_tab(
         if client_idx is None:
             return
 
-        # Find the person in the LIVE client data
+        # Find the relation in the LIVE client data
         c = _get_live_client()
         role_key, pidx = person_index_map.get(iid, (None, None))
         if role_key is None or pidx is None:
@@ -223,18 +234,46 @@ def init_profile_tab(
         if not (0 <= pidx < len(arr)):
             return
 
+        # Try to parse as relation link first
+        try:
+            from vertex.utils.helpers import ensure_relation_link
+        except ModuleNotFoundError:
+            from utils.helpers import ensure_relation_link
+        
+        rel_link = ensure_relation_link(arr[pidx])
         p = ensure_relation_dict(arr[pidx])
 
-        # If linked, go to linked client detail page
-        link_id = (p.get("linked_client_id") or "").strip()
+        # If linked (has id), check if the linked client still exists
+        link_id = rel_link.get("id") or (p.get("id") or "").strip()
         if link_id:
             tgt_idx = _linked_id_to_client_idx(link_id)
             if tgt_idx is not None:
+                # Linked client exists - navigate to it
                 app.navigate("detail", tgt_idx, push=True)
                 return
+            else:
+                # Linked client doesn't exist (was unlinked or deleted) - show person details instead
+                # Don't navigate to client, show person details page
+                if hasattr(app, "_build_person_page"):
+                    try:
+                        app._build_person_page(client_idx, role_key, pidx)
+                        return
+                    except Exception:
+                        pass
 
-        # Otherwise go to the normal person detail page
-        app.navigate("person", payload=(client_idx, role_key, pidx), push=True)
+        # For relations without links (or unlinked entities), show person details
+        # This includes unlinked entities that were previously linked
+        if role_key == "relations":
+            # Check if this relation has enough info to be a person
+            if p.get("first_name") or p.get("last_name") or p.get("name"):
+                # Show person details page (don't navigate to client)
+                # The relation is now treated as a standalone person entity
+                if hasattr(app, "_build_person_page"):
+                    try:
+                        app._build_person_page(client_idx, role_key, pidx)
+                        return
+                    except Exception:
+                        pass
 
     # ---------- RIGHT: client Tasks (Dashboard-like) ----------
     ttk.Label(right, text="Tasks", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(8,2))
@@ -422,9 +461,89 @@ def init_profile_tab(
         person_index_map.clear()
 
         c = _get_live_client()
-        _add_people("officers",  c.get("officers", []))
-        _add_people("employees", c.get("employees", []))
-        _add_people("spouses",   c.get("spouses", []))
+        # Show relations (includes both people and entity links)
+        relations = c.get("relations", []) or []
+        for i, rel in enumerate(relations):
+            # Try to parse as relation link first (for entity links)
+            try:
+                from vertex.utils.helpers import ensure_relation_link
+            except ModuleNotFoundError:
+                from utils.helpers import ensure_relation_link
+            
+            rel_link = ensure_relation_link(rel)
+            rel_dict = ensure_relation_dict(rel)
+            
+            # Check if this is an entity link (has id)
+            link_id = rel_link.get("id") or (rel_dict.get("id") or "").strip()
+            role = rel_link.get("role") or (rel_dict.get("role") or "").strip().lower()
+            
+            # Get display name and first/last
+            first = (rel_dict.get("first_name") or "").strip()
+            last = (rel_dict.get("last_name") or "").strip()
+            
+            # Entity name: For persons show first+last, for businesses show business name
+            entity_name = ""
+            if link_id:
+                # Entity link - resolve from linked client
+                tgt_idx = _linked_id_to_client_idx(link_id)
+                if tgt_idx is not None:
+                    items = getattr(app, "items", []) or []
+                    if 0 <= tgt_idx < len(items):
+                        target_client = items[tgt_idx]
+                        # Check if it's an individual or business
+                        is_individual = target_client.get("is_individual") or ((target_client.get("entity_type") or "").strip().lower() == "individual")
+                        if is_individual:
+                            # For individuals: show first + last name
+                            tgt_first = (target_client.get("first_name") or "").strip()
+                            tgt_last = (target_client.get("last_name") or "").strip()
+                            entity_name = f"{tgt_first} {tgt_last}".strip()
+                        else:
+                            # For businesses: show business name
+                            entity_name = (target_client.get("name") or "").strip()
+                
+                # Fallback to other_label if resolution failed
+                if not entity_name:
+                    entity_name = rel_link.get("other_label") or (rel_dict.get("linked_client_label") or "").strip()
+            else:
+                # Person relation (no link) - use first + last name
+                if first or last:
+                    entity_name = f"{first} {last}".strip()
+                else:
+                    entity_name = (rel_dict.get("name") or "").strip()
+            
+            # Role display - capitalize properly (handle "business owner" as two words)
+            if role:
+                if role == "business owner":
+                    role_display = "Business Owner"
+                elif role == "businessowner":
+                    role_display = "Business Owner"
+                else:
+                    role_display = role[:1].upper() + role[1:] if role else "Relation"
+            else:
+                role_display = "Relation"
+            
+            # If entity_name is still empty, try to get it from other sources
+            if not entity_name:
+                # Try other_label from relation link
+                entity_name = rel_link.get("other_label") or (rel_dict.get("linked_client_label") or "").strip()
+                # If still empty and we have a role, use role as fallback
+                if not entity_name and role:
+                    entity_name = f"({role_display})"
+                elif not entity_name:
+                    entity_name = "Unknown"
+            
+            # Always insert relations (they should always be shown if they exist in the list)
+            iid = people_tree.insert(
+                "", "end",
+                values=(
+                    role_display,
+                    entity_name,
+                    rel_dict.get("email",""),
+                    rel_dict.get("phone",""),
+                )
+            )
+            # Store as "relations" with index
+            person_index_map[iid] = ("relations", i)
 
         people_tree.configure(height=min(5, len(person_index_map)))
 
