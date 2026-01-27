@@ -196,6 +196,7 @@ def enforce_single_instance(app_id: str = "Vertex") -> bool:
 # Migration keys
 MIG_TASKS_CLIENT_TO_CLIENT = "mig_tasks_client_to_client"
 MIG_OFFICERS_TO_RELATIONS = "mig_officers_to_relations"
+MIG_RELATION_LINK_IDS_TO_CANONICAL = "mig_relation_link_ids_to_canonical"
 
 # Re-export for backward compatibility (in case other modules import from here)
 TASKS_DIR = DATA_ROOT / "tasks"
@@ -683,9 +684,135 @@ class App(ttk.Frame):
                     save_clients(self.items)
                     mark_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS, {"clients_touched": stats.get("clients_touched", 0)})
                     self.log.info(f"Auto-migrated officers to relations: {stats}")
+            # Normalize relation link ids (legacy -> canonical) if needed
+            if not is_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL):
+                stats_links = self._normalize_relation_link_ids_to_canonical()
+                if stats_links.get("clients_touched", 0) > 0:
+                    save_clients(self.items)
+                mark_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL, stats_links)
+                self.log.info(f"Auto-normalized relation link ids: {stats_links}")
+
         except Exception as e:
             self.log.exception("Auto-migration failed: %s", e)
             # Don't block startup on migration errors
+
+    def _normalize_relation_link_ids_to_canonical(self) -> dict:
+        """
+        Convert legacy relation link ids to canonical stable ids:
+        - Businesses: ein:<9>
+        - Individuals: ssn:<9>
+
+        Handles legacy forms:
+        - client:<client_id>
+        - raw client_id
+        - ein/ssn without prefix (only if resolvable)
+        - relation dicts that use either:
+            linked_client_id
+            OR ensure_relation_link(rel)["id"]/["other_id"]
+
+        Returns stats dict.
+        """
+        stats = {
+            "relations_scanned": 0,
+            "relations_updated": 0,
+            "clients_touched": 0,
+            "unresolved": 0,
+        }
+
+        items = getattr(self, "items", []) or []
+        if not items:
+            return stats
+
+        # Map raw client["id"] -> canonical key (ein:/ssn:) for fast conversion
+        id_to_canon = {}
+        for c in items:
+            if not isinstance(c, dict):
+                continue
+            raw_id = str(c.get("id", "") or "").strip()
+            canon = self._canonical_client_key(c, None)
+            if raw_id and canon:
+                id_to_canon[raw_id] = canon
+
+        # Helper: try resolve any legacy key -> canonical key
+        def _to_canon(link_id: str) -> str:
+            link_id = (link_id or "").strip()
+            if not link_id:
+                return ""
+
+            # already canonical
+            if link_id.startswith(("ein:", "ssn:")):
+                return link_id
+
+            # legacy client:<id>
+            if link_id.startswith("client:"):
+                raw = link_id.split(":", 1)[1].strip()
+                return id_to_canon.get(raw, "")
+
+            # raw id direct
+            if link_id in id_to_canon:
+                return id_to_canon[link_id]
+
+            # try resolve by your resolver (supports ein:/ssn:/client:)
+            # if the resolver can find it, return that client's canonical key
+            try:
+                idx = self._find_client_idx_by_id_or_ein(link_id)
+                if idx is not None and 0 <= idx < len(items):
+                    c = items[idx]
+                    return self._canonical_client_key(c, idx) or ""
+            except Exception:
+                pass
+
+            return ""
+
+        # Normalize every relation record in every client
+        touched_clients = set()
+
+        for c in items:
+            if not isinstance(c, dict):
+                continue
+            rels = c.get("relations", []) or []
+            if not isinstance(rels, list) or not rels:
+                continue
+
+            changed = False
+            new_rels = []
+
+            for rel in rels:
+                stats["relations_scanned"] += 1
+                rd = ensure_relation_dict(rel)
+
+                # Prefer linked_client_id, but also support ensure_relation_link's id/other_id
+                existing = (rd.get("linked_client_id") or "").strip()
+                if not existing:
+                    try:
+                        rl = ensure_relation_link(rd)
+                        existing = (rl.get("id") or rl.get("other_id") or "").strip()
+                    except Exception:
+                        existing = ""
+
+                canon = _to_canon(existing)
+
+                if canon and canon != existing:
+                    rd["linked_client_id"] = canon
+                    # Keep backward-compat fields coherent if present
+                    rd["id"] = canon
+                    rd.pop("other_id", None)
+
+                    stats["relations_updated"] += 1
+                    changed = True
+                    touched_clients.add(id(c))
+                elif not canon and existing:
+                    # had something but couldn't resolve to canonical
+                    stats["unresolved"] += 1
+
+                new_rels.append(rd)
+
+            if changed:
+                c["relations"] = new_rels
+                stats["clients_touched"] += 1
+
+        return stats
+
 
     def _update_data_dialog(self):
         try:
@@ -713,6 +840,17 @@ class App(ttk.Frame):
             else:
                 # still ensure clients are saved? usually no need
                 stats_off = {"clients_touched": 0, "officers_moved": 0, "officer_dupes_skipped": 0, "officers_keys_removed": 0}
+
+            # 3) normalize relation link ids to canonical (ein:/ssn:)
+            stats_links = {"relations_scanned": 0, "relations_updated": 0, "clients_touched": 0, "unresolved": 0}
+            if not is_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL):
+                stats_links = self._normalize_relation_link_ids_to_canonical()
+                if stats_links.get("clients_touched", 0) > 0:
+                    save_clients(self.items)
+                mark_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL, stats_links)
+            else:
+                stats_links = {"relations_scanned": 0, "relations_updated": 0, "clients_touched": 0, "unresolved": 0}
+
 
             # refresh UI
             try:
@@ -743,6 +881,12 @@ class App(ttk.Frame):
                 f"  Officers moved: {stats_off.get('officers_moved', 0)}\n"
                 f"  Dupes skipped: {stats_off.get('officer_dupes_skipped', 0)}\n"
                 f"  officers keys removed: {stats_off.get('officers_keys_removed', 0)}\n\n"
+                "\nrelations link ids (client:/raw -> ein:/ssn:):\n"
+                f"  Relations scanned: {stats_links.get('relations_scanned', 0)}\n"
+                f"  Relations updated: {stats_links.get('relations_updated', 0)}\n"
+                f"  Clients touched: {stats_links.get('clients_touched', 0)}\n"
+                f"  Unresolved legacy ids: {stats_links.get('unresolved', 0)}\n\n"
+
                 f"migrations flag file: {str(MIGRATIONS_FILE)}"
             )
 
