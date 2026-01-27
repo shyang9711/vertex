@@ -750,95 +750,96 @@ def init_profile_tab(
         idx = _resolve_client_idx_from_client()
         name_key = (client.get("name") or "").strip().lower()
         out = []
-        
-        # Ensure dashboard is initialized
-        if not hasattr(app, "dashboard") or app.dashboard is None:
-            print(f"[PROFILE] _client_tasks_source: WARNING - dashboard not initialized, attempting to initialize")
-            try:
-                from vertex.pages.dashboard_page import DashboardPage
-            except ModuleNotFoundError:
-                from pages.dashboard_page import DashboardPage
-            try:
-                app.dashboard = DashboardPage(app)
-                print(f"[PROFILE] _client_tasks_source: Dashboard initialized successfully")
-                # Give it a moment to fully initialize
-                import time
-                time.sleep(0.1)
-            except Exception as e:
-                print(f"[PROFILE] _client_tasks_source: ERROR - Failed to initialize dashboard: {e}")
-                import traceback
-                traceback.print_exc()
-                return out
-        
-        dash = getattr(app, "dashboard", None)
-        print(f"[PROFILE] _client_tasks_source: client name={client.get('name', 'N/A')}, idx={idx}")
-        print(f"[PROFILE] _client_tasks_source: has dashboard={dash is not None}")
-        if dash:
-            store = getattr(dash, "store", None)
-            print(f"[PROFILE] _client_tasks_source: has store={store is not None}")
-            if store:
-                # Ensure store is loaded
-                if not hasattr(store, "tasks") or store.tasks is None:
-                    print(f"[PROFILE] _client_tasks_source: WARNING - store.tasks is None, attempting to reload")
-                    try:
-                        store.load()
-                        print(f"[PROFILE] _client_tasks_source: Store reloaded, tasks count={len(store.tasks)}")
-                    except Exception as e:
-                        print(f"[PROFILE] _client_tasks_source: ERROR - Failed to reload store: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        return out
-                
-                tasks = getattr(store, "tasks", [])
-                print(f"[PROFILE] _client_tasks_source: total tasks in store={len(tasks) if tasks else 0}")
-                
-                # If tasks is empty, try to check the file directly
-                if not tasks or len(tasks) == 0:
-                    print(f"[PROFILE] _client_tasks_source: WARNING - tasks list is empty, checking file directly")
-                    try:
-                        if hasattr(store, "path") and store.path:
-                            import json
-                            from pathlib import Path
-                            tasks_file = Path(store.path)
-                            print(f"[PROFILE] _client_tasks_source: Checking tasks file: {tasks_file}")
-                            print(f"[PROFILE] _client_tasks_source: File exists: {tasks_file.exists()}")
-                            if tasks_file.exists():
-                                with open(tasks_file, 'r', encoding='utf-8') as f:
-                                    file_tasks = json.load(f)
-                                    print(f"[PROFILE] _client_tasks_source: File contains {len(file_tasks) if isinstance(file_tasks, list) else 'non-list'} tasks")
-                                    # Try to reload store
-                                    if hasattr(store, "load"):
-                                        store.load()
-                                        tasks = getattr(store, "tasks", [])
-                                        print(f"[PROFILE] _client_tasks_source: After reload, tasks count: {len(tasks) if tasks else 0}")
-                    except Exception as e:
-                        print(f"[PROFILE] _client_tasks_source: ERROR checking file: {e}")
-                        import traceback
-                        traceback.print_exc()
-                
-                if not tasks:
-                    print(f"[PROFILE] _client_tasks_source: No tasks found after all attempts")
-                    return out
-                
-                for i, t in enumerate(tasks):
-                    if not isinstance(t, dict):
-                        continue
-                    if not t.get("is_enabled", True):
-                        continue
-                    
-                    task_idx  = t.get("client_idx")
-                    task_name = (t.get("client_name") or "").strip().lower()
-                    print(f"[PROFILE] _client_tasks_source: task {i}: client_idx={task_idx}, client_name='{task_name}', matches_idx={idx is not None and task_idx == idx}, matches_name={task_name == name_key}")
 
-                    if (idx is not None and task_idx == idx) or (task_name == name_key):
-                        print(f"[PROFILE] _client_tasks_source: Task {i} matches! Adding to output")
-                        out.append(t)
+        # 1) Prefer the live dashboard store (normal in dev runs)
+        dash = getattr(app, "dashboard", None)
+        store = getattr(dash, "store", None) if dash else None
+        tasks = getattr(store, "tasks", None) if store else None
+
+        if isinstance(tasks, list) and tasks:
+            for t in tasks:
+                if not isinstance(t, dict):
+                    continue
+                if not t.get("is_enabled", True):
+                    continue
+                task_idx  = t.get("client_idx")
+                task_name = (t.get("client_name") or "").strip().lower()
+                if (idx is not None and task_idx == idx) or (task_name == name_key):
+                    out.append(t)
+            print(f"[PROFILE] _client_tasks_source: using dashboard store tasks, matched={len(out)}")
+            return out
+
+        # 2) Fallback: load tasks.json directly (works in .exe even if dashboard isn't built)
+        try:
+            # Try to locate the tasks file the same way your app does at runtime.
+            # If your app exposes a known path, use it first:
+            candidate_paths = []
+
+            # A) If dashboard store exists but tasks empty, still use its path
+            if store and getattr(store, "path", None):
+                candidate_paths.append(pathlib.Path(store.path))
+
+            # B) Common app attributes (adjust if you have one of these)
+            for attr in ("data_dir", "DATA_DIR", "storage_dir", "STORAGE_DIR"):
+                p = getattr(app, attr, None)
+                if p:
+                    candidate_paths.append(pathlib.Path(p) / "tasks.json")
+
+            # C) Last resort: from executable location or project root
+            if getattr(sys, "frozen", False):
+                base = pathlib.Path(sys.executable).resolve().parent
             else:
-                print(f"[PROFILE] _client_tasks_source: WARNING - dashboard exists but store is None")
-        else:
-            print(f"[PROFILE] _client_tasks_source: WARNING - dashboard is None, cannot load tasks")
-        print(f"[PROFILE] _client_tasks_source: returning {len(out)} tasks")
-        return out
+                base = pathlib.Path(__file__).resolve().parents[1]
+            candidate_paths.append(base / "data" / "tasks.json")
+            candidate_paths.append(base / "tasks.json")
+
+            tasks_path = None
+            for p in candidate_paths:
+                try:
+                    if p and p.exists():
+                        tasks_path = p
+                        break
+                except Exception:
+                    pass
+
+            print(f"[PROFILE] _client_tasks_source: dashboard store unavailable/empty.")
+            print(f"[PROFILE] _client_tasks_source: candidates tried:")
+            for p in candidate_paths:
+                print(f"  - {p} (exists={getattr(p, 'exists', lambda: False)() if hasattr(p,'exists') else 'n/a'})")
+
+            if not tasks_path:
+                print("[PROFILE] _client_tasks_source: ERROR - could not find tasks.json in any candidate path.")
+                return []
+
+            print(f"[PROFILE] _client_tasks_source: loading tasks from: {tasks_path}")
+
+            with open(tasks_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+
+            file_tasks = raw if isinstance(raw, list) else raw.get("tasks", [])
+            if not isinstance(file_tasks, list):
+                print("[PROFILE] _client_tasks_source: ERROR - tasks file is not a list (or {tasks:[]}).")
+                return []
+
+            for t in file_tasks:
+                if not isinstance(t, dict):
+                    continue
+                if not t.get("is_enabled", True):
+                    continue
+                task_idx  = t.get("client_idx")
+                task_name = (t.get("client_name") or "").strip().lower()
+                if (idx is not None and task_idx == idx) or (task_name == name_key):
+                    out.append(t)
+
+            print(f"[PROFILE] _client_tasks_source: matched={len(out)} from file")
+            return out
+
+        except Exception as e:
+            print(f"[PROFILE] _client_tasks_source: ERROR loading tasks file fallback: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
 
     def _stop_client_recurring():
         dash = getattr(app, "dashboard", None)
