@@ -807,8 +807,14 @@ def init_profile_tab(
                 continue
 
             # Task fields (some tasks may not have all of these)
+            # Fallback to company_idx/company_name if client_idx/client_name don't exist
             t_idx = t.get("client_idx", None)
+            if t_idx is None:
+                t_idx = t.get("company_idx", None)
+            
             t_name = (t.get("client_name") or "").strip().casefold()
+            if not t_name:
+                t_name = (t.get("company_name") or "").strip().casefold()
 
             t_cid = str(t.get("client_id", "") or "").strip()
             # some people store EIN under different keys
@@ -1117,6 +1123,16 @@ def init_profile_tab(
             pass
 
     nb.bind("<<NotebookTabChanged>>", _on_tab_changed, add=True)
+    
+    # Also refresh when the detail page is rebuilt (entity navigation)
+    # Store refresh functions on the frame so they can be called externally
+    prof._refresh_people_tree = _refresh_people_tree
+    prof._refresh_client_tasks_tv = _refresh_client_tasks_tv
+    
+    # Refresh immediately to ensure data is current when tab is first shown
+    # This handles the case where we navigate between entities
+    _refresh_people_tree()
+    _refresh_client_tasks_tv()
 
     # ---------- LEFT: IDs/Accounts, Tax Rates, Address, Memo ----------
     ttk.Label(left, text="IDs / Accounts", font=("Segoe UI", 11, "bold")).pack(anchor="w")

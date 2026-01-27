@@ -1288,15 +1288,25 @@ class App(ttk.Frame):
 
         nb = ttk.Notebook(page); nb.pack(fill="both", expand=True, padx=6, pady=6)
         self._detail_notebook = nb
+        
+        # Set current detail index BEFORE initializing tabs so refresh functions can use it
+        self._current_detail_idx = idx
 
         # Profile tab
-        init_profile_tab(
+        prof_frame = init_profile_tab(
             nb,
             self,
             c,
             edit_rates_cb=lambda i=idx: self._edit_rates(i),
             refresh_sales_cb=lambda i=idx: self._refresh_sales_tax_for(i),
         )
+        
+        # Ensure profile tab refreshes when navigating between entities
+        # Refresh immediately after creation to ensure data is current
+        if hasattr(prof_frame, "_refresh_people_tree"):
+            prof_frame._refresh_people_tree()
+        if hasattr(prof_frame, "_refresh_client_tasks_tv"):
+            prof_frame._refresh_client_tasks_tv()
 
         # Documents tab (add to the SAME notebook that already has "Profile")
         def _save_clients(items):
@@ -1343,7 +1353,6 @@ class App(ttk.Frame):
 
         footer = ttk.Frame(page, padding=(8,2)); footer.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self._current_detail_idx = idx
         # Store the page with tab info if restore_tab was provided
         if restore_tab:
             self._current_page = ("detail", (idx, restore_tab))
