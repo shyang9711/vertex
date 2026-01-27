@@ -85,12 +85,35 @@ def init_profile_tab(
     right = ttk.Frame(prof); right.grid(row=0, column=1, sticky="nsew")
 
     def _resolve_client_idx_from_client():
-        items = getattr(app, "items", [])
-        name = (client.get("name") or "").strip()
+        items = getattr(app, "items", []) or []
+
+        # Prefer the current detail index if it’s a valid int
+        cur = getattr(app, "_current_detail_idx", None)
+        if isinstance(cur, int) and 0 <= cur < len(items):
+            return cur
+
+        # Fall back to matching by stable identifiers (id / ein) then name
+        cid = str(client.get("id", "") or "").strip()
+        ein = _normalize_ein_9(client.get("ein", "") or "")
+        name = (client.get("name") or "").strip().casefold()
+
         for i, c in enumerate(items):
-            if (c.get("name") or "").strip() == name:
+            if not isinstance(c, dict):
+                continue
+
+            c_id = str(c.get("id", "") or "").strip()
+            c_ein = _normalize_ein_9(c.get("ein", "") or "")
+            c_name = (c.get("name") or "").strip().casefold()
+
+            if cid and c_id == cid:
                 return i
-        return getattr(app, "_current_detail_idx", None)
+            if ein and c_ein and c_ein == ein:
+                return i
+            if name and c_name == name:
+                return i
+
+        return None
+
     
     def _normalize_ein_9(x: str) -> str:
         s = "".join(ch for ch in (x or "") if ch.isdigit())
@@ -409,6 +432,8 @@ def init_profile_tab(
         pass
     
     _client_todo_rows = {}
+    _profile_task_refresh_tries = 0
+
 
     def _safe_redraw_dashboard():
         try:
@@ -744,101 +769,74 @@ def init_profile_tab(
             return dash.store.occurs_on(t, day)
         return _occurs_on_local(t, day)
 
-
-    # Source of tasks for THIS client (match by idx OR by normalized name)
     def _client_tasks_source():
+        """
+        Return tasks that belong to this client.
+        In .exe, client_idx/name can drift, so also match by client id / EIN.
+        """
+        items = getattr(app, "items", []) or []
+
         idx = _resolve_client_idx_from_client()
-        name_key = (client.get("name") or "").strip().lower()
+
+        # Stable identifiers for the current client
+        cid = str(client.get("id", "") or "").strip()
+        ein = _normalize_ein_9(client.get("ein", "") or "")
+        name_key = (client.get("name") or "").strip().casefold()
+
+        # If we have a resolved idx, derive id/ein/name from the live client too (more accurate)
+        if isinstance(idx, int) and 0 <= idx < len(items):
+            live = items[idx]
+            cid = cid or str(live.get("id", "") or "").strip()
+            ein = ein or _normalize_ein_9(live.get("ein", "") or "")
+            name_key = name_key or (live.get("name") or "").strip().casefold()
+
         out = []
 
-        # 1) Prefer the live dashboard store (normal in dev runs)
         dash = getattr(app, "dashboard", None)
         store = getattr(dash, "store", None) if dash else None
         tasks = getattr(store, "tasks", None) if store else None
 
-        if isinstance(tasks, list) and tasks:
-            for t in tasks:
-                if not isinstance(t, dict):
-                    continue
-                if not t.get("is_enabled", True):
-                    continue
-                task_idx  = t.get("client_idx")
-                task_name = (t.get("client_name") or "").strip().lower()
-                if (idx is not None and task_idx == idx) or (task_name == name_key):
-                    out.append(t)
-            print(f"[PROFILE] _client_tasks_source: using dashboard store tasks, matched={len(out)}")
-            return out
-
-        # 2) Fallback: load tasks.json directly (works in .exe even if dashboard isn't built)
-        try:
-            # Try to locate the tasks file the same way your app does at runtime.
-            # If your app exposes a known path, use it first:
-            candidate_paths = []
-
-            # A) If dashboard store exists but tasks empty, still use its path
-            if store and getattr(store, "path", None):
-                candidate_paths.append(pathlib.Path(store.path))
-
-            # B) Common app attributes (adjust if you have one of these)
-            for attr in ("data_dir", "DATA_DIR", "storage_dir", "STORAGE_DIR"):
-                p = getattr(app, attr, None)
-                if p:
-                    candidate_paths.append(pathlib.Path(p) / "tasks.json")
-
-            # C) Last resort: from executable location or project root
-            if getattr(sys, "frozen", False):
-                base = pathlib.Path(sys.executable).resolve().parent
-            else:
-                base = pathlib.Path(__file__).resolve().parents[1]
-            candidate_paths.append(base / "data" / "tasks.json")
-            candidate_paths.append(base / "tasks.json")
-
-            tasks_path = None
-            for p in candidate_paths:
-                try:
-                    if p and p.exists():
-                        tasks_path = p
-                        break
-                except Exception:
-                    pass
-
-            print(f"[PROFILE] _client_tasks_source: dashboard store unavailable/empty.")
-            print(f"[PROFILE] _client_tasks_source: candidates tried:")
-            for p in candidate_paths:
-                print(f"  - {p} (exists={getattr(p, 'exists', lambda: False)() if hasattr(p,'exists') else 'n/a'})")
-
-            if not tasks_path:
-                print("[PROFILE] _client_tasks_source: ERROR - could not find tasks.json in any candidate path.")
-                return []
-
-            print(f"[PROFILE] _client_tasks_source: loading tasks from: {tasks_path}")
-
-            with open(tasks_path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-
-            file_tasks = raw if isinstance(raw, list) else raw.get("tasks", [])
-            if not isinstance(file_tasks, list):
-                print("[PROFILE] _client_tasks_source: ERROR - tasks file is not a list (or {tasks:[]}).")
-                return []
-
-            for t in file_tasks:
-                if not isinstance(t, dict):
-                    continue
-                if not t.get("is_enabled", True):
-                    continue
-                task_idx  = t.get("client_idx")
-                task_name = (t.get("client_name") or "").strip().lower()
-                if (idx is not None and task_idx == idx) or (task_name == name_key):
-                    out.append(t)
-
-            print(f"[PROFILE] _client_tasks_source: matched={len(out)} from file")
-            return out
-
-        except Exception as e:
-            print(f"[PROFILE] _client_tasks_source: ERROR loading tasks file fallback: {e}")
-            import traceback
-            traceback.print_exc()
+        if not isinstance(tasks, list):
+            print("[PROFILE] _client_tasks_source: no dash/store/tasks list available")
             return []
+
+        for t in tasks:
+            if not isinstance(t, dict):
+                continue
+            if not t.get("is_enabled", True):
+                continue
+
+            # Task fields (some tasks may not have all of these)
+            t_idx = t.get("client_idx", None)
+            t_name = (t.get("client_name") or "").strip().casefold()
+
+            t_cid = str(t.get("client_id", "") or "").strip()
+            # some people store EIN under different keys
+            t_ein = _normalize_ein_9(t.get("ein", "") or t.get("client_ein", "") or "")
+
+            match = False
+
+            # 1) match by client_id (best)
+            if cid and t_cid and t_cid == cid:
+                match = True
+
+            # 2) match by EIN (next best)
+            elif ein and t_ein and t_ein == ein:
+                match = True
+
+            # 3) match by idx if we have it
+            elif isinstance(idx, int) and isinstance(t_idx, int) and t_idx == idx:
+                match = True
+
+            # 4) match by name (fallback)
+            elif name_key and t_name and t_name == name_key:
+                match = True
+
+            if match:
+                out.append(t)
+
+        print(f"[PROFILE] _client_tasks_source: matched={len(out)} (idx={idx}, id={cid}, ein={ein}, name='{name_key}')")
+        return out
 
 
     def _stop_client_recurring():
@@ -971,12 +969,35 @@ def init_profile_tab(
 
         print("=" * 80)
         print(f"[PROFILE] _refresh_client_tasks_tv: Refreshing tasks treeview")
+        nonlocal _profile_task_refresh_tries
+
         tasks = _client_tasks_source()
         print(f"[PROFILE] _refresh_client_tasks_tv: Got {len(tasks)} tasks from source")
+
+        # In .exe, dashboard store may still be loading when Profile first renders.
+        # If dashboard exists but tasks aren't ready yet, retry a few times.
+        dash = getattr(app, "dashboard", None)
+        store = getattr(dash, "store", None) if dash else None
+        store_tasks = getattr(store, "tasks", None) if store else None
+
+        if (not tasks) and store and isinstance(store_tasks, list) and len(store_tasks) > 0:
+            if _profile_task_refresh_tries < 15:  # ~15 * 200ms = 3s max
+                _profile_task_refresh_tries += 1
+                print(f"[PROFILE] TasksStore not ready yet (try {_profile_task_refresh_tries}/15). Retrying...")
+                right.after(200, _refresh_client_tasks_tv)
+                print("=" * 80)
+                return
+            else:
+                print("[PROFILE] TasksStore still empty after retries. Showing no tasks.")
+
+        # Reset retry counter once we have data or we've given up
+        _profile_task_refresh_tries = 0
+
         if not tasks:
             print(f"[PROFILE] _refresh_client_tasks_tv: No tasks found, returning early")
             print("=" * 80)
             return
+
         print(f"[PROFILE] _refresh_client_tasks_tv: Processing {len(tasks)} tasks")
         print("=" * 80)
 
