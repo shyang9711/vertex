@@ -5,7 +5,7 @@ import difflib
 import pandas as pd
 from tkinter import (
     Tk, Button, Label, filedialog, messagebox, StringVar,
-    DISABLED, NORMAL, Toplevel, Entry, Listbox, SINGLE, END
+    DISABLED, NORMAL, Toplevel, Entry, Listbox, SINGLE, END, Radiobutton, Text, Scrollbar
 )
 import sys
 import subprocess
@@ -254,9 +254,214 @@ def detect_amount_column(df: pd.DataFrame) -> str:
                 return c
     return None
 
-def load_table(path: str) -> pd.DataFrame:
+# ========= PDF Parsing =========
+def extract_text_from_pdf(pdf_path: str) -> str:
+    """Extract text from PDF using PyMuPDF (fitz)."""
+    try:
+        import fitz
+        parts = []
+        with fitz.open(pdf_path) as doc:
+            for page in doc:
+                parts.append(page.get_text("text"))
+        text = "\n".join(parts).replace("\r", "\n")
+        # Normalize tabs to spaces but preserve line structure
+        text = text.replace("\t", " ")
+        # Collapse multiple spaces but keep at least one space
+        text = re.sub(r" {2,}", " ", text)
+        return text
+    except ImportError:
+        messagebox.showerror("Missing Dependency", "PyMuPDF (fitz) is required for PDF parsing. Please install it.")
+        raise
+    except Exception as e:
+        messagebox.showerror("PDF Error", f"Failed to extract text from PDF:\n{e}")
+        raise
+
+def parse_bank_of_america_text(text: str) -> pd.DataFrame:
+    """
+    Parse Bank of America transaction text (from PDF or pasted).
+    Format: Posting Date | Transaction Date | Description | Reference Number | Amount
+    Example: 12/09 | 12/06 | ASIAN FILIPINO MARKET MARINA CA | 24275395342900014900104 | 16.30
+    """
+    # Normalize text: tabs to spaces, collapse multiple spaces
+    text = text.replace("\t", " ")
+    text = re.sub(r" {2,}", " ", text)
+    lines = text.split("\n")
+    
+    rows = []
+    in_transactions_section = False
+    current_account = None
+    
+    # US states abbreviations for validation
+    us_states = {
+        'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+        'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+        'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+        'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+        'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'DC'
+    }
+    
+    # Pattern to match transaction lines: MM/DD MM/DD Description ReferenceNumber Amount
+    # Amount can be negative (for payments) and may have commas
+    # Format uses tabs or multiple spaces as separators
+    # Description can contain spaces, so we need to capture until we hit a long numeric string (reference number)
+    # The reference number (15+ digits) is the key separator
+    transaction_pattern = re.compile(
+        r'^(\d{1,2}/\d{1,2})\s+'          # Posting Date (after normalization, tabs become spaces)
+        r'(\d{1,2}/\d{1,2})\s+'           # Transaction Date  
+        r'(.+?)'                           # Description (non-greedy, captures until next pattern)
+        r'\s+(\d{15,})\s+'                # Reference Number (15+ digits, with whitespace around it)
+        r'([-]?\s*[\d,]+\.?\d{0,2})$'     # Amount (optional negative, whitespace, commas, decimals)
+    )
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Detect transaction sections
+        if "Transactions" in line or "Purchases and Other Charges" in line or "Payments and Other Credits" in line:
+            in_transactions_section = True
+            continue
+        
+        # Detect account sections
+        if "Account Number:" in line:
+            # Extract account number from line like "Account Number: 9624"
+            account_match = re.search(r'Account Number:\s*(\d+)', line)
+            if account_match:
+                current_account = account_match.group(1)
+            continue
+        
+        # Skip header lines
+        if any(header in line for header in ["Posting", "Transaction", "Date", "Description", "Reference", "Amount"]):
+            if "Date" in line and "Transaction" in line:
+                continue
+        
+        # Skip totals
+        if "TOTAL" in line.upper():
+            continue
+        
+        # Skip page numbers and other metadata
+        if re.match(r'^-- \d+ of \d+ --$', line) or "Page" in line:
+            continue
+        
+        # Skip "Arr:" date lines (arrival dates) - these appear before some transactions
+        if line.strip().startswith("Arr:"):
+            continue
+        
+        # Try to match transaction pattern
+        match = transaction_pattern.match(line)
+        if match:
+            posting_date, tx_date, description, ref_number, amount_str = match.groups()
+            
+            # Clean amount (remove spaces, commas, handle negative)
+            amount_clean = amount_str.replace(",", "").replace(" ", "").strip()
+            
+            # Handle negative amounts (payments)
+            is_negative = amount_clean.startswith("-")
+            if is_negative:
+                amount_clean = amount_clean[1:]
+            
+            try:
+                amount = float(amount_clean)
+                if is_negative:
+                    amount = -amount
+                
+                # Extract location from description if present
+                # Description format: "MERCHANT NAME CITY STATE" or "MERCHANT NAME STATE"
+                description_parts = description.split()
+                state = None
+                city = ""
+                merchant = description
+                
+                # Try to find state at the end
+                if len(description_parts) >= 2:
+                    # Check last token for state
+                    last_token = description_parts[-1].upper()
+                    if last_token in us_states:
+                        state = last_token
+                        # Check if second-to-last might be city
+                        if len(description_parts) >= 3:
+                            second_last = description_parts[-2].upper()
+                            # If second-to-last looks like a city (not all caps single word merchant)
+                            if not re.match(r'^[A-Z]+$', second_last) or len(second_last) <= 3:
+                                city = description_parts[-2]
+                                merchant = " ".join(description_parts[:-2])
+                            else:
+                                merchant = " ".join(description_parts[:-1])
+                        else:
+                            merchant = " ".join(description_parts[:-1])
+                
+                rows.append({
+                    "Date": posting_date,
+                    "Transaction Date": tx_date,
+                    "Description": description.strip(),
+                    "Merchant": merchant.strip(),
+                    "City": city,
+                    "State": state or "",
+                    "Reference Number": ref_number,
+                    "Account Number": current_account or "",
+                    "Amount": amount
+                })
+            except (ValueError, IndexError) as e:
+                continue
+    
+    if not rows:
+        raise ValueError(
+            "No transaction data found. Please verify:\n"
+            "1. The format matches Bank of America statement\n"
+            "2. The text includes transaction details\n"
+            "3. Each transaction line has: Date Date Description ReferenceNumber Amount"
+        )
+    
+    df = pd.DataFrame(rows)
+    return df
+
+def parse_bank_of_america_pdf(pdf_path: str) -> pd.DataFrame:
+    """
+    Parse Bank of America PDF statement file.
+    """
+    text = extract_text_from_pdf(pdf_path)
+    return parse_bank_of_america_text(text)
+
+# Bank parser registry for PDF files
+BANK_PARSERS_PDF = {
+    "Bank of America": parse_bank_of_america_pdf,
+    # Add more banks here as needed
+    # "Chase": parse_chase_pdf,
+    # "Wells Fargo": parse_wells_fargo_pdf,
+}
+
+# Bank parser registry for pasted text
+BANK_PARSERS_TEXT = {
+    "Bank of America": parse_bank_of_america_text,
+    # Add more banks here as needed
+    # "Chase": parse_chase_text,
+    # "Wells Fargo": parse_wells_fargo_text,
+}
+
+# Combined registry for UI (shows same banks for both PDF and text)
+BANK_PARSERS = BANK_PARSERS_PDF  # Use for UI selection
+
+def load_table(path: str = None, bank_parser: str = None, pasted_text: str = None) -> pd.DataFrame:
+    """
+    Load transactions from file or pasted text.
+    If pasted_text is provided, path is ignored.
+    """
+    if pasted_text:
+        if not bank_parser or bank_parser not in BANK_PARSERS_TEXT:
+            raise ValueError(f"Bank parser required for pasted text. Available: {', '.join(BANK_PARSERS_TEXT.keys())}")
+        return BANK_PARSERS_TEXT[bank_parser](pasted_text)
+    
+    if not path:
+        raise ValueError("Either path or pasted_text must be provided")
+    
     ext = os.path.splitext(path)[1].lower()
-    if ext in [".csv", ".txt"]:
+    
+    if ext == ".pdf":
+        if not bank_parser or bank_parser not in BANK_PARSERS_PDF:
+            raise ValueError(f"Bank parser required for PDF files. Available: {', '.join(BANK_PARSERS_PDF.keys())}")
+        return BANK_PARSERS_PDF[bank_parser](path)
+    elif ext in [".csv", ".txt"]:
         try:
             return pd.read_csv(path)
         except UnicodeDecodeError:
@@ -318,6 +523,8 @@ class App:
         self.company_list = load_company_list()
         self.current_company = None
         self.account_map = {}
+        self.selected_bank = None  # For PDF parsing
+        self.pasted_text = None  # For pasted transactions
 
 
         self.tx_label_var = StringVar(value="No transactions file selected")
@@ -328,8 +535,9 @@ class App:
         self.rules_file_hint = StringVar(value="Rules file: (select company)")
 
         # --- Build the main UI FIRST ---
-        Button(root, text="Select Transactions (Excel/CSV)", command=self.pick_transactions).grid(row=0, column=0, padx=10, pady=(12,6), sticky="w")
-        Label(root, textvariable=self.tx_label_var, wraplength=540, fg="#333").grid(row=1, column=0, padx=12, pady=(0,8), sticky="w")
+        Button(root, text="Select Transactions (Excel/CSV/PDF)", command=self.pick_transactions).grid(row=0, column=0, padx=10, pady=(12,6), sticky="w")
+        Button(root, text="Paste Transactions", command=self.paste_transactions).grid(row=0, column=1, padx=10, pady=(12,6), sticky="w")
+        Label(root, textvariable=self.tx_label_var, wraplength=540, fg="#333").grid(row=1, column=0, columnspan=2, padx=12, pady=(0,8), sticky="w")
 
         Button(root, text="Select Vendor List", command=self.pick_vendor).grid(row=2, column=0, padx=10, pady=(6,6), sticky="w")
         Label(root, textvariable=self.vendor_label_var, wraplength=540, fg="#333").grid(row=3, column=0, padx=12, pady=(0,8), sticky="w")
@@ -514,12 +722,156 @@ class App:
     # ===== File pickers =====
     def pick_transactions(self):
         path = filedialog.askopenfilename(
-            title="Select Transactions file (Excel or CSV)",
-            filetypes=[("Excel/CSV", "*.xlsx *.xls *.csv *.txt"), ("All files", "*.*")]
+            title="Select Transactions file (Excel, CSV, or PDF)",
+            filetypes=[
+                ("All Supported", "*.xlsx *.xls *.csv *.txt *.pdf"),
+                ("Excel/CSV", "*.xlsx *.xls *.csv *.txt"),
+                ("PDF", "*.pdf"),
+                ("All files", "*.*")
+            ]
         )
         if path:
-            self.tx_path = path
-            self.tx_label_var.set(path)
+            ext = os.path.splitext(path)[1].lower()
+            if ext == ".pdf":
+                # Show bank selection dialog for PDF
+                bank = self.select_bank_dialog()
+                if not bank:
+                    return  # User cancelled
+                self.selected_bank = bank
+                self.tx_path = path
+                self.pasted_text = None  # Clear pasted text when selecting file
+                self.tx_label_var.set(f"{path} [{bank}]")
+            else:
+                self.selected_bank = None
+                self.tx_path = path
+                self.pasted_text = None  # Clear pasted text when selecting file
+                self.tx_label_var.set(path)
+            self.maybe_enable_run()
+    
+    def select_bank_dialog(self):
+        """Show dialog to select bank for PDF parsing."""
+        dlg = Toplevel(self.root)
+        dlg.title("Select Bank")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
+        dlg.attributes("-topmost", True)
+        dlg.after(100, lambda: dlg.attributes("-topmost", False))
+        
+        selected = StringVar(value=list(BANK_PARSERS.keys())[0] if BANK_PARSERS else "")
+        
+        Label(dlg, text="Select bank format for PDF parsing:", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, columnspan=2, padx=15, pady=(15, 10), sticky="w"
+        )
+        
+        row = 1
+        for bank_name in BANK_PARSERS.keys():
+            Radiobutton(
+                dlg, text=bank_name, variable=selected, value=bank_name
+            ).grid(row=row, column=0, padx=20, pady=5, sticky="w")
+            row += 1
+        
+        result = [None]
+        
+        def confirm():
+            result[0] = selected.get()
+            dlg.destroy()
+        
+        def cancel():
+            result[0] = None
+            dlg.destroy()
+        
+        Button(dlg, text="OK", command=confirm, width=10).grid(
+            row=row, column=0, padx=10, pady=(15, 15), sticky="w"
+        )
+        Button(dlg, text="Cancel", command=cancel, width=10).grid(
+            row=row, column=1, padx=10, pady=(15, 15), sticky="w"
+        )
+        
+        dlg.wait_window(dlg)
+        return result[0]
+    
+    def paste_transactions(self):
+        """Show dialog to paste transaction text."""
+        dlg = Toplevel(self.root)
+        dlg.title("Paste Transactions")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
+        dlg.geometry("800x500")
+        dlg.attributes("-topmost", True)
+        dlg.after(100, lambda: dlg.attributes("-topmost", False))
+        
+        # Bank selection
+        Label(dlg, text="Select bank format:", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, padx=15, pady=(15, 5), sticky="w"
+        )
+        
+        selected_bank = StringVar(value=list(BANK_PARSERS.keys())[0] if BANK_PARSERS else "")
+        bank_row = 1
+        for bank_name in BANK_PARSERS.keys():
+            Radiobutton(
+                dlg, text=bank_name, variable=selected_bank, value=bank_name
+            ).grid(row=bank_row, column=0, padx=30, pady=2, sticky="w")
+            bank_row += 1
+        
+        # Text area for pasting
+        Label(dlg, text="Paste transaction text below:", font=("Arial", 10, "bold")).grid(
+            row=bank_row, column=0, padx=15, pady=(15, 5), sticky="w"
+        )
+        
+        # Text widget with scrollbar
+        text_area = Text(dlg, width=90, height=20, wrap="none", font=("Consolas", 9))
+        scrollbar_v = Scrollbar(dlg, orient="vertical", command=text_area.yview)
+        scrollbar_h = Scrollbar(dlg, orient="horizontal", command=text_area.xview)
+        text_area.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
+        
+        text_area.grid(row=bank_row + 1, column=0, padx=15, pady=(5, 5), sticky="nsew")
+        scrollbar_v.grid(row=bank_row + 1, column=1, sticky="ns")
+        scrollbar_h.grid(row=bank_row + 2, column=0, sticky="ew")
+        
+        dlg.grid_rowconfigure(bank_row + 1, weight=1)
+        dlg.grid_columnconfigure(0, weight=1)
+        
+        result = [None, None]
+        
+        def confirm():
+            bank = selected_bank.get()
+            text = text_area.get("1.0", END).strip()
+            if not text:
+                messagebox.showwarning("Empty Text", "Please paste transaction text.")
+                return
+            if not bank:
+                messagebox.showwarning("No Bank", "Please select a bank format.")
+                return
+            result[0] = bank
+            result[1] = text
+            dlg.destroy()
+        
+        def cancel():
+            result[0] = None
+            result[1] = None
+            dlg.destroy()
+        
+        Button(dlg, text="OK", command=confirm, width=12).grid(
+            row=bank_row + 3, column=0, padx=15, pady=(10, 15), sticky="w"
+        )
+        Button(dlg, text="Cancel", command=cancel, width=12).grid(
+            row=bank_row + 3, column=0, padx=15, pady=(10, 15), sticky="e"
+        )
+        
+        text_area.focus_set()
+        dlg.wait_window(dlg)
+        
+        bank, text = result[0], result[1]
+        if bank and text:
+            self.selected_bank = bank
+            self.pasted_text = text
+            self.tx_path = None  # Clear file path when using pasted text
+            line_count = len([l for l in text.split("\n") if l.strip()])
+            self.tx_label_var.set(f"Pasted transactions [{bank}] ({line_count} lines)")
             self.maybe_enable_run()
 
     def pick_vendor(self):
@@ -563,7 +915,8 @@ class App:
     def maybe_enable_run(self):
         if not hasattr(self, "run_btn"):
             return
-        if self.tx_path and self.vendor_path and self.current_company:
+        has_transactions = (self.tx_path is not None) or (self.pasted_text is not None)
+        if has_transactions and self.vendor_path and self.current_company:
             self.run_btn.config(state=NORMAL)
         else:
             self.run_btn.config(state=DISABLED)
@@ -860,11 +1213,30 @@ class App:
             self.status_var.set("Loading files...")
             self.root.update_idletasks()
 
-            if not (self.tx_path and self.vendor_path and self.current_company):
-                messagebox.showerror("Missing", "Select company, transactions file, and vendor list.")
+            has_transactions = (self.tx_path is not None) or (self.pasted_text is not None)
+            if not (has_transactions and self.vendor_path and self.current_company):
+                messagebox.showerror("Missing", "Select company, transactions (file or paste), and vendor list.")
                 return
 
-            tx_df = load_table(self.tx_path)
+            # Load transactions (PDF or pasted text requires bank parser)
+            if self.pasted_text:
+                if not self.selected_bank:
+                    messagebox.showerror("Missing Bank", "Please select a bank format for pasted text.")
+                    return
+                tx_df = load_table(pasted_text=self.pasted_text, bank_parser=self.selected_bank)
+            elif self.tx_path:
+                ext = os.path.splitext(self.tx_path)[1].lower()
+                if ext == ".pdf":
+                    if not self.selected_bank:
+                        messagebox.showerror("Missing Bank", "Please select a bank format for PDF parsing.")
+                        return
+                    tx_df = load_table(self.tx_path, bank_parser=self.selected_bank)
+                else:
+                    tx_df = load_table(self.tx_path)
+            else:
+                messagebox.showerror("Missing", "No transactions selected. Please select a file or paste text.")
+                return
+            
             vendors_df = load_table(self.vendor_path)
 
             desc_col = detect_description_column(tx_df)

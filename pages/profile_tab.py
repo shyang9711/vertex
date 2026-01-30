@@ -397,12 +397,12 @@ def init_profile_tab(
 
     ttk.Checkbutton(toolbar, text="Show all past", variable=_show_all_past_var,
                     command=_flip_show_all_past).pack(side="left")
-    ttk.Button(toolbar, text="Add Task", command=lambda: _open_add_task_dialog()).pack(side="left", padx=(8,0))
+    ttk.Button(toolbar, text="Add", command=lambda: _open_add_task_dialog()).pack(side="left", padx=(8,0))
     ttk.Button(toolbar, text="Edit",   command=lambda: _edit_client_task()).pack(side="left", padx=(6,0))
     ttk.Button(toolbar, text="Delete", command=lambda: _delete_client_task()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Stop Recurrence", command=lambda: _stop_client_recurring()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Pause Recurrence",  command=lambda: _pause_client_recurring()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Resume Recurrence", command=lambda: _resume_client_recurring()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="Stop", command=lambda: _stop_client_recurring()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="Pause",  command=lambda: _pause_client_recurring()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="Resume", command=lambda: _resume_client_recurring()).pack(side="left", padx=(6,0))
 
     cols = ("mark","title","kind","due")
     client_tasks_tv = ttk.Treeview(right, columns=cols, show="headings", height=10, selectmode="browse", style="Profile.Treeview")

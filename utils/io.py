@@ -323,6 +323,140 @@ def migrate_tasks_client_to_client(tasks_path: Path, remove_old_keys: bool = Tru
     return {"updated": updated, "skipped": skipped}
 
 
+def migrate_tasks_client_id_to_ein_ssn(tasks_path: Path, clients: List[Dict[str, Any]]) -> dict:
+    """
+    Migrate tasks: update client_id to match the EIN or SSN of the entity it belongs to.
+    
+    For each task, finds the entity by:
+    1. client_idx (if available)
+    2. client_name (if available) 
+    3. existing client_id (if available)
+    
+    Then updates the task's client_id to the entity's EIN (preferred) or SSN.
+    """
+    tasks = _read_json_file(tasks_path, default=[])
+    if not isinstance(tasks, list):
+        return {"updated": 0, "skipped": 0, "error": "tasks.json is not a list"}
+    
+    if not isinstance(clients, list):
+        return {"updated": 0, "skipped": 0, "error": "clients is not a list"}
+
+    updated = 0
+    skipped = 0
+    not_found = 0
+    
+    # Build lookup maps for efficient matching
+    clients_by_idx = {i: c for i, c in enumerate(clients) if isinstance(c, dict)}
+    clients_by_name = {}
+    clients_by_id = {}
+    clients_by_ein = {}
+    clients_by_ssn = {}
+    
+    for i, c in enumerate(clients):
+        if not isinstance(c, dict):
+            continue
+        
+        # Index map (already done above, but for clarity)
+        clients_by_idx[i] = c
+        
+        # Name map (case-insensitive)
+        name = (c.get("name") or "").strip()
+        if name:
+            clients_by_name[name.casefold()] = c
+        
+        # ID map
+        cid = str(c.get("id", "") or "").strip()
+        if cid:
+            clients_by_id[cid] = c
+        
+        # EIN map (normalized)
+        ein = normalize_ein_digits(c.get("ein", "") or "")
+        if ein:
+            clients_by_ein[ein] = c
+        
+        # SSN map (normalized)
+        ssn = normalize_ssn_digits(c.get("ssn", "") or "")
+        if ssn:
+            clients_by_ssn[ssn] = c
+
+    for t in tasks:
+        if not isinstance(t, dict):
+            skipped += 1
+            continue
+        
+        # Find the entity this task belongs to
+        entity = None
+        
+        # 1) Try by client_idx
+        t_idx = t.get("client_idx")
+        if isinstance(t_idx, int) and t_idx in clients_by_idx:
+            entity = clients_by_idx[t_idx]
+        
+        # 2) Try by client_name
+        if entity is None:
+            t_name = (t.get("client_name") or "").strip()
+            if t_name:
+                entity = clients_by_name.get(t_name.casefold())
+        
+        # 3) Try by existing client_id
+        if entity is None:
+            t_cid = str(t.get("client_id", "") or "").strip()
+            if t_cid:
+                # Try direct match
+                entity = clients_by_id.get(t_cid)
+                # Try EIN match
+                if entity is None:
+                    ein_normalized = normalize_ein_digits(t_cid)
+                    if ein_normalized:
+                        entity = clients_by_ein.get(ein_normalized)
+                # Try SSN match
+                if entity is None:
+                    ssn_normalized = normalize_ssn_digits(t_cid)
+                    if ssn_normalized:
+                        entity = clients_by_ssn.get(ssn_normalized)
+        
+        if entity is None:
+            not_found += 1
+            skipped += 1
+            continue
+        
+        # Get EIN or SSN from entity (prefer EIN)
+        ein = normalize_ein_digits(entity.get("ein", "") or "")
+        ssn = normalize_ssn_digits(entity.get("ssn", "") or "")
+        
+        # Determine new client_id value
+        new_client_id = None
+        if ein:
+            new_client_id = ein
+        elif ssn:
+            new_client_id = ssn
+        
+        if not new_client_id:
+            # Entity has no EIN or SSN, skip
+            skipped += 1
+            continue
+        
+        # Update client_id if it's different (normalize current for comparison)
+        current_client_id = str(t.get("client_id", "") or "").strip()
+        current_normalized = normalize_ein_digits(current_client_id) or normalize_ssn_digits(current_client_id)
+        
+        # Update if different or if current is not normalized
+        if current_normalized != new_client_id or current_client_id != new_client_id:
+            t["client_id"] = new_client_id
+            updated += 1
+        else:
+            skipped += 1
+
+    if updated > 0:
+        _write_json_file(tasks_path, tasks)
+
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "not_found": not_found
+    }
+
+
 def migrate_officers_to_relations(clients: List[Dict[str, Any]], remove_old_key: bool = True) -> dict:
     """
     Migrate per-client 'officers' -> 'relations', then optionally remove 'officers'.

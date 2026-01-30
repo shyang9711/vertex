@@ -64,7 +64,7 @@ try:
     from vertex.utils.io import (
         load_clients, save_clients,
         export_all_to_json, export_selected_to_json, import_all_from_json,
-        migrate_tasks_client_to_client, migrate_officers_to_relations,
+        migrate_tasks_client_to_client, migrate_tasks_client_id_to_ein_ssn, migrate_officers_to_relations,
         DATA_FILE, ACCOUNT_MANAGERS_FILE, TASKS_FILE, MONTHLY_STATE_FILE,
         MATCH_RULES_DIR, VENDOR_LISTS_DIR, CLIENTS_DIR, DATA_ROOT, MIGRATIONS_FILE,
     )
@@ -111,7 +111,7 @@ except ModuleNotFoundError:
     from utils.io import (
         load_clients, save_clients,
         export_all_to_json, export_selected_to_json, import_all_from_json,
-        migrate_tasks_client_to_client, migrate_officers_to_relations,
+        migrate_tasks_client_to_client, migrate_tasks_client_id_to_ein_ssn, migrate_officers_to_relations,
         DATA_FILE, ACCOUNT_MANAGERS_FILE, TASKS_FILE, MONTHLY_STATE_FILE,
         MATCH_RULES_DIR, VENDOR_LISTS_DIR, CLIENTS_DIR, DATA_ROOT, MIGRATIONS_FILE,
     )
@@ -195,6 +195,7 @@ def enforce_single_instance(app_id: str = "Vertex") -> bool:
 # Data directory constants are now in utils/io.py
 # Migration keys
 MIG_TASKS_CLIENT_TO_CLIENT = "mig_tasks_client_to_client"
+MIG_TASKS_CLIENT_ID_TO_EIN_SSN = "mig_tasks_client_id_to_ein_ssn"
 MIG_OFFICERS_TO_RELATIONS = "mig_officers_to_relations"
 MIG_RELATION_LINK_IDS_TO_CANONICAL = "mig_relation_link_ids_to_canonical"
 
@@ -841,7 +842,15 @@ class App(ttk.Frame):
                 # still ensure clients are saved? usually no need
                 stats_off = {"clients_touched": 0, "officers_moved": 0, "officer_dupes_skipped": 0, "officers_keys_removed": 0}
 
-            # 3) normalize relation link ids to canonical (ein:/ssn:)
+            # 3) migrate tasks client_id to match entity EIN/SSN
+            stats_client_id = {"updated": 0, "skipped": 0, "not_found": 0}
+            if not is_migration_done(DATA_ROOT, MIG_TASKS_CLIENT_ID_TO_EIN_SSN):
+                stats_client_id = migrate_tasks_client_id_to_ein_ssn(TASKS_FILE, self.items)
+                mark_migration_done(DATA_ROOT, MIG_TASKS_CLIENT_ID_TO_EIN_SSN, stats_client_id)
+            else:
+                stats_client_id = {"updated": 0, "skipped": -1, "not_found": 0}  # skipped=-1 => already migrated
+
+            # 4) normalize relation link ids to canonical (ein:/ssn:)
             stats_links = {"relations_scanned": 0, "relations_updated": 0, "clients_touched": 0, "unresolved": 0}
             if not is_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL):
                 stats_links = self._normalize_relation_link_ids_to_canonical()
@@ -871,11 +880,18 @@ class App(ttk.Frame):
                 "Already migrated" if stats_tasks.get("skipped") == -1
                 else f"Updated: {stats_tasks.get('updated', 0)}\n  Skipped: {stats_tasks.get('skipped', 0)}"
             )
+            
+            client_id_status = (
+                "Already migrated" if stats_client_id.get("skipped") == -1
+                else f"Updated: {stats_client_id.get('updated', 0)}\n  Skipped: {stats_client_id.get('skipped', 0)}\n  Not found: {stats_client_id.get('not_found', 0)}"
+            )
 
             messagebox.showinfo(
                 "Update Data",
-                "tasks.json:\n"
+                "tasks.json (company_* -> client_*):\n"
                 f"  {tasks_status}\n\n"
+                "tasks.json (client_id -> EIN/SSN):\n"
+                f"  {client_id_status}\n\n"
                 "clients.json (officers → relations):\n"
                 f"  Clients touched: {stats_off.get('clients_touched', 0)}\n"
                 f"  Officers moved: {stats_off.get('officers_moved', 0)}\n"
