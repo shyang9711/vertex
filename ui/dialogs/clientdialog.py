@@ -885,13 +885,13 @@ class ClientDialog(tk.Toplevel):
             return None
         
         # Try multiple methods to find the client index:
-        # 1. Match by ID
-        init_id = str(self._initial.get("id") or "").strip()
+        # 1. Match by ID (check both "id" and "client_id" for compatibility)
+        init_id = str(self._initial.get("id") or self._initial.get("client_id") or "").strip()
         if init_id:
             for i, c in enumerate(self.master.items):
                 if not isinstance(c, dict):
                     continue
-                c_id = str(c.get("id") or "").strip()
+                c_id = str(c.get("id") or c.get("client_id") or "").strip()
                 if c_id == init_id:
                     print(f"[ClientDialog][SAVE] Found client idx={i} by ID match: '{init_id}'")
                     return i

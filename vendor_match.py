@@ -418,9 +418,30 @@ def parse_bank_of_america_text(text: str) -> pd.DataFrame:
 
 def parse_bank_of_america_pdf(pdf_path: str) -> pd.DataFrame:
     """
-    Parse Bank of America PDF statement file.
+    Parse Bank of America PDF (eStatement bank, credit card, or legacy single-line format).
+    Tries eStatement/CC format first; falls back to legacy parse_bank_of_america_text.
     """
     text = extract_text_from_pdf(pdf_path)
+    parse_bofa_text_to_rows = None
+    try:
+        from parse_bofa_debits import parse_bofa_text_to_rows
+    except ImportError:
+        try:
+            from vertex.parse_bofa_debits import parse_bofa_text_to_rows
+        except ImportError:
+            pass
+    if parse_bofa_text_to_rows is not None:
+        rows, _stype = parse_bofa_text_to_rows(text)
+        if rows:
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={"date": "Date", "description": "Description", "amount": "Amount"})
+            df["Transaction Date"] = df["Date"]
+            df["Merchant"] = df["Description"]
+            df["City"] = ""
+            df["State"] = ""
+            df["Reference Number"] = ""
+            df["Account Number"] = ""
+            return df
     return parse_bank_of_america_text(text)
 
 # Bank parser registry for PDF files
