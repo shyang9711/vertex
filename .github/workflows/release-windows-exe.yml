@@ -31,7 +31,6 @@ jobs:
         run: |
           dir
           dir logo.ico
-
       - name: Build EXE
         run: >
           pyinstaller --onefile --noconsole --icon=logo.ico
@@ -49,7 +48,6 @@ jobs:
           --add-data "features/file_name_change.py;features"
           --add-data "features/de9c_to_csv.py;features"
           --add-data "features/vendor_match/vendor_match.py;features/vendor_match"
-          --add-data "data/match_rules/company_list.json;data/match_rules"
           --add-data "features/vendor_match/bank_of_america/parse_bofa_debits.py;features/vendor_match/bank_of_america"
           --add-data "features/vendor_match/__init__.py;features/vendor_match"
           --add-data "features/vendor_match/bank_of_america/__init__.py;features/vendor_match/bank_of_america"
