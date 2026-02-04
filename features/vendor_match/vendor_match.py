@@ -35,6 +35,19 @@ def _script_dir():
     except NameError:
         return os.getcwd()
 
+# When running as frozen EXE, use the folder containing the executable for data/
+# (same as utils.io portable_root/data), so company_list, match_rules, vendor_lists
+# are read/written next to the exe, not inside the bundle.
+def _app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    _vm_dir = _script_dir()
+    _features_dir = os.path.dirname(_vm_dir)
+    _project_root = os.path.dirname(_features_dir)
+    return _project_root if os.path.isdir(_project_root) else _vm_dir
+
+APP_DIR = _app_dir()
+
 def _rules_dir() -> str:
     p = os.path.join(APP_DIR, "data", "match_rules")
     os.makedirs(p, exist_ok=True)  # ensure folder exists
@@ -43,12 +56,8 @@ def _rules_dir() -> str:
 def _vendor_lists_dir() -> str:
     return os.path.join(APP_DIR, "data", "vendor_lists")
 
-# When running from features/vendor_match/vendor_match.py, use project root for data/ (match_rules, vendor_lists)
-_vm_dir = _script_dir()
-_features_dir = os.path.dirname(_vm_dir)
-_project_root = os.path.dirname(_features_dir)
-APP_DIR = _project_root if os.path.isdir(_project_root) else _vm_dir
 # So bank_of_america subpackage is importable when run as script
+_vm_dir = _script_dir()
 if _vm_dir not in sys.path:
     sys.path.insert(0, _vm_dir)
 COMPANY_LIST_FILENAME = "company_list.json"
