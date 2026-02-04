@@ -4,7 +4,7 @@ import json
 import difflib
 import pandas as pd
 from tkinter import (
-    Tk, Button, Label, filedialog, messagebox, StringVar,
+    Tk, Button, Label, Frame, filedialog, messagebox, StringVar,
     DISABLED, NORMAL, Toplevel, Entry, Listbox, SINGLE, END, Radiobutton, Text, Scrollbar
 )
 import sys
@@ -43,9 +43,16 @@ def _rules_dir() -> str:
 def _vendor_lists_dir() -> str:
     return os.path.join(APP_DIR, "data", "vendor_lists")
 
-APP_DIR = _script_dir()
+# When running from features/vendor_match/vendor_match.py, use project root for data/ (match_rules, vendor_lists)
+_vm_dir = _script_dir()
+_features_dir = os.path.dirname(_vm_dir)
+_project_root = os.path.dirname(_features_dir)
+APP_DIR = _project_root if os.path.isdir(_project_root) else _vm_dir
+# So bank_of_america subpackage is importable when run as script
+if _vm_dir not in sys.path:
+    sys.path.insert(0, _vm_dir)
 COMPANY_LIST_FILENAME = "company_list.json"
-COMPANY_LIST_PATH = os.path.join(APP_DIR, COMPANY_LIST_FILENAME)
+COMPANY_LIST_PATH = os.path.join(_rules_dir(), COMPANY_LIST_FILENAME)
 
 def slugify(name: str) -> str:
     s = re.sub(r"\s+", "_", name.strip())
@@ -424,10 +431,10 @@ def parse_bank_of_america_pdf(pdf_path: str) -> pd.DataFrame:
     text = extract_text_from_pdf(pdf_path)
     parse_bofa_text_to_rows = None
     try:
-        from parse_bofa_debits import parse_bofa_text_to_rows
+        from bank_of_america.parse_bofa_debits import parse_bofa_text_to_rows
     except ImportError:
         try:
-            from vertex.parse_bofa_debits import parse_bofa_text_to_rows
+            from vertex.features.vendor_match.bank_of_america.parse_bofa_debits import parse_bofa_text_to_rows
         except ImportError:
             pass
     if parse_bofa_text_to_rows is not None:
@@ -555,26 +562,41 @@ class App:
         self.company_label_var = StringVar(value="Company: (none)")
         self.rules_file_hint = StringVar(value="Rules file: (select company)")
 
-        # --- Build the main UI FIRST ---
+        # --- Build the main UI FIRST (fixed-width text area so buttons stay in place) ---
+        TEXT_WIDTH = 560  # fixed width for path/state labels so long paths don't push buttons
+        def _text_frame(parent, row, col, colspan=1, **grid_opts):
+            f = Frame(parent, width=TEXT_WIDTH)
+            f.grid(row=row, column=col, columnspan=colspan, sticky="w", **grid_opts)
+            f.grid_propagate(False)
+            return f
+        def _label_in_frame(frame, textvariable, wraplength=None, fg="#333"):
+            w = wraplength or (TEXT_WIDTH - 20)
+            lb = Label(frame, textvariable=textvariable, wraplength=w, fg=fg, anchor="w", justify="left")
+            lb.pack(fill="both", expand=True, anchor="w")
+            return lb
+
         Button(root, text="Select Transactions (Excel/CSV/PDF)", command=self.pick_transactions).grid(row=0, column=0, padx=10, pady=(12,6), sticky="w")
         Button(root, text="Paste Transactions", command=self.paste_transactions).grid(row=0, column=1, padx=10, pady=(12,6), sticky="w")
-        Label(root, textvariable=self.tx_label_var, wraplength=540, fg="#333").grid(row=1, column=0, columnspan=2, padx=12, pady=(0,8), sticky="w")
+        _label_in_frame(_text_frame(root, 1, 0, 2, padx=12, pady=(0,8)), self.tx_label_var, fg="#333")
 
         Button(root, text="Select Vendor List", command=self.pick_vendor).grid(row=2, column=0, padx=10, pady=(6,6), sticky="w")
-        Label(root, textvariable=self.vendor_label_var, wraplength=540, fg="#333").grid(row=3, column=0, padx=12, pady=(0,8), sticky="w")
+        _label_in_frame(_text_frame(root, 3, 0, 1, padx=12, pady=(0,8)), self.vendor_label_var, fg="#333")
 
         Button(root, text="Company…", command=self.select_company_dialog).grid(row=4, column=0, padx=10, pady=(6,0), sticky="w")
-        Label(root, textvariable=self.company_label_var, wraplength=540, fg="#333").grid(row=5, column=0, padx=12, pady=(2,2), sticky="w")
-        Label(root, textvariable=self.rules_file_hint, wraplength=540, fg="#888").grid(row=6, column=0, padx=12, pady=(0,8), sticky="w")
+        _label_in_frame(_text_frame(root, 5, 0, 1, padx=12, pady=(2,2)), self.company_label_var, fg="#333")
+        _label_in_frame(_text_frame(root, 6, 0, 1, padx=12, pady=(0,8)), self.rules_file_hint, fg="#888")
 
         Button(root, text="Manage Rules…", command=self.manage_rules_dialog).grid(row=7, column=0, padx=10, pady=(2,0), sticky="w")
-        Label(root, textvariable=self.rules_label_var, wraplength=540, fg="#555").grid(row=8, column=0, padx=12, pady=(2,10), sticky="w")
         Button(root, text="Manage Accounts…", command=self.manage_accounts_dialog).grid(row=7, column=1, padx=10, pady=(2,0), sticky="w")
+        _label_in_frame(_text_frame(root, 8, 0, 1, padx=12, pady=(2,10)), self.rules_label_var, fg="#555")
 
         self.run_btn = Button(root, text="Run and Save", command=self.run_and_save, state=DISABLED)
         self.run_btn.grid(row=9, column=0, padx=10, pady=(6,12), sticky="w")
 
-        Label(root, textvariable=self.status_var, fg="#006400").grid(row=10, column=0, padx=12, pady=(0,12), sticky="w")
+        _label_in_frame(_text_frame(root, 10, 0, 1, padx=12, pady=(0,12)), self.status_var, fg="#006400")
+
+        root.columnconfigure(0, weight=0)
+        root.columnconfigure(1, weight=0)
 
         self.maybe_enable_run()
 

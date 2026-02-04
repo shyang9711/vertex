@@ -43,8 +43,14 @@ class ActionRunnerPage:
     - Tool names come from scripts.json (sibling to client_manager.py)
     - Streams child stdout/stderr live into console
     """
-    # canonical filenames for the three integrated tools
-    TARGET_SCRIPTS = ("pos_parse.py", "validate_tax_payments.py", "vendor_match.py", "de9c_to_csv.py", "file_name_change.py")
+    # canonical paths for integrated tools (under features/ or features/vendor_match/)
+    TARGET_SCRIPTS = (
+        "features/pos_parse.py",
+        "features/validate_tax_payments.py",
+        "features/vendor_match/vendor_match.py",
+        "features/de9c_to_csv.py",
+        "features/file_name_change.py",
+    )
 
     def __init__(self, app):
         self.app = app

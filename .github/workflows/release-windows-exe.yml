@@ -44,11 +44,15 @@ jobs:
           --collect-all=pymupdf
           --add-data "logo.ico;."
           --add-data "scripts.json;."
-          --add-data "pos_parse.py;."
-          --add-data "validate_tax_payments.py;."
-          --add-data "file_name_change.py;."
-          --add-data "vendor_match.py;."
-          --add-data "de9c_to_csv.py;."
+          --add-data "features/pos_parse.py;features"
+          --add-data "features/validate_tax_payments.py;features"
+          --add-data "features/file_name_change.py;features"
+          --add-data "features/de9c_to_csv.py;features"
+          --add-data "features/vendor_match/vendor_match.py;features/vendor_match"
+          --add-data "data/match_rules/company_list.json;data/match_rules"
+          --add-data "features/vendor_match/bank_of_america/parse_bofa_debits.py;features/vendor_match/bank_of_america"
+          --add-data "features/vendor_match/__init__.py;features/vendor_match"
+          --add-data "features/vendor_match/bank_of_america/__init__.py;features/vendor_match/bank_of_america"
           --name vertex
           client_manager.py
           

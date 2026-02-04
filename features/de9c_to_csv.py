@@ -35,7 +35,7 @@ FORBIDDEN_NAME_PHRASES = [
     "address", "po box", "zip", "california", "inc", "llc", "corp", "company", "co.", "ltd",
 ]
 
-# column/header variants we’ve actually seen in your PDFs
+# column/header variants we've actually seen in your PDFs
 COLHEAD_KEYWORDS = [
     "d. social security number",
     "social security number",
@@ -499,7 +499,7 @@ def _filter_out_header_rows(rows):
             ssn_digits = DEFAULT_SSN
         r["SSN"] = ssn_digits
 
-        # Require BOTH first+last name (prevents B./A. header fragments becoming “people”)
+        # Require BOTH first+last name (prevents B./A. header fragments becoming "people")
         first_name = (r.get("First Name") or "").strip()
         last_name = (r.get("Last Name") or "").strip()
         has_name = bool(first_name and last_name)
