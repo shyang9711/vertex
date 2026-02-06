@@ -433,7 +433,7 @@ def parse_bank_of_america_text(text: str) -> pd.DataFrame:
     return df
 
 def _bofa_rows_to_dataframe(rows: list) -> pd.DataFrame:
-    """Convert BoA parser output (date, description, amount) to vendor_match DataFrame columns."""
+    """Convert BoA/Citi parser output (date, description, amount, optional reference_number) to vendor_match DataFrame columns."""
     if not rows:
         return pd.DataFrame(columns=["Date", "Transaction Date", "Description", "Merchant", "City", "State", "Reference Number", "Account Number", "Amount"])
     df = pd.DataFrame(rows)
@@ -442,7 +442,11 @@ def _bofa_rows_to_dataframe(rows: list) -> pd.DataFrame:
     df["Merchant"] = df["Description"]
     df["City"] = ""
     df["State"] = ""
-    df["Reference Number"] = ""
+    if "reference_number" in df.columns:
+        df["Reference Number"] = df["reference_number"].fillna("").astype(str)
+        df.drop(columns=["reference_number"], inplace=True)
+    else:
+        df["Reference Number"] = ""
     df["Account Number"] = ""
     return df
 

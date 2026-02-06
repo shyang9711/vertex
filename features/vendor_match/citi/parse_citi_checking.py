@@ -54,6 +54,17 @@ RE_BEGINNING_BALANCE = re.compile(
     re.I
 )
 
+# Check number in description (e.g. "CHECK NO: 1034" or "CHECK NO. 1034")
+RE_CHECK_NO = re.compile(r"CHECK\s+NO\.?\s*:?\s*(\d+)", re.I)
+
+
+def _extract_check_number(description: str) -> str:
+    """Extract check number from description (e.g. 'CHECK NO: 1034'). Returns empty string if not found."""
+    if not description:
+        return ""
+    m = RE_CHECK_NO.search(description)
+    return m.group(1) if m else ""
+
 
 def _parse_balance_value(s: str) -> float | None:
     """Parse balance string (e.g. '3,361.81' or '4,554.48-') to float."""
@@ -346,6 +357,9 @@ def parse_citi_checking_text(text: str) -> list[dict]:
     year = _extract_statement_year(text)
     for row in rows:
         row["date"] = _normalize_date_to_mm_dd_yyyy(row.get("date") or "", year, period)
+        check_no = _extract_check_number(row.get("description") or "")
+        if check_no:
+            row["reference_number"] = check_no
     return rows
 
 
