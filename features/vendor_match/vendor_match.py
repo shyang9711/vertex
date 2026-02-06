@@ -583,48 +583,25 @@ def _get_citi_parser():
     return parse_citi_checking_text
 
 
-def parse_citi_pdf(pdf_path: str) -> pd.DataFrame:
-    """Parse Citi (Citibank) checking/business statement PDF."""
+def parse_citi_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse Citi (Citibank) checking/business statement PDF. transaction_filter: debits, credits, or both."""
     text = extract_text_from_pdf(pdf_path)
     parser = _get_citi_parser()
     if parser is None:
         raise ValueError("Citi parser not available.")
     rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
     return _bofa_rows_to_dataframe(rows)
 
 
-def parse_citi_text(text: str) -> pd.DataFrame:
-    """Parse Citi (Citibank) checking/business statement pasted text."""
+def parse_citi_text(text: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse Citi (Citibank) checking/business statement pasted text. transaction_filter: debits, credits, or both."""
     parser = _get_citi_parser()
     if parser is None:
         raise ValueError("Citi parser not available.")
-    rows = parser(text)
-    return _bofa_rows_to_dataframe(rows)
-
-
-def _get_debit_credit_parser():
-    """Parser for statements where Debits and Credits are separate columns (both positive); distinguish by description."""
-    try:
-        from parse_debit_credit_columns import parse_debit_credit_columns_text
-    except ImportError:
-        try:
-            from vertex.features.vendor_match.parse_debit_credit_columns import parse_debit_credit_columns_text
-        except ImportError:
-            return None
-    return parse_debit_credit_columns_text
-
-
-def parse_debit_credit_columns_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
-    """Parse PDF where Debits/Credits are in separate columns; both amounts positive; distinguish by ELECTRONIC CREDIT vs DEBIT CARD PURCH etc."""
-    text = extract_text_from_pdf(pdf_path)
-    return parse_debit_credit_columns_text(text, transaction_filter)
-
-
-def parse_debit_credit_columns_text(text: str, transaction_filter: str = "both") -> pd.DataFrame:
-    """Parse pasted text: Debits & Credits in separate columns (both positive). Sign set by description (CREDIT vs DEBIT)."""
-    parser = _get_debit_credit_parser()
-    if parser is None:
-        raise ValueError("Debit/Credit columns parser not available.")
     rows = parser(text)
     if transaction_filter == "credits":
         rows = [r for r in rows if r.get("amount", 0) > 0]
@@ -638,7 +615,6 @@ BANK_PARSERS_PDF = {
     "Bank of America (Bank)": parse_bank_of_america_bank_pdf,
     "Bank of America (Credit Card)": parse_bank_of_america_cc_pdf,
     "Citi": parse_citi_pdf,
-    "Generic (Debits & Credits columns)": parse_debit_credit_columns_pdf,
 }
 
 # Bank parser registry for pasted text
@@ -646,7 +622,6 @@ BANK_PARSERS_TEXT = {
     "Bank of America (Bank)": parse_bank_of_america_bank_text,
     "Bank of America (Credit Card)": parse_bank_of_america_cc_text,
     "Citi": parse_citi_text,
-    "Generic (Debits & Credits columns)": parse_debit_credit_columns_text,
 }
 
 # Combined registry for UI (shows same banks for both PDF and text)
@@ -659,8 +634,7 @@ def load_table(path: str = None, bank_parser: str = None, pasted_text: str = Non
     transaction_filter: "debits", "credits", or "both" (used for Bank of America parsers only).
     """
     boa_parsers = ("Bank of America (Bank)", "Bank of America (Credit Card)")
-    generic_debit_credit = "Generic (Debits & Credits columns)"
-    parsers_with_filter = boa_parsers + (generic_debit_credit,)
+    parsers_with_filter = ("Bank of America (Bank)", "Bank of America (Credit Card)", "Citi")
     if pasted_text:
         if not bank_parser or bank_parser not in BANK_PARSERS_TEXT:
             raise ValueError(f"Bank parser required for pasted text. Available: {', '.join(BANK_PARSERS_TEXT.keys())}")

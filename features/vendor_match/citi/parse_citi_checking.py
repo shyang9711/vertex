@@ -42,17 +42,75 @@ CITI_AMOUNT_LINE = re.compile(r"^([\d,]+\.\d{2}-?)\s*$")
 RE_THROUGH_FULL = re.compile(r"through\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
 RE_AS_OF_FULL = re.compile(r"(?:account\s+)?as\s+of\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
 RE_ANY_MM_DD_YYYY = re.compile(r"\d{1,2}/\d{1,2}/(\d{4})")
+RE_MONTH_YEAR = re.compile(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(\d{4})", re.I)
+
+# Beginning/opening balance — use with balance column to determine debit vs credit
+RE_BEGINNING_BALANCE = re.compile(
+    r"(?:Beginning|Opening|Previous|Prior)\s+Balance\s*[:\$]?\s*([\d,]+\.\d{2})",
+    re.I
+)
+
+
+def _parse_balance_value(s: str) -> float | None:
+    """Parse balance string (e.g. '3,361.81' or '4,554.48-') to float."""
+    if not s:
+        return None
+    s = s.replace(",", "").strip().rstrip("-")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _extract_beginning_balance(text: str) -> float | None:
+    """Extract beginning/opening balance from statement text."""
+    for m in RE_BEGINNING_BALANCE.finditer(text):
+        v = _parse_balance_value(m.group(1))
+        if v is not None:
+            return v
+    return None
+
+
+def _apply_balance_to_sign(rows: list[dict], beginning_balance: float | None) -> None:
+    """
+    Set amount sign from balance progression: balance increased -> credit (positive),
+    balance decreased -> debit (negative). Uses beginning balance for first row, then running balance.
+    """
+    prev_balance = beginning_balance
+    for row in rows:
+        bal = row.get("balance")
+        if bal is None:
+            if prev_balance is not None and row.get("amount") is not None:
+                row["amount"] = -abs(float(row["amount"]))
+            continue
+        try:
+            curr_balance = float(bal) if isinstance(bal, (int, float)) else _parse_balance_value(str(bal))
+        except (TypeError, ValueError):
+            curr_balance = None
+        if curr_balance is not None and prev_balance is not None:
+            raw_amt = abs(float(row.get("amount", 0) or 0))
+            if curr_balance > prev_balance:
+                row["amount"] = raw_amt   # credit
+            else:
+                row["amount"] = -raw_amt  # debit
+        prev_balance = curr_balance if curr_balance is not None else prev_balance
+        row.pop("balance", None)
 
 
 def _extract_statement_year(text: str) -> int | None:
-    """Retrieve statement year from header text."""
+    """Retrieve statement year from header text (e.g. through 12/31/2025, as of 12/31/2025, December 31, 2025)."""
     lines = text.split("\n")
-    head = " ".join(lines[:60])
+    head = " ".join(lines[:80])
     for pat in (RE_THROUGH_FULL, RE_AS_OF_FULL):
         m = pat.search(head)
         if m:
             return int(m.group(1))
-    for line in lines[:30]:
+    m = RE_MONTH_YEAR.search(head)
+    if m:
+        y = int(m.group(1))
+        if 1990 <= y <= 2030:
+            return y
+    for line in lines[:40]:
         for m in RE_ANY_MM_DD_YYYY.finditer(line):
             y = int(m.group(1))
             if 1990 <= y <= 2030:
@@ -103,7 +161,7 @@ def _is_credit(description: str) -> bool:
 
 
 def _parse_citi_multiline(lines: list, in_section_start: int) -> list[dict]:
-    """Parse when each transaction is split: line1=date, line2=desc, line3=amount, line4=balance, then optional continuation lines."""
+    """Parse when each transaction is split: line1=date, line2=desc, line3=amount, line4=balance, then optional continuation lines. Keeps balance for debit/credit from balance column."""
     rows = []
     i = in_section_start
     while i < len(lines):
@@ -119,6 +177,7 @@ def _parse_citi_multiline(lines: list, in_section_start: int) -> list[dict]:
             i += 1
             desc_parts = []
             amt_str = None
+            balance_str = None
             while i < len(lines):
                 cur = lines[i]
                 if not cur:
@@ -127,31 +186,33 @@ def _parse_citi_multiline(lines: list, in_section_start: int) -> list[dict]:
                 if CITI_DATE_LINE.match(cur):
                     break
                 amt_clean = cur.replace(",", "").strip().rstrip("-")
-                if re.match(r"^\d+\.\d{2}$", amt_clean) and amt_str is None:
-                    amt_str = cur.replace(",", "").rstrip("-").strip()
-                    i += 1
-                    if i < len(lines) and re.match(r"^[\d,]+\.\d{2}-?\s*$", lines[i].strip()):
+                if re.match(r"^\d+\.\d{2}$", amt_clean) or re.match(r"^[\d,]+\.\d{2}-?\s*$", cur.strip()):
+                    if amt_str is None:
+                        amt_str = cur.replace(",", "").rstrip("-").strip()
                         i += 1
-                    while i < len(lines):
-                        cont = lines[i].strip()
-                        if not cont or CITI_DATE_LINE.match(cont) or re.match(r"^[\d,]+\.\d{2}-?\s*$", cont):
-                            break
-                        if "Total Debits/Credits" in cont or (cont.startswith("-- ") and " of " in cont):
-                            break
-                        desc_parts.append(cont)
-                        i += 1
-                    break
+                        if i < len(lines) and re.match(r"^[\d,]+\.\d{2}-?\s*$", lines[i].strip()):
+                            balance_str = lines[i].strip().replace(",", "").rstrip("-").strip()
+                            i += 1
+                        while i < len(lines):
+                            cont = lines[i].strip()
+                            if not cont or CITI_DATE_LINE.match(cont) or re.match(r"^[\d,]+\.\d{2}-?\s*$", cont):
+                                break
+                            if "Total Debits/Credits" in cont or (cont.startswith("-- ") and " of " in cont):
+                                break
+                            desc_parts.append(cont)
+                            i += 1
+                        break
                 desc_parts.append(cur)
                 i += 1
             if amt_str and desc_parts:
                 try:
-                    amount = float(amt_str.replace(",", ""))
-                    if _is_credit(desc_parts[0]):
-                        amount = abs(amount)
-                    else:
-                        amount = -abs(amount)
+                    amount_raw = abs(float(amt_str.replace(",", "")))
+                    balance_val = _parse_balance_value(balance_str) if balance_str else None
                     full_desc = " ".join(desc_parts).strip()
-                    rows.append({"date": date_str, "description": full_desc, "amount": amount})
+                    row = {"date": date_str, "description": full_desc, "amount": amount_raw}
+                    if balance_val is not None:
+                        row["balance"] = balance_val
+                    rows.append(row)
                 except ValueError:
                     pass
             continue
@@ -160,7 +221,7 @@ def _parse_citi_multiline(lines: list, in_section_start: int) -> list[dict]:
 
 
 def _parse_citi_singleline(lines: list, in_section_start: int) -> list[dict]:
-    """Parse when each transaction is one line: MM/DD description amount balance."""
+    """Parse when each transaction is one line: MM/DD description amount balance. Keeps balance for debit/credit from balance column."""
     rows = []
     i = in_section_start
     while i < len(lines):
@@ -172,17 +233,14 @@ def _parse_citi_singleline(lines: list, in_section_start: int) -> list[dict]:
             break
         m = CITI_TX_LINE_SINGLE.match(line)
         if m:
-            date_str, desc, amt_str, _balance = m.groups()
+            date_str, desc, amt_str, balance_str = m.groups()
             amt_clean = amt_str.replace(",", "")
             try:
-                amount = float(amt_clean)
+                amount_raw = abs(float(amt_clean))
             except ValueError:
                 i += 1
                 continue
-            if _is_credit(desc):
-                amount = abs(amount)
-            else:
-                amount = -abs(amount)
+            balance_val = _parse_balance_value(balance_str) if balance_str else None
             desc_parts = [desc.strip()]
             i += 1
             while i < len(lines):
@@ -200,7 +258,10 @@ def _parse_citi_singleline(lines: list, in_section_start: int) -> list[dict]:
                 desc_parts.append(next_line)
                 i += 1
             full_desc = " ".join(desc_parts).strip()
-            rows.append({"date": date_str, "description": full_desc, "amount": amount})
+            row = {"date": date_str, "description": full_desc, "amount": amount_raw}
+            if balance_val is not None:
+                row["balance"] = balance_val
+            rows.append(row)
             continue
         i += 1
     return rows
@@ -209,10 +270,10 @@ def _parse_citi_singleline(lines: list, in_section_start: int) -> list[dict]:
 def parse_citi_checking_text(text: str) -> list[dict]:
     """
     Parse Citi checking/business statement text.
-    Returns list of {"date": "MM/DD", "description": "...", "amount": float}.
+    Returns list of {"date": "dd/mm/yyyy", "description": "...", "amount": float}.
     Amount: negative = debit (money out), positive = credit (money in).
-    Handles both multi-line PDF layout (date, description, amount, balance on separate lines)
-    and single-line layout (all on one line).
+    Uses beginning balance + balance column to determine debit vs credit (balance down = debit, up = credit).
+    Falls back to description keywords (ELECTRONIC CREDIT etc.) if no balance available.
     """
     lines = [ln.strip() for ln in text.split("\n")]
     rows = []
@@ -232,6 +293,16 @@ def parse_citi_checking_text(text: str) -> list[dict]:
                 start += 1
             break
         i += 1
+    beginning_balance = _extract_beginning_balance(text)
+    if beginning_balance is not None and any(r.get("balance") is not None for r in rows):
+        _apply_balance_to_sign(rows, beginning_balance)
+    else:
+        for row in rows:
+            raw = abs(float(row.get("amount", 0) or 0))
+            if _is_credit(row.get("description", "")):
+                row["amount"] = raw
+            else:
+                row["amount"] = -raw
     year = _extract_statement_year(text)
     for row in rows:
         row["date"] = _normalize_date_to_dd_mm_yyyy(row.get("date") or "", year)
