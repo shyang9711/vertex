@@ -602,14 +602,43 @@ def parse_citi_text(text: str) -> pd.DataFrame:
     return _bofa_rows_to_dataframe(rows)
 
 
+def _get_debit_credit_parser():
+    """Parser for statements where Debits and Credits are separate columns (both positive); distinguish by description."""
+    try:
+        from parse_debit_credit_columns import parse_debit_credit_columns_text
+    except ImportError:
+        try:
+            from vertex.features.vendor_match.parse_debit_credit_columns import parse_debit_credit_columns_text
+        except ImportError:
+            return None
+    return parse_debit_credit_columns_text
+
+
+def parse_debit_credit_columns_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse PDF where Debits/Credits are in separate columns; both amounts positive; distinguish by ELECTRONIC CREDIT vs DEBIT CARD PURCH etc."""
+    text = extract_text_from_pdf(pdf_path)
+    return parse_debit_credit_columns_text(text, transaction_filter)
+
+
+def parse_debit_credit_columns_text(text: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse pasted text: Debits & Credits in separate columns (both positive). Sign set by description (CREDIT vs DEBIT)."""
+    parser = _get_debit_credit_parser()
+    if parser is None:
+        raise ValueError("Debit/Credit columns parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
 # Bank parser registry for PDF files
 BANK_PARSERS_PDF = {
     "Bank of America (Bank)": parse_bank_of_america_bank_pdf,
     "Bank of America (Credit Card)": parse_bank_of_america_cc_pdf,
     "Citi": parse_citi_pdf,
-    # Add more banks here as needed
-    # "Chase": parse_chase_pdf,
-    # "Wells Fargo": parse_wells_fargo_pdf,
+    "Generic (Debits & Credits columns)": parse_debit_credit_columns_pdf,
 }
 
 # Bank parser registry for pasted text
@@ -617,6 +646,7 @@ BANK_PARSERS_TEXT = {
     "Bank of America (Bank)": parse_bank_of_america_bank_text,
     "Bank of America (Credit Card)": parse_bank_of_america_cc_text,
     "Citi": parse_citi_text,
+    "Generic (Debits & Credits columns)": parse_debit_credit_columns_text,
 }
 
 # Combined registry for UI (shows same banks for both PDF and text)
@@ -629,10 +659,12 @@ def load_table(path: str = None, bank_parser: str = None, pasted_text: str = Non
     transaction_filter: "debits", "credits", or "both" (used for Bank of America parsers only).
     """
     boa_parsers = ("Bank of America (Bank)", "Bank of America (Credit Card)")
+    generic_debit_credit = "Generic (Debits & Credits columns)"
+    parsers_with_filter = boa_parsers + (generic_debit_credit,)
     if pasted_text:
         if not bank_parser or bank_parser not in BANK_PARSERS_TEXT:
             raise ValueError(f"Bank parser required for pasted text. Available: {', '.join(BANK_PARSERS_TEXT.keys())}")
-        if bank_parser in boa_parsers:
+        if bank_parser in parsers_with_filter:
             return BANK_PARSERS_TEXT[bank_parser](pasted_text, transaction_filter=transaction_filter)
         return BANK_PARSERS_TEXT[bank_parser](pasted_text)
 
@@ -644,7 +676,7 @@ def load_table(path: str = None, bank_parser: str = None, pasted_text: str = Non
     if ext == ".pdf":
         if not bank_parser or bank_parser not in BANK_PARSERS_PDF:
             raise ValueError(f"Bank parser required for PDF files. Available: {', '.join(BANK_PARSERS_PDF.keys())}")
-        if bank_parser in boa_parsers:
+        if bank_parser in parsers_with_filter:
             return BANK_PARSERS_PDF[bank_parser](path, transaction_filter=transaction_filter)
         return BANK_PARSERS_PDF[bank_parser](path)
     elif ext in [".csv", ".txt"]:
@@ -670,6 +702,25 @@ def find_best_vendor(description_norm: str, vendor_entries) -> str:
             best_vendor = canonical
             best_ratio = ratio
     return best_vendor
+
+
+def _format_date_dd_mm_yyyy(value) -> str:
+    """Format any date value to dd/mm/yyyy string. Handles datetime, Timestamp, or str."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%d/%m/%Y")
+    s = str(value).strip()
+    if not s:
+        return ""
+    try:
+        dt = pd.to_datetime(value, dayfirst=True, errors="coerce")
+        if pd.notna(dt):
+            return dt.strftime("%d/%m/%Y")
+    except Exception:
+        pass
+    return s
+
 
 # ===== Accounts (Vendor -> Account) persistence =====
 def company_accounts_path(company_name: str) -> str:
@@ -1473,19 +1524,18 @@ class App:
             accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
 
             # Build output with columns: Date, Check Number, Vendor, Account, Amount (absolute value)
+            # Date always in dd/mm/yyyy
             date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
             check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
             amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
             out_data = {
-                "Date": tx_df[date_col].astype(str),
+                "Date": [_format_date_dd_mm_yyyy(v) for v in tx_df[date_col]],
                 "Check Number": tx_df[check_col].astype(str) if check_col else [""] * len(tx_df),
                 "Vendor": vendors_out,
                 "Account": accounts,
                 "Amount": amt_series.abs(),
             }
             out_df = pd.DataFrame(out_data)
-            for col in out_df.select_dtypes(include=["datetime64[ns]"]).columns:
-                out_df[col] = out_df[col].dt.strftime("%m/%d/%Y")
 
             matched_vendor = sum(1 for v in vendors_out if isinstance(v, str) and v.strip())
             matched_vendor_account = sum(

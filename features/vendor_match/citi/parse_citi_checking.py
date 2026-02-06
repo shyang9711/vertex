@@ -38,6 +38,51 @@ CITI_TX_LINE_SINGLE = re.compile(
 CITI_DATE_LINE = re.compile(r"^(\d{1,2}/\d{1,2})\s*$")
 CITI_AMOUNT_LINE = re.compile(r"^([\d,]+\.\d{2}-?)\s*$")
 
+# Statement period / account as of — to extract year for MM/DD
+RE_THROUGH_FULL = re.compile(r"through\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
+RE_AS_OF_FULL = re.compile(r"(?:account\s+)?as\s+of\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
+RE_ANY_MM_DD_YYYY = re.compile(r"\d{1,2}/\d{1,2}/(\d{4})")
+
+
+def _extract_statement_year(text: str) -> int | None:
+    """Retrieve statement year from header text."""
+    lines = text.split("\n")
+    head = " ".join(lines[:60])
+    for pat in (RE_THROUGH_FULL, RE_AS_OF_FULL):
+        m = pat.search(head)
+        if m:
+            return int(m.group(1))
+    for line in lines[:30]:
+        for m in RE_ANY_MM_DD_YYYY.finditer(line):
+            y = int(m.group(1))
+            if 1990 <= y <= 2030:
+                return y
+    return None
+
+
+def _normalize_date_to_dd_mm_yyyy(date_str: str, statement_year: int | None) -> str:
+    """Normalize MM/DD or MM/DD/YY to dd/mm/yyyy."""
+    if not date_str or not date_str.strip():
+        return ""
+    date_str = date_str.strip()
+    parts = date_str.split("/")
+    if len(parts) == 3:
+        try:
+            m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+            year = 2000 + y if y < 100 and y < 50 else (1900 + y if y < 100 else y)
+            return f"{d:02d}/{m:02d}/{year}"
+        except (ValueError, IndexError):
+            return date_str
+    if len(parts) == 2:
+        try:
+            m, d = int(parts[0]), int(parts[1])
+            year = statement_year if statement_year and 1990 <= statement_year <= 2030 else 2000
+            return f"{d:02d}/{m:02d}/{year}"
+        except (ValueError, IndexError):
+            return date_str
+    return date_str
+
+
 # Phrases that indicate credit (money in). Order matters: check specific first.
 CITI_CREDIT_PHRASES = (
     "ELECTRONIC CREDIT",
@@ -187,6 +232,9 @@ def parse_citi_checking_text(text: str) -> list[dict]:
                 start += 1
             break
         i += 1
+    year = _extract_statement_year(text)
+    for row in rows:
+        row["date"] = _normalize_date_to_dd_mm_yyyy(row.get("date") or "", year)
     return rows
 
 

@@ -50,6 +50,73 @@ CC_SINGLE_LINE = re.compile(
     r"^(\d{1,2}/\d{1,2})\s+(\d{1,2}/\d{1,2})\s+(.+?)\s+(\d{15,})\s+([-]?\s*[\d,]+\.?\d{0,2})\s*$"
 )
 
+# Statement period / account as of — to extract year for MM/DD or MM/DD/YY
+RE_THROUGH_FULL = re.compile(r"through\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
+RE_AS_OF_FULL = re.compile(r"(?:account\s+)?as\s+of\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
+RE_STATEMENT_ENDING = re.compile(r"statement\s+ending\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
+RE_ANY_MM_DD_YYYY = re.compile(r"\d{1,2}/\d{1,2}/(\d{4})")
+RE_PERIOD_YYYY = re.compile(r"statement\s+period.*?(\d{4})", re.I | re.DOTALL)
+
+
+def _extract_statement_year(text: str) -> int | None:
+    """
+    Retrieve statement year from account-as-of or statement-period wording in the text.
+    Looks for: through MM/DD/YYYY, as of MM/DD/YYYY, statement ending, statement period, or any MM/DD/YYYY in first lines.
+    """
+    lines = text.split("\n")
+    head = " ".join(lines[:80])  # first 80 lines usually have header/period
+    for pat in (RE_THROUGH_FULL, RE_AS_OF_FULL, RE_STATEMENT_ENDING):
+        m = pat.search(head)
+        if m:
+            return int(m.group(1))
+    m = RE_PERIOD_YYYY.search(head)
+    if m:
+        return int(m.group(1))
+    for line in lines[:40]:
+        for m in RE_ANY_MM_DD_YYYY.finditer(line):
+            y = int(m.group(1))
+            if 1990 <= y <= 2030:
+                return y
+    return None
+
+
+def _normalize_date_to_dd_mm_yyyy(date_str: str, statement_year: int | None) -> str:
+    """
+    Normalize a parsed date string to dd/mm/yyyy using statement year when needed.
+    Input: MM/DD/YY or MM/DD (US format) or already MM/DD/YYYY.
+    """
+    if not date_str or not date_str.strip():
+        return ""
+    date_str = date_str.strip()
+    parts = date_str.split("/")
+    if len(parts) == 3:
+        # MM/DD/YY or MM/DD/YYYY
+        try:
+            m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+            if y < 100:
+                year = 2000 + y if y < 50 else 1900 + y
+            else:
+                year = y
+            return f"{d:02d}/{m:02d}/{year}"
+        except (ValueError, IndexError):
+            return date_str
+    if len(parts) == 2:
+        # MM/DD — use statement year
+        try:
+            m, d = int(parts[0]), int(parts[1])
+            year = statement_year if statement_year and 1990 <= statement_year <= 2030 else 2000
+            return f"{d:02d}/{m:02d}/{year}"
+        except (ValueError, IndexError):
+            return date_str
+    return date_str
+
+
+def _apply_date_normalization(rows: list[dict], text: str) -> None:
+    """In-place: set each row['date'] to dd/mm/yyyy using statement year from text."""
+    year = _extract_statement_year(text)
+    for row in rows:
+        row["date"] = _normalize_date_to_dd_mm_yyyy(row.get("date") or "", year)
+
 
 def _parse_bank_withdrawals(text: str) -> list[dict]:
     """
@@ -94,6 +161,7 @@ def _parse_bank_withdrawals(text: str) -> list[dict]:
             continue
         if cur_date is not None and not AMOUNT_LINE.match(line):
             cur_desc_lines.append(line)
+    _apply_date_normalization(rows, text)
     return rows
 
 
@@ -140,6 +208,7 @@ def _parse_bank_deposits(text: str) -> list[dict]:
             continue
         if cur_date is not None and not AMOUNT_LINE.match(line):
             cur_desc_lines.append(line)
+    _apply_date_normalization(rows, text)
     return rows
 
 
@@ -178,6 +247,7 @@ def _parse_cc_charges_single_line(text: str) -> list[dict]:
                     rows.append({"date": _post, "description": desc.strip(), "amount": amount})
             except ValueError:
                 pass
+    _apply_date_normalization(rows, text)
     return rows
 
 
@@ -258,6 +328,7 @@ def _parse_cc_charges(text: str) -> list[dict]:
         # Reset on unexpected line
         state = 0
         i += 1
+    _apply_date_normalization(rows, text)
     return rows
 
 
@@ -295,6 +366,7 @@ def _parse_cc_payments_single_line(text: str) -> list[dict]:
                     rows.append({"date": _post, "description": desc.strip(), "amount": amount})
             except ValueError:
                 pass
+    _apply_date_normalization(rows, text)
     return rows
 
 
@@ -367,6 +439,7 @@ def _parse_cc_payments(text: str) -> list[dict]:
             continue
         state = 0
         i += 1
+    _apply_date_normalization(rows, text)
     return rows
 
 
