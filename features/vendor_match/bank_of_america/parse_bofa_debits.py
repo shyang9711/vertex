@@ -45,6 +45,10 @@ AMOUNT_LINE = re.compile(r"^(-?\d{1,3}(?:,\d{3})*\.\d{2})$")
 CC_DATE = re.compile(r"^(\d{1,2}/\d{1,2})$")
 CC_REF = re.compile(r"^\d{15,}$")
 CC_AMOUNT = re.compile(r"^(-?\s*\d{1,3}(?:,\d{3})*\.\d{2})$")
+# Single-line format (e.g. November statement): PostDate TransDate Description RefNumber Amount
+CC_SINGLE_LINE = re.compile(
+    r"^(\d{1,2}/\d{1,2})\s+(\d{1,2}/\d{1,2})\s+(.+?)\s+(\d{15,})\s+([-]?\s*[\d,]+\.?\d{0,2})\s*$"
+)
 
 
 def _parse_bank_withdrawals(text: str) -> list[dict]:
@@ -93,12 +97,53 @@ def _parse_bank_withdrawals(text: str) -> list[dict]:
     return rows
 
 
+def _parse_cc_charges_single_line(text: str) -> list[dict]:
+    """
+    Parse BoA Credit Card when each transaction is on one line:
+    PostDate TransDate Description ReferenceNumber Amount
+    (e.g. November statement / table layout). Returns only positive amounts (purchases/charges).
+    """
+    lines = [ln.strip() for ln in text.split("\n")]
+    rows = []
+    in_section = False
+    for line in lines:
+        if not line:
+            continue
+        if "Purchases and Other Charges" in line and "TOTAL" not in line:
+            in_section = True
+            continue
+        if "TOTAL PURCHASES AND OTHER CHARGES FOR THIS PERIOD" in line:
+            in_section = False
+            continue
+        if not in_section:
+            continue
+        m = CC_SINGLE_LINE.match(line)
+        if m:
+            _post, _trans, desc, _ref, amt_str = m.groups()
+            amt_clean = amt_str.replace(",", "").replace(" ", "").strip()
+            is_neg = amt_clean.startswith("-") or amt_str.strip().startswith("-")
+            if amt_clean.startswith("-"):
+                amt_clean = amt_clean[1:]
+            try:
+                amount = float(amt_clean)
+                if is_neg:
+                    amount = -amount
+                if amount > 0:
+                    rows.append({"date": _post, "description": desc.strip(), "amount": amount})
+            except ValueError:
+                pass
+    return rows
+
+
 def _parse_cc_charges(text: str) -> list[dict]:
     """
     Parse Bank of America Credit Card statement text. Returns purchases/other charges.
     Each item: {"date": "MM/DD" (posting), "description": "...", "amount": float (positive)}.
-    Format: 5 lines per transaction — post_date, trans_date, description, reference, amount.
+    Supports: (1) single-line table format; (2) 5 lines per transaction — post_date, trans_date, description, reference, amount.
     """
+    single_line_rows = _parse_cc_charges_single_line(text)
+    if single_line_rows:
+        return single_line_rows
     lines = [ln.strip() for ln in text.split("\n")]
     rows = []
     in_section = False
@@ -193,6 +238,16 @@ def parse_bofa_withdrawals_only(pdf_path: str) -> tuple[list[dict], str]:
     if _is_bank_statement(text):
         return _parse_bank_withdrawals(text), "bank"
     return _parse_cc_charges(text), "credit_card"
+
+
+def parse_bofa_bank_only(text: str) -> list[dict]:
+    """Parse BoA bank eStatement text only (withdrawals/debits). Ignores credit card format."""
+    return _parse_bank_withdrawals(text)
+
+
+def parse_bofa_cc_only(text: str) -> list[dict]:
+    """Parse BoA credit card statement text only (purchases and other charges). Ignores bank format."""
+    return _parse_cc_charges(text)
 
 
 def main():

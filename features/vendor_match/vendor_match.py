@@ -432,37 +432,129 @@ def parse_bank_of_america_text(text: str) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     return df
 
+def _bofa_rows_to_dataframe(rows: list) -> pd.DataFrame:
+    """Convert BoA parser output (date, description, amount) to vendor_match DataFrame columns."""
+    if not rows:
+        return pd.DataFrame(columns=["Date", "Transaction Date", "Description", "Merchant", "City", "State", "Reference Number", "Account Number", "Amount"])
+    df = pd.DataFrame(rows)
+    df = df.rename(columns={"date": "Date", "description": "Description", "amount": "Amount"})
+    df["Transaction Date"] = df["Date"]
+    df["Merchant"] = df["Description"]
+    df["City"] = ""
+    df["State"] = ""
+    df["Reference Number"] = ""
+    df["Account Number"] = ""
+    return df
+
+
+def _get_bofa_parsers():
+    """Lazy import of BoA parser functions (bank_only, cc_only, text_to_rows)."""
+    try:
+        from bank_of_america.parse_bofa_debits import (
+            parse_bofa_text_to_rows,
+            parse_bofa_bank_only,
+            parse_bofa_cc_only,
+        )
+    except ImportError:
+        try:
+            from vertex.features.vendor_match.bank_of_america.parse_bofa_debits import (
+                parse_bofa_text_to_rows,
+                parse_bofa_bank_only,
+                parse_bofa_cc_only,
+            )
+        except ImportError:
+            return None, None, None
+    return parse_bofa_text_to_rows, parse_bofa_bank_only, parse_bofa_cc_only
+
+
 def parse_bank_of_america_pdf(pdf_path: str) -> pd.DataFrame:
     """
     Parse Bank of America PDF (eStatement bank, credit card, or legacy single-line format).
     Tries eStatement/CC format first; falls back to legacy parse_bank_of_america_text.
     """
     text = extract_text_from_pdf(pdf_path)
-    parse_bofa_text_to_rows = None
-    try:
-        from bank_of_america.parse_bofa_debits import parse_bofa_text_to_rows
-    except ImportError:
-        try:
-            from vertex.features.vendor_match.bank_of_america.parse_bofa_debits import parse_bofa_text_to_rows
-        except ImportError:
-            pass
+    parse_bofa_text_to_rows, _, _ = _get_bofa_parsers()
     if parse_bofa_text_to_rows is not None:
         rows, _stype = parse_bofa_text_to_rows(text)
         if rows:
-            df = pd.DataFrame(rows)
-            df = df.rename(columns={"date": "Date", "description": "Description", "amount": "Amount"})
-            df["Transaction Date"] = df["Date"]
-            df["Merchant"] = df["Description"]
-            df["City"] = ""
-            df["State"] = ""
-            df["Reference Number"] = ""
-            df["Account Number"] = ""
-            return df
+            return _bofa_rows_to_dataframe(rows)
     return parse_bank_of_america_text(text)
+
+
+def parse_bank_of_america_bank_pdf(pdf_path: str) -> pd.DataFrame:
+    """Parse Bank of America bank eStatement PDF only (withdrawals/debits)."""
+    text = extract_text_from_pdf(pdf_path)
+    _, parse_bank_only, _ = _get_bofa_parsers()
+    if parse_bank_only is None:
+        raise ValueError("BoA bank parser not available.")
+    rows = parse_bank_only(text)
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_bank_of_america_cc_pdf(pdf_path: str) -> pd.DataFrame:
+    """Parse Bank of America credit card statement PDF only (purchases and other charges)."""
+    text = extract_text_from_pdf(pdf_path)
+    _, _, parse_cc_only = _get_bofa_parsers()
+    if parse_cc_only is None:
+        raise ValueError("BoA credit card parser not available.")
+    rows = parse_cc_only(text)
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_bank_of_america_bank_text(text: str) -> pd.DataFrame:
+    """Parse Bank of America bank eStatement pasted text only (withdrawals/debits)."""
+    _, parse_bank_only, _ = _get_bofa_parsers()
+    if parse_bank_only is None:
+        raise ValueError("BoA bank parser not available.")
+    rows = parse_bank_only(text)
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_bank_of_america_cc_text(text: str) -> pd.DataFrame:
+    """Parse Bank of America credit card pasted text only (purchases and other charges)."""
+    _, _, parse_cc_only = _get_bofa_parsers()
+    if parse_cc_only is not None:
+        rows = parse_cc_only(text)
+        return _bofa_rows_to_dataframe(rows)
+    return parse_bank_of_america_text(text)
+
+
+def _get_citi_parser():
+    try:
+        from citi.parse_citi_checking import parse_citi_checking_text
+    except ImportError:
+        try:
+            from vertex.features.vendor_match.citi.parse_citi_checking import parse_citi_checking_text
+        except ImportError:
+            return None
+    return parse_citi_checking_text
+
+
+def parse_citi_pdf(pdf_path: str) -> pd.DataFrame:
+    """Parse Citi (Citibank) checking/business statement PDF."""
+    text = extract_text_from_pdf(pdf_path)
+    parser = _get_citi_parser()
+    if parser is None:
+        raise ValueError("Citi parser not available.")
+    rows = parser(text)
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_citi_text(text: str) -> pd.DataFrame:
+    """Parse Citi (Citibank) checking/business statement pasted text."""
+    parser = _get_citi_parser()
+    if parser is None:
+        raise ValueError("Citi parser not available.")
+    rows = parser(text)
+    return _bofa_rows_to_dataframe(rows)
+
 
 # Bank parser registry for PDF files
 BANK_PARSERS_PDF = {
     "Bank of America": parse_bank_of_america_pdf,
+    "Bank of America (Bank)": parse_bank_of_america_bank_pdf,
+    "Bank of America (Credit Card)": parse_bank_of_america_cc_pdf,
+    "Citi": parse_citi_pdf,
     # Add more banks here as needed
     # "Chase": parse_chase_pdf,
     # "Wells Fargo": parse_wells_fargo_pdf,
@@ -471,9 +563,9 @@ BANK_PARSERS_PDF = {
 # Bank parser registry for pasted text
 BANK_PARSERS_TEXT = {
     "Bank of America": parse_bank_of_america_text,
-    # Add more banks here as needed
-    # "Chase": parse_chase_text,
-    # "Wells Fargo": parse_wells_fargo_text,
+    "Bank of America (Bank)": parse_bank_of_america_bank_text,
+    "Bank of America (Credit Card)": parse_bank_of_america_cc_text,
+    "Citi": parse_citi_text,
 }
 
 # Combined registry for UI (shows same banks for both PDF and text)

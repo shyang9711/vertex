@@ -49,8 +49,10 @@ jobs:
           --add-data "features/de9c_to_csv.py;features"
           --add-data "features/vendor_match/vendor_match.py;features/vendor_match"
           --add-data "features/vendor_match/bank_of_america/parse_bofa_debits.py;features/vendor_match/bank_of_america"
-          --add-data "features/vendor_match/__init__.py;features/vendor_match"
           --add-data "features/vendor_match/bank_of_america/__init__.py;features/vendor_match/bank_of_america"
+          --add-data "features/vendor_match/citi/parse_citi_checking.py;features/vendor_match/citi"
+          --add-data "features/vendor_match/citi/__init__.py;features/vendor_match/citi"
+          --add-data "features/vendor_match/__init__.py;features/vendor_match"
           --name vertex
           client_manager.py
           
