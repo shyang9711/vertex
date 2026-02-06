@@ -678,19 +678,19 @@ def find_best_vendor(description_norm: str, vendor_entries) -> str:
     return best_vendor
 
 
-def _format_date_dd_mm_yyyy(value) -> str:
-    """Format any date value to dd/mm/yyyy string. Handles datetime, Timestamp, or str."""
+def _format_date_mm_dd_yyyy(value) -> str:
+    """Format any date value to MM/DD/YYYY string. Handles datetime, Timestamp, or str."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
     if hasattr(value, "strftime"):
-        return value.strftime("%d/%m/%Y")
+        return value.strftime("%m/%d/%Y")
     s = str(value).strip()
     if not s:
         return ""
     try:
-        dt = pd.to_datetime(value, dayfirst=True, errors="coerce")
+        dt = pd.to_datetime(value, dayfirst=False, errors="coerce")
         if pd.notna(dt):
-            return dt.strftime("%d/%m/%Y")
+            return dt.strftime("%m/%d/%Y")
     except Exception:
         pass
     return s
@@ -1503,7 +1503,7 @@ class App:
             check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
             amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
             out_data = {
-                "Date": [_format_date_dd_mm_yyyy(v) for v in tx_df[date_col]],
+                "Date": [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]],
                 "Check Number": tx_df[check_col].astype(str) if check_col else [""] * len(tx_df),
                 "Vendor": vendors_out,
                 "Account": accounts,

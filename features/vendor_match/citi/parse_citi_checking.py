@@ -39,8 +39,12 @@ CITI_DATE_LINE = re.compile(r"^(\d{1,2}/\d{1,2})\s*$")
 CITI_AMOUNT_LINE = re.compile(r"^([\d,]+\.\d{2}-?)\s*$")
 
 # Statement period / account as of — to extract year for MM/DD
-RE_THROUGH_FULL = re.compile(r"through\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
-RE_AS_OF_FULL = re.compile(r"(?:account\s+)?as\s+of\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
+RE_THROUGH_FULL = re.compile(r"through\s+(\d{1,2})/(\d{1,2})/(\d{4})", re.I)
+RE_AS_OF_FULL = re.compile(r"(?:account\s+)?as\s+of\s+(\d{1,2})/(\d{1,2})/(\d{4})", re.I)
+RE_PERIOD_RANGE = re.compile(
+    r"(\d{1,2})/(\d{1,2})/(\d{4})\s*(?:-|through|to)\s*(\d{1,2})/(\d{1,2})/(\d{4})",
+    re.I
+)
 RE_ANY_MM_DD_YYYY = re.compile(r"\d{1,2}/\d{1,2}/(\d{4})")
 RE_MONTH_YEAR = re.compile(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(\d{4})", re.I)
 
@@ -97,14 +101,47 @@ def _apply_balance_to_sign(rows: list[dict], beginning_balance: float | None) ->
         row.pop("balance", None)
 
 
-def _extract_statement_year(text: str) -> int | None:
-    """Retrieve statement year from header text (e.g. through 12/31/2025, as of 12/31/2025, December 31, 2025)."""
+def _extract_statement_period(text: str) -> tuple[int | None, int | None, int | None, int | None]:
+    """(start_month, start_year, end_month, end_year). For Dec–Jan statements, used to assign year by transaction month."""
     lines = text.split("\n")
     head = " ".join(lines[:80])
+    m = RE_PERIOD_RANGE.search(head)
+    if m:
+        sm, sy = int(m.group(1)), int(m.group(3))
+        em, ey = int(m.group(4)), int(m.group(6))
+        if 1990 <= sy <= 2030 and 1990 <= ey <= 2030:
+            return (sm, sy, em, ey)
     for pat in (RE_THROUGH_FULL, RE_AS_OF_FULL):
         m = pat.search(head)
         if m:
-            return int(m.group(1))
+            em, ey = int(m.group(1)), int(m.group(3))
+            if 1990 <= ey <= 2030:
+                return (None, None, em, ey)
+    return (None, None, None, None)
+
+
+def _year_for_transaction_month(tx_month: int, period: tuple) -> int | None:
+    """Return year for a transaction in tx_month (1-12) given period (start_m, start_y, end_m, end_y)."""
+    start_m, start_y, end_m, end_y = period
+    if end_y is None:
+        return start_y
+    if start_m is not None and start_y is not None and start_y != end_y and end_m is not None:
+        if end_m < start_m:
+            if tx_month <= end_m:
+                return end_y
+            return start_y
+    return end_y or start_y
+
+
+def _extract_statement_year(text: str) -> int | None:
+    """Retrieve statement year from header (through, as of, period range, or month name + year)."""
+    start_m, start_y, end_m, end_y = _extract_statement_period(text)
+    if end_y is not None:
+        return end_y
+    if start_y is not None:
+        return start_y
+    lines = text.split("\n")
+    head = " ".join(lines[:80])
     m = RE_MONTH_YEAR.search(head)
     if m:
         y = int(m.group(1))
@@ -118,8 +155,8 @@ def _extract_statement_year(text: str) -> int | None:
     return None
 
 
-def _normalize_date_to_dd_mm_yyyy(date_str: str, statement_year: int | None) -> str:
-    """Normalize MM/DD or MM/DD/YY to dd/mm/yyyy."""
+def _normalize_date_to_mm_dd_yyyy(date_str: str, statement_year: int | None, period: tuple = (None, None, None, None)) -> str:
+    """Normalize MM/DD or MM/DD/YY to MM/DD/YYYY. Uses period to pick year when statement spans two years (e.g. Dec–Jan)."""
     if not date_str or not date_str.strip():
         return ""
     date_str = date_str.strip()
@@ -128,14 +165,16 @@ def _normalize_date_to_dd_mm_yyyy(date_str: str, statement_year: int | None) -> 
         try:
             m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
             year = 2000 + y if y < 100 and y < 50 else (1900 + y if y < 100 else y)
-            return f"{d:02d}/{m:02d}/{year}"
+            return f"{m:02d}/{d:02d}/{year}"
         except (ValueError, IndexError):
             return date_str
     if len(parts) == 2:
         try:
             m, d = int(parts[0]), int(parts[1])
-            year = statement_year if statement_year and 1990 <= statement_year <= 2030 else 2000
-            return f"{d:02d}/{m:02d}/{year}"
+            year = _year_for_transaction_month(m, period)
+            if year is None or not (1990 <= year <= 2030):
+                year = statement_year if statement_year and 1990 <= statement_year <= 2030 else 2000
+            return f"{m:02d}/{d:02d}/{year}"
         except (ValueError, IndexError):
             return date_str
     return date_str
@@ -303,9 +342,10 @@ def parse_citi_checking_text(text: str) -> list[dict]:
                 row["amount"] = raw
             else:
                 row["amount"] = -raw
+    period = _extract_statement_period(text)
     year = _extract_statement_year(text)
     for row in rows:
-        row["date"] = _normalize_date_to_dd_mm_yyyy(row.get("date") or "", year)
+        row["date"] = _normalize_date_to_mm_dd_yyyy(row.get("date") or "", year, period)
     return rows
 
 

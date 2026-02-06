@@ -51,24 +51,50 @@ CC_SINGLE_LINE = re.compile(
 )
 
 # Statement period / account as of — to extract year for MM/DD or MM/DD/YY
-RE_THROUGH_FULL = re.compile(r"through\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
-RE_AS_OF_FULL = re.compile(r"(?:account\s+)?as\s+of\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
-RE_STATEMENT_ENDING = re.compile(r"statement\s+ending\s+\d{1,2}/\d{1,2}/(\d{4})", re.I)
+RE_THROUGH_FULL = re.compile(r"through\s+(\d{1,2})/(\d{1,2})/(\d{4})", re.I)
+RE_AS_OF_FULL = re.compile(r"(?:account\s+)?as\s+of\s+(\d{1,2})/(\d{1,2})/(\d{4})", re.I)
+RE_STATEMENT_ENDING = re.compile(r"statement\s+ending\s+(\d{1,2})/(\d{1,2})/(\d{4})", re.I)
+# Period range: e.g. 12/15/2024 - 01/14/2025 or 12/15/2024 through 01/14/2025 (credit card Dec–Jan)
+RE_PERIOD_RANGE = re.compile(
+    r"(\d{1,2})/(\d{1,2})/(\d{4})\s*(?:-|through|to)\s*(\d{1,2})/(\d{1,2})/(\d{4})",
+    re.I
+)
 RE_ANY_MM_DD_YYYY = re.compile(r"\d{1,2}/\d{1,2}/(\d{4})")
 RE_PERIOD_YYYY = re.compile(r"statement\s+period.*?(\d{4})", re.I | re.DOTALL)
 
 
-def _extract_statement_year(text: str) -> int | None:
+def _extract_statement_period(text: str) -> tuple[int | None, int | None, int | None, int | None]:
     """
-    Retrieve statement year from account-as-of or statement-period wording in the text.
-    Looks for: through MM/DD/YYYY, as of MM/DD/YYYY, statement ending, statement period, or any MM/DD/YYYY in first lines.
+    Extract (start_month, start_year, end_month, end_year) from statement period.
+    For period spanning two years (e.g. Dec 2024 - Jan 2025), used to assign correct year to each transaction month.
+    Returns (None, None, None, None) if not found.
     """
     lines = text.split("\n")
-    head = " ".join(lines[:80])  # first 80 lines usually have header/period
+    head = " ".join(lines[:80])
+    m = RE_PERIOD_RANGE.search(head)
+    if m:
+        sm, sd, sy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        em, ed, ey = int(m.group(4)), int(m.group(5)), int(m.group(6))
+        if 1990 <= sy <= 2030 and 1990 <= ey <= 2030:
+            return (sm, sy, em, ey)
     for pat in (RE_THROUGH_FULL, RE_AS_OF_FULL, RE_STATEMENT_ENDING):
         m = pat.search(head)
         if m:
-            return int(m.group(1))
+            em, ed, ey = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if 1990 <= ey <= 2030:
+                return (None, None, em, ey)
+    return (None, None, None, None)
+
+
+def _extract_statement_year(text: str) -> int | None:
+    """Fallback: single year from period/through/as of."""
+    start_m, start_y, end_m, end_y = _extract_statement_period(text)
+    if end_y is not None:
+        return end_y
+    if start_y is not None:
+        return start_y
+    lines = text.split("\n")
+    head = " ".join(lines[:80])
     m = RE_PERIOD_YYYY.search(head)
     if m:
         return int(m.group(1))
@@ -80,42 +106,56 @@ def _extract_statement_year(text: str) -> int | None:
     return None
 
 
-def _normalize_date_to_dd_mm_yyyy(date_str: str, statement_year: int | None) -> str:
+def _year_for_transaction_month(tx_month: int, period: tuple) -> int | None:
+    """Given statement period (start_m, start_y, end_m, end_y), return year for a transaction in tx_month (1-12)."""
+    start_m, start_y, end_m, end_y = period
+    if end_y is None:
+        return start_y
+    if start_m is not None and start_y is not None and start_y != end_y and end_m is not None:
+        if end_m < start_m:
+            if tx_month <= end_m:
+                return end_y
+            return start_y
+    return end_y or start_y
+
+
+def _normalize_date_to_mm_dd_yyyy(date_str: str, statement_year: int | None, period: tuple = (None, None, None, None)) -> str:
     """
-    Normalize a parsed date string to dd/mm/yyyy using statement year when needed.
-    Input: MM/DD/YY or MM/DD (US format) or already MM/DD/YYYY.
+    Normalize a parsed date string to MM/DD/YYYY using statement period when needed.
+    For periods spanning two years (e.g. December–January), assigns year by transaction month.
     """
     if not date_str or not date_str.strip():
         return ""
     date_str = date_str.strip()
     parts = date_str.split("/")
     if len(parts) == 3:
-        # MM/DD/YY or MM/DD/YYYY
         try:
             m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
             if y < 100:
                 year = 2000 + y if y < 50 else 1900 + y
             else:
                 year = y
-            return f"{d:02d}/{m:02d}/{year}"
+            return f"{m:02d}/{d:02d}/{year}"
         except (ValueError, IndexError):
             return date_str
     if len(parts) == 2:
-        # MM/DD — use statement year
         try:
             m, d = int(parts[0]), int(parts[1])
-            year = statement_year if statement_year and 1990 <= statement_year <= 2030 else 2000
-            return f"{d:02d}/{m:02d}/{year}"
+            year = _year_for_transaction_month(m, period)
+            if year is None or not (1990 <= year <= 2030):
+                year = statement_year if statement_year and 1990 <= statement_year <= 2030 else 2000
+            return f"{m:02d}/{d:02d}/{year}"
         except (ValueError, IndexError):
             return date_str
     return date_str
 
 
 def _apply_date_normalization(rows: list[dict], text: str) -> None:
-    """In-place: set each row['date'] to dd/mm/yyyy using statement year from text."""
+    """In-place: set each row['date'] to MM/DD/YYYY using statement period from text."""
+    period = _extract_statement_period(text)
     year = _extract_statement_year(text)
     for row in rows:
-        row["date"] = _normalize_date_to_dd_mm_yyyy(row.get("date") or "", year)
+        row["date"] = _normalize_date_to_mm_dd_yyyy(row.get("date") or "", year, period)
 
 
 def _parse_bank_withdrawals(text: str) -> list[dict]:
