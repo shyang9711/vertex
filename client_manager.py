@@ -22,7 +22,7 @@ _PARENT = _BASE.parent
 if str(_PARENT) not in sys.path:
     sys.path.insert(0, str(_PARENT))
 
-import os, sys, json, re, hashlib, webbrowser, subprocess, datetime as dt, urllib.request, urllib.error, ssl, urllib.parse
+import os, sys, json, re, hashlib, webbrowser, subprocess, shutil, datetime as dt, urllib.request, urllib.error, ssl, urllib.parse
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import date, datetime
@@ -324,6 +324,7 @@ class App(ttk.Frame):
             on_import_data=self._import_data_dialog,
             on_export_data=self._export_selected_dialog,
             on_update_data=self._update_data_dialog,
+            on_upload_vendor_list=self._upload_vendor_list_dialog,
 
             # Update
             on_check_updates=lambda: check_for_updates(
@@ -814,6 +815,25 @@ class App(ttk.Frame):
 
         return stats
 
+    def _upload_vendor_list_dialog(self):
+        """Upload a CSV file to the vendor_lists folder (CSV only)."""
+        path = filedialog.askopenfilename(
+            title="Select Vendor List (CSV only)",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialdir=str(self.VENDOR_LISTS_DIR) if self.VENDOR_LISTS_DIR.exists() else None,
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            messagebox.showwarning("Upload Vendor List", "Only CSV files are allowed.")
+            return
+        self.VENDOR_LISTS_DIR.mkdir(parents=True, exist_ok=True)
+        dest = self.VENDOR_LISTS_DIR / os.path.basename(path)
+        try:
+            shutil.copy2(path, dest)
+            messagebox.showinfo("Upload Vendor List", f"Saved to:\n{dest}")
+        except Exception as e:
+            messagebox.showerror("Upload Vendor List", f"Failed to save file:\n{e}")
 
     def _update_data_dialog(self):
         try:

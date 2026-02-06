@@ -7,7 +7,7 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_ROOT))
         
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, filedialog
 try:
     from vertex.utils.app_logging import get_logger
 except ModuleNotFoundError:
@@ -34,6 +34,7 @@ class TaskbarModel:
         on_import_data=None,
         on_export_data=None,
         on_update_data=None,
+        on_upload_vendor_list=None,
         on_check_updates=None,
         on_about=None,
     ):
@@ -57,7 +58,8 @@ class TaskbarModel:
         self.on_import_data = on_import_data or (lambda: None)
         self.on_export_data = on_export_data or (lambda: None)
         self.on_update_data = on_update_data or (lambda: None)
-        
+        self.on_upload_vendor_list = on_upload_vendor_list or (lambda: None)
+
         self.log = get_logger("taskbar")
         self._menu = tk.Menu(root)
         root.config(menu=self._menu)
@@ -81,6 +83,7 @@ class TaskbarModel:
         m_file.add_command(label="Import Data...", command=self._do_import_data)
         m_file.add_command(label="Export Data...", command=self._do_export_data)
         m_file.add_command(label="Update Data...", command=self._do_update_data)
+        m_file.add_command(label="Upload Vendor List...", command=self._do_upload_vendor_list)
         m_file.add_separator()
         m_file.add_command(
             label="Exit",
@@ -145,8 +148,12 @@ class TaskbarModel:
         self.on_export_data()
 
     def _do_update_data(self):
-        self.log.info("Export Data triggered from menu")
+        self.log.info("Update Data triggered from menu")
         self.on_update_data()
+
+    def _do_upload_vendor_list(self):
+        self.log.info("Upload Vendor List triggered from menu")
+        self.on_upload_vendor_list()
 
     def _do_check_updates(self):
         self.log.info("Check for updates triggered from menu")

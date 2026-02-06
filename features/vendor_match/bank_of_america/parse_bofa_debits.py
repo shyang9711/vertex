@@ -97,6 +97,52 @@ def _parse_bank_withdrawals(text: str) -> list[dict]:
     return rows
 
 
+def _parse_bank_deposits(text: str) -> list[dict]:
+    """
+    Parse Bank of America eStatement text. Returns deposits/other credits.
+    Each item: {"date": "MM/DD/YY", "description": "...", "amount": float (positive)}.
+    """
+    lines = [ln.strip() for ln in text.split("\n")]
+    in_section = False
+    past_header = False
+    rows = []
+    cur_date = None
+    cur_desc_lines = []
+
+    for line in lines:
+        if not line:
+            continue
+        if "Deposits and other credits" in line and "Date" not in line:
+            in_section = True
+            past_header = False
+            continue
+        if not in_section:
+            continue
+        if line in ("Date", "Description", "Amount"):
+            past_header = True
+            continue
+        if "continued on the next page" in line or ("Withdrawals and other debits" in line and "Deposits" not in line):
+            in_section = False
+            continue
+        amt_match = AMOUNT_LINE.match(line)
+        if amt_match and past_header and cur_date is not None:
+            amount = float(amt_match.group(1).replace(",", ""))
+            if amount > 0:
+                description = " ".join(cur_desc_lines).strip() if cur_desc_lines else ""
+                rows.append({"date": cur_date, "description": description, "amount": amount})
+            cur_date = None
+            cur_desc_lines = []
+            continue
+        date_match = DATE_ONLY.match(line)
+        if date_match and past_header:
+            cur_date = date_match.group(1)
+            cur_desc_lines = []
+            continue
+        if cur_date is not None and not AMOUNT_LINE.match(line):
+            cur_desc_lines.append(line)
+    return rows
+
+
 def _parse_cc_charges_single_line(text: str) -> list[dict]:
     """
     Parse BoA Credit Card when each transaction is on one line:
@@ -215,6 +261,115 @@ def _parse_cc_charges(text: str) -> list[dict]:
     return rows
 
 
+def _parse_cc_payments_single_line(text: str) -> list[dict]:
+    """
+    Parse BoA Credit Card "Payments and Other Credits" when each transaction is on one line.
+    Returns rows with negative amount (credit to card).
+    """
+    lines = [ln.strip() for ln in text.split("\n")]
+    rows = []
+    in_section = False
+    for line in lines:
+        if not line:
+            continue
+        if "Payments and Other Credits" in line and "TOTAL" not in line:
+            in_section = True
+            continue
+        if "TOTAL PAYMENTS AND CREDITS" in line or "TOTAL PAYMENTS AND OTHER CREDITS" in line:
+            in_section = False
+            continue
+        if not in_section:
+            continue
+        m = CC_SINGLE_LINE.match(line)
+        if m:
+            _post, _trans, desc, _ref, amt_str = m.groups()
+            amt_clean = amt_str.replace(",", "").replace(" ", "").strip()
+            is_neg = amt_clean.startswith("-") or amt_str.strip().startswith("-")
+            if amt_clean.startswith("-"):
+                amt_clean = amt_clean[1:]
+            try:
+                amount = float(amt_clean)
+                if is_neg:
+                    amount = -amount
+                if amount < 0:
+                    rows.append({"date": _post, "description": desc.strip(), "amount": amount})
+            except ValueError:
+                pass
+    return rows
+
+
+def _parse_cc_payments(text: str) -> list[dict]:
+    """
+    Parse BoA Credit Card "Payments and Other Credits". Returns rows with negative amount.
+    """
+    single_line_rows = _parse_cc_payments_single_line(text)
+    if single_line_rows:
+        return single_line_rows
+    lines = [ln.strip() for ln in text.split("\n")]
+    rows = []
+    in_section = False
+    state = 0
+    post_date = None
+    trans_date = None
+    description = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line:
+            i += 1
+            continue
+        if "Payments and Other Credits" in line and "TOTAL" not in line:
+            in_section = True
+            state = 0
+            i += 1
+            continue
+        if "TOTAL PAYMENTS AND CREDITS" in line or "TOTAL PAYMENTS AND OTHER CREDITS" in line:
+            in_section = False
+            state = 0
+            i += 1
+            continue
+        if not in_section:
+            i += 1
+            continue
+        if state == 0 and CC_DATE.match(line):
+            post_date = CC_DATE.match(line).group(1)
+            state = 1
+            i += 1
+            continue
+        if state == 1 and CC_DATE.match(line):
+            trans_date = CC_DATE.match(line).group(1)
+            state = 2
+            i += 1
+            continue
+        if state == 2:
+            description = line
+            state = 3
+            i += 1
+            continue
+        if state == 3 and CC_REF.match(line):
+            state = 4
+            i += 1
+            continue
+        if state == 4:
+            amt_match = CC_AMOUNT.match(line)
+            if amt_match:
+                raw = amt_match.group(1).replace(",", "").replace(" ", "").strip()
+                amount = float(raw) if not raw.startswith("-") else -float(raw[1:])
+                if amount < 0:
+                    rows.append({
+                        "date": post_date or trans_date or "",
+                        "description": description or "",
+                        "amount": amount,
+                    })
+            state = 0
+            post_date = trans_date = description = None
+            i += 1
+            continue
+        state = 0
+        i += 1
+    return rows
+
+
 def parse_bofa_text_to_rows(text: str) -> tuple[list[dict], str | None]:
     """
     Parse Bank of America statement text (eStatement bank or credit card).
@@ -245,9 +400,29 @@ def parse_bofa_bank_only(text: str) -> list[dict]:
     return _parse_bank_withdrawals(text)
 
 
+def parse_bofa_bank_credits_only(text: str) -> list[dict]:
+    """Parse BoA bank eStatement text only (deposits and other credits)."""
+    return _parse_bank_deposits(text)
+
+
+def parse_bofa_bank_both(text: str) -> list[dict]:
+    """Parse BoA bank eStatement text: both withdrawals (debits) and deposits (credits)."""
+    return _parse_bank_withdrawals(text) + _parse_bank_deposits(text)
+
+
 def parse_bofa_cc_only(text: str) -> list[dict]:
     """Parse BoA credit card statement text only (purchases and other charges). Ignores bank format."""
     return _parse_cc_charges(text)
+
+
+def parse_bofa_cc_credits_only(text: str) -> list[dict]:
+    """Parse BoA credit card statement text only (payments and other credits)."""
+    return _parse_cc_payments(text)
+
+
+def parse_bofa_cc_both(text: str) -> list[dict]:
+    """Parse BoA credit card statement text: both purchases (debits) and payments (credits)."""
+    return _parse_cc_charges(text) + _parse_cc_payments(text)
 
 
 def main():

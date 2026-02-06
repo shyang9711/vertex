@@ -448,12 +448,16 @@ def _bofa_rows_to_dataframe(rows: list) -> pd.DataFrame:
 
 
 def _get_bofa_parsers():
-    """Lazy import of BoA parser functions (bank_only, cc_only, text_to_rows)."""
+    """Lazy import of BoA parser functions (bank_only, cc_only, bank_credits_only, bank_both, cc_credits_only, cc_both, text_to_rows)."""
     try:
         from bank_of_america.parse_bofa_debits import (
             parse_bofa_text_to_rows,
             parse_bofa_bank_only,
             parse_bofa_cc_only,
+            parse_bofa_bank_credits_only,
+            parse_bofa_bank_both,
+            parse_bofa_cc_credits_only,
+            parse_bofa_cc_both,
         )
     except ImportError:
         try:
@@ -461,61 +465,110 @@ def _get_bofa_parsers():
                 parse_bofa_text_to_rows,
                 parse_bofa_bank_only,
                 parse_bofa_cc_only,
+                parse_bofa_bank_credits_only,
+                parse_bofa_bank_both,
+                parse_bofa_cc_credits_only,
+                parse_bofa_cc_both,
             )
         except ImportError:
-            return None, None, None
-    return parse_bofa_text_to_rows, parse_bofa_bank_only, parse_bofa_cc_only
+            return None
+    return {
+        "text_to_rows": parse_bofa_text_to_rows,
+        "bank_only": parse_bofa_bank_only,
+        "cc_only": parse_bofa_cc_only,
+        "bank_credits_only": parse_bofa_bank_credits_only,
+        "bank_both": parse_bofa_bank_both,
+        "cc_credits_only": parse_bofa_cc_credits_only,
+        "cc_both": parse_bofa_cc_both,
+    }
 
 
-def parse_bank_of_america_pdf(pdf_path: str) -> pd.DataFrame:
+def _bofa_parser_for_filter(parsers, bank_or_cc: str, transaction_filter: str):
+    """Return the BoA parser function for given bank/cc and filter (debits, credits, both)."""
+    if parsers is None:
+        return None
+    if bank_or_cc == "bank":
+        if transaction_filter == "credits":
+            return parsers.get("bank_credits_only")
+        if transaction_filter == "both":
+            return parsers.get("bank_both")
+        return parsers.get("bank_only")
+    else:
+        if transaction_filter == "credits":
+            return parsers.get("cc_credits_only")
+        if transaction_filter == "both":
+            return parsers.get("cc_both")
+        return parsers.get("cc_only")
+
+
+def parse_bank_of_america_pdf(pdf_path: str, transaction_filter: str = "debits") -> pd.DataFrame:
     """
     Parse Bank of America PDF (eStatement bank, credit card, or legacy single-line format).
     Tries eStatement/CC format first; falls back to legacy parse_bank_of_america_text.
+    transaction_filter: "debits", "credits", or "both".
     """
     text = extract_text_from_pdf(pdf_path)
-    parse_bofa_text_to_rows, _, _ = _get_bofa_parsers()
-    if parse_bofa_text_to_rows is not None:
-        rows, _stype = parse_bofa_text_to_rows(text)
+    parsers = _get_bofa_parsers()
+    if parsers and parsers.get("text_to_rows"):
+        rows, _stype = parsers["text_to_rows"](text)
+        if rows and transaction_filter == "debits":
+            return _bofa_rows_to_dataframe(rows)
+        if rows and _stype and transaction_filter != "debits":
+            fn = _bofa_parser_for_filter(parsers, "bank" if _stype == "bank" else "cc", transaction_filter)
+            if fn:
+                rows = fn(text)
+                return _bofa_rows_to_dataframe(rows)
         if rows:
             return _bofa_rows_to_dataframe(rows)
     return parse_bank_of_america_text(text)
 
 
-def parse_bank_of_america_bank_pdf(pdf_path: str) -> pd.DataFrame:
-    """Parse Bank of America bank eStatement PDF only (withdrawals/debits)."""
+def parse_bank_of_america_bank_pdf(pdf_path: str, transaction_filter: str = "debits") -> pd.DataFrame:
+    """Parse Bank of America bank eStatement PDF. transaction_filter: debits, credits, or both."""
     text = extract_text_from_pdf(pdf_path)
-    _, parse_bank_only, _ = _get_bofa_parsers()
-    if parse_bank_only is None:
+    parsers = _get_bofa_parsers()
+    if parsers is None:
         raise ValueError("BoA bank parser not available.")
-    rows = parse_bank_only(text)
+    fn = _bofa_parser_for_filter(parsers, "bank", transaction_filter)
+    if not fn:
+        raise ValueError("BoA bank parser not available.")
+    rows = fn(text)
     return _bofa_rows_to_dataframe(rows)
 
 
-def parse_bank_of_america_cc_pdf(pdf_path: str) -> pd.DataFrame:
-    """Parse Bank of America credit card statement PDF only (purchases and other charges)."""
+def parse_bank_of_america_cc_pdf(pdf_path: str, transaction_filter: str = "debits") -> pd.DataFrame:
+    """Parse Bank of America credit card statement PDF. transaction_filter: debits, credits, or both."""
     text = extract_text_from_pdf(pdf_path)
-    _, _, parse_cc_only = _get_bofa_parsers()
-    if parse_cc_only is None:
+    parsers = _get_bofa_parsers()
+    if parsers is None:
         raise ValueError("BoA credit card parser not available.")
-    rows = parse_cc_only(text)
+    fn = _bofa_parser_for_filter(parsers, "cc", transaction_filter)
+    if not fn:
+        raise ValueError("BoA credit card parser not available.")
+    rows = fn(text)
     return _bofa_rows_to_dataframe(rows)
 
 
-def parse_bank_of_america_bank_text(text: str) -> pd.DataFrame:
-    """Parse Bank of America bank eStatement pasted text only (withdrawals/debits)."""
-    _, parse_bank_only, _ = _get_bofa_parsers()
-    if parse_bank_only is None:
+def parse_bank_of_america_bank_text(text: str, transaction_filter: str = "debits") -> pd.DataFrame:
+    """Parse Bank of America bank eStatement pasted text. transaction_filter: debits, credits, or both."""
+    parsers = _get_bofa_parsers()
+    if parsers is None:
         raise ValueError("BoA bank parser not available.")
-    rows = parse_bank_only(text)
+    fn = _bofa_parser_for_filter(parsers, "bank", transaction_filter)
+    if not fn:
+        raise ValueError("BoA bank parser not available.")
+    rows = fn(text)
     return _bofa_rows_to_dataframe(rows)
 
 
-def parse_bank_of_america_cc_text(text: str) -> pd.DataFrame:
-    """Parse Bank of America credit card pasted text only (purchases and other charges)."""
-    _, _, parse_cc_only = _get_bofa_parsers()
-    if parse_cc_only is not None:
-        rows = parse_cc_only(text)
-        return _bofa_rows_to_dataframe(rows)
+def parse_bank_of_america_cc_text(text: str, transaction_filter: str = "debits") -> pd.DataFrame:
+    """Parse Bank of America credit card pasted text. transaction_filter: debits, credits, or both."""
+    parsers = _get_bofa_parsers()
+    if parsers is not None:
+        fn = _bofa_parser_for_filter(parsers, "cc", transaction_filter)
+        if fn:
+            rows = fn(text)
+            return _bofa_rows_to_dataframe(rows)
     return parse_bank_of_america_text(text)
 
 
@@ -551,7 +604,6 @@ def parse_citi_text(text: str) -> pd.DataFrame:
 
 # Bank parser registry for PDF files
 BANK_PARSERS_PDF = {
-    "Bank of America": parse_bank_of_america_pdf,
     "Bank of America (Bank)": parse_bank_of_america_bank_pdf,
     "Bank of America (Credit Card)": parse_bank_of_america_cc_pdf,
     "Citi": parse_citi_pdf,
@@ -562,7 +614,6 @@ BANK_PARSERS_PDF = {
 
 # Bank parser registry for pasted text
 BANK_PARSERS_TEXT = {
-    "Bank of America": parse_bank_of_america_text,
     "Bank of America (Bank)": parse_bank_of_america_bank_text,
     "Bank of America (Credit Card)": parse_bank_of_america_cc_text,
     "Citi": parse_citi_text,
@@ -571,24 +622,30 @@ BANK_PARSERS_TEXT = {
 # Combined registry for UI (shows same banks for both PDF and text)
 BANK_PARSERS = BANK_PARSERS_PDF  # Use for UI selection
 
-def load_table(path: str = None, bank_parser: str = None, pasted_text: str = None) -> pd.DataFrame:
+def load_table(path: str = None, bank_parser: str = None, pasted_text: str = None, transaction_filter: str = "debits") -> pd.DataFrame:
     """
     Load transactions from file or pasted text.
     If pasted_text is provided, path is ignored.
+    transaction_filter: "debits", "credits", or "both" (used for Bank of America parsers only).
     """
+    boa_parsers = ("Bank of America (Bank)", "Bank of America (Credit Card)")
     if pasted_text:
         if not bank_parser or bank_parser not in BANK_PARSERS_TEXT:
             raise ValueError(f"Bank parser required for pasted text. Available: {', '.join(BANK_PARSERS_TEXT.keys())}")
+        if bank_parser in boa_parsers:
+            return BANK_PARSERS_TEXT[bank_parser](pasted_text, transaction_filter=transaction_filter)
         return BANK_PARSERS_TEXT[bank_parser](pasted_text)
-    
+
     if not path:
         raise ValueError("Either path or pasted_text must be provided")
-    
+
     ext = os.path.splitext(path)[1].lower()
-    
+
     if ext == ".pdf":
         if not bank_parser or bank_parser not in BANK_PARSERS_PDF:
             raise ValueError(f"Bank parser required for PDF files. Available: {', '.join(BANK_PARSERS_PDF.keys())}")
+        if bank_parser in boa_parsers:
+            return BANK_PARSERS_PDF[bank_parser](path, transaction_filter=transaction_filter)
         return BANK_PARSERS_PDF[bank_parser](path)
     elif ext in [".csv", ".txt"]:
         try:
@@ -654,7 +711,7 @@ class App:
         self.account_map = {}
         self.selected_bank = None  # For PDF parsing
         self.pasted_text = None  # For pasted transactions
-
+        self.transaction_filter = StringVar(value="debits")  # debits | credits | both (for BoA)
 
         self.tx_label_var = StringVar(value="No transactions file selected")
         self.vendor_label_var = StringVar(value="No vendor file selected")
@@ -678,23 +735,30 @@ class App:
 
         Button(root, text="Select Transactions (Excel/CSV/PDF)", command=self.pick_transactions).grid(row=0, column=0, padx=10, pady=(12,6), sticky="w")
         Button(root, text="Paste Transactions", command=self.paste_transactions).grid(row=0, column=1, padx=10, pady=(12,6), sticky="w")
-        _label_in_frame(_text_frame(root, 1, 0, 2, padx=12, pady=(0,8)), self.tx_label_var, fg="#333")
+        _label_in_frame(_text_frame(root, 1, 0, 2, padx=12, pady=(0,4)), self.tx_label_var, fg="#333")
 
-        Button(root, text="Select Vendor List", command=self.pick_vendor).grid(row=2, column=0, padx=10, pady=(6,6), sticky="w")
-        _label_in_frame(_text_frame(root, 3, 0, 1, padx=12, pady=(0,8)), self.vendor_label_var, fg="#333")
+        Label(root, text="Include transactions (Bank of America):", font=("Arial", 9)).grid(row=2, column=0, padx=10, pady=(4,2), sticky="w")
+        f_filter = Frame(root)
+        f_filter.grid(row=3, column=0, columnspan=2, padx=10, pady=(0,8), sticky="w")
+        Radiobutton(f_filter, text="Debits only (payments/withdrawals)", variable=self.transaction_filter, value="debits").pack(side="left", padx=(0,12))
+        Radiobutton(f_filter, text="Credits only (deposits)", variable=self.transaction_filter, value="credits").pack(side="left", padx=(0,12))
+        Radiobutton(f_filter, text="Both", variable=self.transaction_filter, value="both").pack(side="left")
 
-        Button(root, text="Company…", command=self.select_company_dialog).grid(row=4, column=0, padx=10, pady=(6,0), sticky="w")
-        _label_in_frame(_text_frame(root, 5, 0, 1, padx=12, pady=(2,2)), self.company_label_var, fg="#333")
-        _label_in_frame(_text_frame(root, 6, 0, 1, padx=12, pady=(0,8)), self.rules_file_hint, fg="#888")
+        Button(root, text="Select Vendor List", command=self.pick_vendor).grid(row=4, column=0, padx=10, pady=(6,6), sticky="w")
+        _label_in_frame(_text_frame(root, 5, 0, 1, padx=12, pady=(0,8)), self.vendor_label_var, fg="#333")
 
-        Button(root, text="Manage Rules…", command=self.manage_rules_dialog).grid(row=7, column=0, padx=10, pady=(2,0), sticky="w")
-        Button(root, text="Manage Accounts…", command=self.manage_accounts_dialog).grid(row=7, column=1, padx=10, pady=(2,0), sticky="w")
-        _label_in_frame(_text_frame(root, 8, 0, 1, padx=12, pady=(2,10)), self.rules_label_var, fg="#555")
+        Button(root, text="Company…", command=self.select_company_dialog).grid(row=6, column=0, padx=10, pady=(6,0), sticky="w")
+        _label_in_frame(_text_frame(root, 7, 0, 1, padx=12, pady=(2,2)), self.company_label_var, fg="#333")
+        _label_in_frame(_text_frame(root, 8, 0, 1, padx=12, pady=(0,8)), self.rules_file_hint, fg="#888")
+
+        Button(root, text="Manage Rules…", command=self.manage_rules_dialog).grid(row=9, column=0, padx=10, pady=(2,0), sticky="w")
+        Button(root, text="Manage Accounts…", command=self.manage_accounts_dialog).grid(row=9, column=1, padx=10, pady=(2,0), sticky="w")
+        _label_in_frame(_text_frame(root, 10, 0, 1, padx=12, pady=(2,10)), self.rules_label_var, fg="#555")
 
         self.run_btn = Button(root, text="Run and Save", command=self.run_and_save, state=DISABLED)
-        self.run_btn.grid(row=9, column=0, padx=10, pady=(6,12), sticky="w")
+        self.run_btn.grid(row=11, column=0, padx=10, pady=(6,12), sticky="w")
 
-        _label_in_frame(_text_frame(root, 10, 0, 1, padx=12, pady=(0,12)), self.status_var, fg="#006400")
+        _label_in_frame(_text_frame(root, 12, 0, 1, padx=12, pady=(0,12)), self.status_var, fg="#006400")
 
         root.columnconfigure(0, weight=0)
         root.columnconfigure(1, weight=0)
@@ -1362,25 +1426,27 @@ class App:
                 messagebox.showerror("Missing", "Select company, transactions (file or paste), and vendor list.")
                 return
 
+            transaction_filter = self.transaction_filter.get() if hasattr(self.transaction_filter, "get") else "debits"
+
             # Load transactions (PDF or pasted text requires bank parser)
             if self.pasted_text:
                 if not self.selected_bank:
                     messagebox.showerror("Missing Bank", "Please select a bank format for pasted text.")
                     return
-                tx_df = load_table(pasted_text=self.pasted_text, bank_parser=self.selected_bank)
+                tx_df = load_table(pasted_text=self.pasted_text, bank_parser=self.selected_bank, transaction_filter=transaction_filter)
             elif self.tx_path:
                 ext = os.path.splitext(self.tx_path)[1].lower()
                 if ext == ".pdf":
                     if not self.selected_bank:
                         messagebox.showerror("Missing Bank", "Please select a bank format for PDF parsing.")
                         return
-                    tx_df = load_table(self.tx_path, bank_parser=self.selected_bank)
+                    tx_df = load_table(self.tx_path, bank_parser=self.selected_bank, transaction_filter=transaction_filter)
                 else:
                     tx_df = load_table(self.tx_path)
             else:
                 messagebox.showerror("Missing", "No transactions selected. Please select a file or paste text.")
                 return
-            
+
             vendors_df = load_table(self.vendor_path)
 
             desc_col = detect_description_column(tx_df)
@@ -1404,18 +1470,22 @@ class App:
                     norm = normalize_text(raw_desc)
                     vendors_out.append(find_best_vendor(norm, vendor_entries))
 
-            tx_df["Vendor"] = vendors_out
             accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-            vendor_idx = tx_df.columns.get_loc("Vendor")
-            tx_df.insert(vendor_idx + 1, "Account", accounts)
 
-            if amount_col:
-                amt = pd.to_numeric(tx_df[amount_col], errors="coerce")
-                flipped = amt * -1
-                acc_idx = tx_df.columns.get_loc("Account")
-                tx_df.insert(acc_idx + 1, "FlippedAmount", flipped)
-            else:
-                tx_df["FlippedAmount"] = pd.NA
+            # Build output with columns: Date, Check Number, Vendor, Account, Amount (absolute value)
+            date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
+            check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
+            amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
+            out_data = {
+                "Date": tx_df[date_col].astype(str),
+                "Check Number": tx_df[check_col].astype(str) if check_col else [""] * len(tx_df),
+                "Vendor": vendors_out,
+                "Account": accounts,
+                "Amount": amt_series.abs(),
+            }
+            out_df = pd.DataFrame(out_data)
+            for col in out_df.select_dtypes(include=["datetime64[ns]"]).columns:
+                out_df[col] = out_df[col].dt.strftime("%m/%d/%Y")
 
             matched_vendor = sum(1 for v in vendors_out if isinstance(v, str) and v.strip())
             matched_vendor_account = sum(
@@ -1425,25 +1495,26 @@ class App:
             )
             total = len(vendors_out)
 
+            base_name = _safe_initial_filename(self.current_company)
+            if base_name.lower().endswith(".csv"):
+                base_name = base_name[:-4] + ".xlsx"
             out_path = filedialog.asksaveasfilename(
-                title="Save CSV as",
-                defaultextension=".csv",
-                initialfile=_safe_initial_filename(self.current_company),
-                filetypes=[("CSV", "*.csv")]
+                title="Save Excel as",
+                defaultextension=".xlsx",
+                initialfile=base_name,
+                filetypes=[("Excel", "*.xlsx"), ("All files", "*.*")]
             )
             if not out_path:
                 return
 
-            tx_df.to_csv(out_path, index=False, encoding="utf-8-sig")
-            for col in tx_df.select_dtypes(include=["datetime64[ns]"]).columns:
-                tx_df[col] = tx_df[col].dt.strftime("%#m/%#d/%Y")
+            out_df.to_excel(out_path, index=False, engine="openpyxl")
 
             self.status_var.set(
                 f"Saved: {out_path}  |  Matched vendor: {matched_vendor}/{total}  |  "
                 f"Matched vendor+account: {matched_vendor_account}/{total}"
-                )
+            )
             messagebox.showinfo(
-                "Done", 
+                "Done",
                 f"Saved:\n"
                 f"{out_path}\n"
                 f"Rows: {total}\n"
