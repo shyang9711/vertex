@@ -494,11 +494,17 @@ class DashboardPage:
         rows = []
         seen = set()
 
+        def _task_kind_display(task):
+            k = (task.get("kind") or "").strip().upper()
+            if k == "OTHER" and (task.get("kind_other") or "").strip():
+                return (task.get("kind_other") or "").strip()
+            return task.get("kind", "")
+
         # ---- PAST (up to yesterday)
         for i, t in enumerate(self.store.tasks):
             if not t.get("is_enabled", True):
                 continue
-            kind = t.get("kind", "")
+            kind = _task_kind_display(t)
             idx, nm = self._task_client_ref(t)
             client = nm or self._client_name(idx) or ""
             for orig, disp, is_done in occurs_between(t, window_start, today - _dt.timedelta(days=1)):
@@ -512,7 +518,7 @@ class DashboardPage:
         for i, t in enumerate(self.store.tasks):
             if not t.get("is_enabled", True):
                 continue
-            kind = t.get("kind", "")
+            kind = _task_kind_display(t)
             idx, nm = self._task_client_ref(t)
             client = nm or self._client_name(idx) or ""
             futures = []
@@ -1070,7 +1076,9 @@ class DashboardPage:
             v_cancel = tk.BooleanVar(value=is_cancelled)
 
             # Label with strikethrough when cancelled
-            lbl = ttk.Label(row, text=f"{t.get('title','')} ({t.get('kind','')}) — {client}  [actual: {orig_date.isoformat()}]")
+            k = (t.get("kind") or "").strip().upper()
+            kind_disp = (t.get("kind_other") or "").strip() if k == "OTHER" else (t.get("kind") or "")
+            lbl = ttk.Label(row, text=f"{t.get('title','')} ({kind_disp}) — {client}  [actual: {orig_date.isoformat()}]")
 
             def _refresh_label():
                 strike = getattr(self, "_strike_font", None)
@@ -1304,6 +1312,7 @@ class DashboardPage:
         _title_locked = {"value": False}
 
         v_kind = tk.StringVar(value=(init.get("kind","payroll") or "other").upper())
+        v_kind_other = tk.StringVar(value=(init.get("kind_other") or "").strip())
         v_client_name = tk.StringVar(value= init.get("client_name") or (self._client_name(init.get("client_idx")) or ""))
         rec = init.get("recurrence", {"freq":"one-off"})
 
@@ -1394,20 +1403,38 @@ class DashboardPage:
 
         # Row: Type / Enabled / Notify days
         ttk.Label(frm, text="Type").grid(row=1, column=0, sticky="w", pady=(4,0))
-        ttk.Combobox(frm, textvariable=v_kind, values=["PAYROLL","BOOKKEEPING","PAYROLL TAX","SALES TAX","CALSAVERS","WORKERS COMP", "OTHER"], width=18, state="readonly").grid(row=1, column=1, sticky="w", padx=(6,0), pady=(4,0))
-        ttk.Checkbutton(frm, text="Enabled", variable=v_enabled).grid(row=1, column=2, sticky="w", padx=(12,0), pady=(4,0))
+        kind_combo = ttk.Combobox(frm, textvariable=v_kind, values=["PAYROLL","BOOKKEEPING","PAYROLL TAX","SALES TAX","CALSAVERS","WORKERS COMP", "OTHER"], width=18, state="readonly")
+        kind_combo.grid(row=1, column=1, sticky="w", padx=(6,0), pady=(4,0))
+        ttk.Checkbutton(frm, text="Enabled (show in lists)", variable=v_enabled).grid(row=1, column=2, sticky="w", padx=(12,0), pady=(4,0))
         ttk.Label(frm, text="Notify days").grid(row=1, column=3, sticky="e", pady=(4,0))
         ttk.Entry(frm, textvariable=v_notify, width=6).grid(row=1, column=4, sticky="w", padx=(6,0), pady=(4,0))
 
+        # Row: "Specify (if Other):" — visible only when Type is OTHER
+        kind_other_lbl = ttk.Label(frm, text="Specify (if Other)")
+        kind_other_lbl.grid(row=2, column=0, sticky="w", pady=(2,0))
+        kind_other_entry = ttk.Entry(frm, textvariable=v_kind_other, width=32)
+        kind_other_entry.grid(row=2, column=1, columnspan=2, sticky="w", padx=(6,0), pady=(2,0))
+
+        def _toggle_kind_other(*_):
+            is_other = (v_kind.get() or "").strip().upper() == "OTHER"
+            if is_other:
+                kind_other_lbl.grid(row=2, column=0, sticky="w", pady=(2,0))
+                kind_other_entry.grid(row=2, column=1, columnspan=2, sticky="w", padx=(6,0), pady=(2,0))
+            else:
+                kind_other_lbl.grid_remove()
+                kind_other_entry.grid_remove()
+        v_kind.trace_add("write", _toggle_kind_other)
+        _toggle_kind_other()
+
         # client (autocomplete)
-        ttk.Label(frm, text="client").grid(row=2, column=0, sticky="w", pady=(6,0))
+        ttk.Label(frm, text="client").grid(row=3, column=0, sticky="w", pady=(6,0))
 
         items = getattr(self.app, "items", []) or []
         names = [(c.get("name") or "").strip() for c in items if isinstance(c, dict) and (c.get("name") or "").strip()]
         names.sort(key=lambda s: s.casefold())
 
         client_entry = ttk.Entry(frm, textvariable=v_client_name, width=48)
-        client_entry.grid(row=2, column=1, columnspan=4, sticky="we", padx=(6,0), pady=(6,0))
+        client_entry.grid(row=3, column=1, columnspan=4, sticky="we", padx=(6,0), pady=(6,0))
 
         popup = AutocompletePopup(d, client_entry, on_choose=lambda txt: v_client_name.set(txt))
 
@@ -1470,19 +1497,19 @@ class DashboardPage:
         d.bind("<Destroy>", lambda _e: popup.destroy() if popup.winfo_exists() else None)
 
 
-        ttk.Separator(frm).grid(row=3, column=0, columnspan=5, sticky="we", pady=10)
+        ttk.Separator(frm).grid(row=4, column=0, columnspan=5, sticky="we", pady=10)
 
         # Mode + Method
-        ttk.Label(frm, text="Task kind").grid(row=4, column=0, sticky="w")
-        ttk.Combobox(frm, textvariable=v_mode, values=["one-off","recurring"], width=14, state="readonly").grid(row=4, column=1, sticky="w", padx=(6,12))
-        ttk.Label(frm, text="Submission").grid(row=4, column=2, sticky="e")
-        ttk.Combobox(frm, textvariable=v_method, values=["none","mail","direct_deposit"], width=18, state="readonly").grid(row=4, column=3, sticky="w", padx=(6,0))
-        ttk.Label(frm, text="Lead days").grid(row=4, column=4, sticky="e")
-        ttk.Entry(frm, textvariable=v_action_lead, width=6).grid(row=4, column=5, sticky="w", padx=(6,0))
+        ttk.Label(frm, text="Task kind").grid(row=5, column=0, sticky="w")
+        ttk.Combobox(frm, textvariable=v_mode, values=["one-off","recurring"], width=14, state="readonly").grid(row=5, column=1, sticky="w", padx=(6,12))
+        ttk.Label(frm, text="Submission").grid(row=5, column=2, sticky="e")
+        ttk.Combobox(frm, textvariable=v_method, values=["none","mail","direct_deposit"], width=18, state="readonly").grid(row=5, column=3, sticky="w", padx=(6,0))
+        ttk.Label(frm, text="Lead days").grid(row=5, column=4, sticky="e")
+        ttk.Entry(frm, textvariable=v_action_lead, width=6).grid(row=5, column=5, sticky="w", padx=(6,0))
 
         # Frequency (only for recurring)
         freq_row = ttk.Frame(frm)
-        freq_row.grid(row=5, column=0, columnspan=6, sticky="w", pady=(6,0))
+        freq_row.grid(row=6, column=0, columnspan=6, sticky="w", pady=(6,0))
         ttk.Label(freq_row, text="Frequency").pack(side=tk.LEFT)
         ttk.Combobox(
             freq_row,
@@ -1494,7 +1521,7 @@ class DashboardPage:
 
         # Dynamic area
         dyn = ttk.Frame(frm)
-        dyn.grid(row=6, column=0, columnspan=6, sticky="we", pady=(8,0))
+        dyn.grid(row=7, column=0, columnspan=6, sticky="we", pady=(8,0))
         for i in range(6): dyn.columnconfigure(i, weight=1)
 
         # One-off holder
@@ -1591,6 +1618,7 @@ class DashboardPage:
             if not title_txt:
                 messagebox.showerror("Validation", "Title is required"); return
             kind = (v_kind.get() or "other").strip().upper()
+            kind_other = (v_kind_other.get() or "").strip() if kind == "OTHER" else ""
             client_name = v_client_name.get().strip() or None
             client_idx = next((i for i,c in enumerate(getattr(self.app, "items", [])) if c.get("name") == client_name), None)
             method = v_method.get(); action_lead = int(v_action_lead.get())
@@ -1677,6 +1705,7 @@ class DashboardPage:
                 "id": init.get("id", str(uuid.uuid4())),
                 "title": title_txt,
                 "kind": kind,
+                "kind_other": kind_other if kind == "OTHER" else "",
                 "category": init.get("category", "other"),
                 "client_idx": client_idx,
                 "client_name": client_name,

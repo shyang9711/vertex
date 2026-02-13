@@ -232,7 +232,11 @@ class ClientDialog(tk.Toplevel):
         )
 
 
-        self.off_tree = ttk.Treeview(frm, columns=self.off_cols, show="headings", height=4, selectmode="browse")
+        off_tree_frm = ttk.Frame(frm)
+        off_tree_frm.grid(row=PERSONNEL_R+1, column=0, columnspan=4, sticky="ew")
+        frm.grid_rowconfigure(PERSONNEL_R+1, weight=0)  # fixed height for personnel list
+        off_tree_frm.columnconfigure(0, weight=1)
+        self.off_tree = ttk.Treeview(off_tree_frm, columns=self.off_cols, show="headings", height=6, selectmode="browse")
 
         for col, label, w in (
             ("name","Entity",220),
@@ -248,9 +252,10 @@ class ClientDialog(tk.Toplevel):
             self.off_tree.heading(col, text=col)
             self.off_tree.column(col, width=0, stretch=False)
 
-        
-        self.off_tree.grid(row=PERSONNEL_R+1, column=0, columnspan=4, sticky="ew")
-        frm.grid_rowconfigure(PERSONNEL_R+1, weight=0)  # fixed height for personnel list
+        off_tree_vsb = ttk.Scrollbar(off_tree_frm, orient="vertical", command=self.off_tree.yview)
+        self.off_tree.configure(yscrollcommand=off_tree_vsb.set)
+        self.off_tree.grid(row=0, column=0, sticky="nsew")
+        off_tree_vsb.grid(row=0, column=1, sticky="ns")
         off_btns = ttk.Frame(frm)
         off_btns.grid(row=PERSONNEL_R+2, column=0, sticky="w", pady=(4,6), columnspan=4)
         ttk.Button(off_btns, text="Link", command=self._rel_link).pack(side=tk.LEFT)
@@ -368,6 +373,7 @@ class ClientDialog(tk.Toplevel):
         self.after(50, _focus_first)
         self.grab_set()
         self.transient(master)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
 
         def _is_individual() -> bool:
             return bool(self.v_is_individual.get())
@@ -1491,13 +1497,18 @@ class ClientDialog(tk.Toplevel):
                 removed_ids = prev_other_ids - current_other_ids
                 print(f"[ClientDialog][LINK] _save: Relations to unlink: {removed_ids}")
                 
+                # Use the client id as stored in items so find_client_by_uid can resolve (linking/backlinking)
+                this_id_for_linking = (str(self._initial.get("id") or "").strip() or this_id)
+                if not this_id_for_linking and this_id:
+                    this_id_for_linking = this_id
+                print(f"[ClientDialog][LINK] _save: this_id (form)='{this_id}', this_id_for_linking='{this_id_for_linking}'")
                 # Unlink removed relations - bidirectionally remove from both sides
                 for removed_id in removed_ids:
                     if hasattr(self.master, "link_clients_relations"):
                         try:
-                            print(f"[ClientDialog][LINK] _save: Unlinking this_id='{this_id}' from removed_id='{removed_id}'")
+                            print(f"[ClientDialog][LINK] _save: Unlinking this_id='{this_id_for_linking}' from removed_id='{removed_id}'")
                             # This will remove B from A's relations and A from B's relations
-                            self.master.link_clients_relations(this_id, removed_id, link=False)
+                            self.master.link_clients_relations(this_id_for_linking, removed_id, link=False)
                             print(f"[ClientDialog][LINK] _save: Successfully unlinked")
                         except Exception as e:
                             print(f"[ClientDialog][LINK] _save: Error unlinking: {e}")
@@ -1507,12 +1518,12 @@ class ClientDialog(tk.Toplevel):
                         print(f"[ClientDialog][LINK] _save: master has no link_clients_relations method")
                 
                 # Link new relations (only those that are actually new, not already linked)
-                # Get currently linked IDs from app.items to avoid re-linking
+                # Get currently linked IDs from app.items to avoid re-linking (use this_id_for_linking so we find the client)
                 currently_linked_ids = set()
-                if hasattr(self.master, "items") and this_id:
+                if hasattr(self.master, "items") and this_id_for_linking:
                     from vertex.utils.helpers import find_client_by_uid
                     try:
-                        current_client = find_client_by_uid(self.master.items, this_id)
+                        current_client = find_client_by_uid(self.master.items, this_id_for_linking)
                         if isinstance(current_client, dict):
                             for rel in current_client.get("relations", []) or []:
                                 rel_link = ensure_relation_link(rel)
@@ -1523,11 +1534,11 @@ class ClientDialog(tk.Toplevel):
                     except Exception as e:
                         print(f"[ClientDialog][LINK] _save: Error getting currently linked IDs: {e}")
                 
-                # Only link relations that aren't already linked
+                # Only link relations that aren't already linked; use this_id_for_linking so the other client gets the back-link
                 new_relations_to_link = [r for r in normalized_rels if ensure_relation_link(r).get("id") not in currently_linked_ids]
                 print(f"[ClientDialog][LINK] _save: About to call _apply_symmetric_links_now_if_possible with {len(new_relations_to_link)} new relations (out of {len(normalized_rels)} total)")
                 if new_relations_to_link:
-                    self._apply_symmetric_links_now_if_possible(this_id, new_relations_to_link)
+                    self._apply_symmetric_links_now_if_possible(this_id_for_linking, new_relations_to_link)
                 else:
                     print(f"[ClientDialog][LINK] _save: No new relations to link (all already linked)")
                 print(f"[ClientDialog][LINK] _save: After _apply_symmetric_links_now_if_possible, result relations: {self.result.get('relations', [])}")

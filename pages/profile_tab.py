@@ -399,6 +399,7 @@ def init_profile_tab(
     ttk.Button(toolbar, text="Add", command=lambda: _open_add_task_dialog()).pack(side="left", padx=(8,0))
     ttk.Button(toolbar, text="Edit",   command=lambda: _edit_client_task()).pack(side="left", padx=(6,0))
     ttk.Button(toolbar, text="Delete", command=lambda: _delete_client_task()).pack(side="left", padx=(6,0))
+    ttk.Button(toolbar, text="See all tasks", command=lambda: _open_all_tasks_dialog()).pack(side="left", padx=(6,0))
     ttk.Button(toolbar, text="Stop", command=lambda: _stop_client_recurring()).pack(side="left", padx=(6,0))
     ttk.Button(toolbar, text="Pause",  command=lambda: _pause_client_recurring()).pack(side="left", padx=(6,0))
     ttk.Button(toolbar, text="Resume", command=lambda: _resume_client_recurring()).pack(side="left", padx=(6,0))
@@ -843,6 +844,124 @@ def init_profile_tab(
         print(f"[PROFILE] _client_tasks_source: matched={len(out)} (idx={idx}, id={cid}, ein={ein}, name='{name_key}')")
         return out
 
+    def _client_tasks_all_source():
+        """Same as _client_tasks_source but includes disabled tasks. Returns list of (task, global_index)."""
+        items = getattr(app, "items", []) or []
+        idx = _resolve_client_idx_from_client()
+        cid = str(client.get("id", "") or "").strip()
+        ein = _normalize_ein_9(client.get("ein", "") or "")
+        name_key = (client.get("name") or "").strip().casefold()
+        if isinstance(idx, int) and 0 <= idx < len(items):
+            live = items[idx]
+            cid = cid or str(live.get("id", "") or "").strip()
+            ein = ein or _normalize_ein_9(live.get("ein", "") or "")
+            name_key = name_key or (live.get("name") or "").strip().casefold()
+        out = []
+        dash = getattr(app, "dashboard", None)
+        store = getattr(dash, "store", None) if dash else None
+        tasks = getattr(store, "tasks", None) if store else None
+        if not isinstance(tasks, list):
+            return []
+        for i, t in enumerate(tasks):
+            if not isinstance(t, dict):
+                continue
+            t_idx = t.get("client_idx", t.get("company_idx"))
+            t_name = (t.get("client_name") or t.get("company_name") or "").strip().casefold()
+            t_cid = str(t.get("client_id", "") or "").strip()
+            t_ein = _normalize_ein_9(t.get("ein", "") or t.get("client_ein", "") or "")
+            match = (
+                (cid and t_cid and t_cid == cid) or
+                (ein and t_ein and t_ein == ein) or
+                (isinstance(idx, int) and isinstance(t_idx, int) and t_idx == idx) or
+                (name_key and t_name and t_name == name_key)
+            )
+            if match:
+                out.append((t, i))
+        return out
+
+    def _open_all_tasks_dialog():
+        dash = getattr(app, "dashboard", None)
+        if not dash or not getattr(dash, "store", None):
+            messagebox.showinfo("All Tasks", "Dashboard is not available.")
+            return
+        all_tasks = _client_tasks_all_source()
+        win = tk.Toplevel(app.winfo_toplevel())
+        win.title(f"All tasks — {client.get('name', 'Client')}")
+        win.geometry("720x400")
+        win.resizable(True, True)
+        frm = ttk.Frame(win, padding=8)
+        frm.pack(fill="both", expand=True)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(1, weight=1)
+        ttk.Label(frm, text="Recurring and one-off tasks for this client (including disabled):", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0,6))
+        cols = ("title", "type", "schedule", "due_or_next", "enabled")
+        tv = ttk.Treeview(frm, columns=cols, show="headings", height=14, selectmode="browse")
+        tv.heading("title", text="Title")
+        tv.heading("type", text="Type")
+        tv.heading("schedule", text="Schedule")
+        tv.heading("due_or_next", text="Due / Next")
+        tv.heading("enabled", text="Enabled")
+        tv.column("title", width=280)
+        tv.column("type", width=120)
+        tv.column("schedule", width=100)
+        tv.column("due_or_next", width=120)
+        tv.column("enabled", width=60)
+        tv.grid(row=1, column=0, sticky="nsew", pady=(0,8))
+        ysb = ttk.Scrollbar(frm, orient="vertical", command=tv.yview)
+        ysb.grid(row=1, column=1, sticky="ns")
+        tv.configure(yscrollcommand=ysb.set)
+        _all_tasks_rows = []
+        for t, gidx in all_tasks:
+            title = t.get("title", "")
+            k = (t.get("kind") or "").strip().upper()
+            type_str = (t.get("kind_other") or "").strip() if k == "OTHER" else (t.get("kind") or "")
+            rec = t.get("recurrence", {})
+            freq = rec.get("freq", "one-off")
+            schedule = "One-off" if freq == "one-off" else f"Recurring ({freq})"
+            due = t.get("due", "")
+            if freq != "one-off":
+                try:
+                    from vertex.models.tasks_model import next_monthly_on_or_after, next_semi_monthly_on_or_after, next_quarterly_on_or_after
+                except ImportError:
+                    from models.tasks_model import next_monthly_on_or_after, next_semi_monthly_on_or_after, next_quarterly_on_or_after
+                today = _dt.date.today()
+                start = _parse_date_local(t.get("start_on")) or today
+                if freq == "monthly":
+                    due = str(next_monthly_on_or_after(start, int(rec.get("dom", 5))))
+                elif freq == "semi-monthly":
+                    due = str(next_semi_monthly_on_or_after(start, int(rec.get("dom", 5)), int(rec.get("dom2", 20))))
+                elif freq == "quarterly":
+                    months = rec.get("months") or [1, 4, 7, 10]
+                    due = str(next_quarterly_on_or_after(start, months, int(rec.get("dom", 15))))
+                else:
+                    due = "—"
+            due_or_next = due or "—"
+            enabled = "Yes" if t.get("is_enabled", True) else "No"
+            iid = tv.insert("", "end", values=(title, type_str, schedule, due_or_next, enabled))
+            _all_tasks_rows.append((iid, gidx))
+        def _on_dbl(e):
+            sel = tv.selection()
+            if not sel:
+                return
+            iid = sel[0]
+            for (row_iid, gidx) in _all_tasks_rows:
+                if row_iid == iid:
+                    win.destroy()
+                    cur = json.loads(json.dumps(dash.store.tasks[gidx]))
+                    r = dash._task_dialog(title="Edit Task", init=cur)
+                    if r:
+                        dash.store.tasks[gidx] = r
+                        dash.store.save()
+                        dash._refresh_todo_feed()
+                        _safe_redraw_dashboard()
+                        _refresh_client_tasks_tv()
+                    return
+        tv.bind("<Double-1>", _on_dbl)
+        btn_row = ttk.Frame(frm)
+        btn_row.grid(row=2, column=0, sticky="ew", pady=(0,0))
+        btn_row.columnconfigure(0, weight=1)
+        ttk.Label(btn_row, text="Double-click a task to edit.").pack(side="left")
+        ttk.Button(btn_row, text="Close", command=win.destroy).pack(side="right")
 
     def _stop_client_recurring():
         dash = getattr(app, "dashboard", None)
@@ -1030,9 +1149,15 @@ def init_profile_tab(
 
         rows = []
 
+        def _task_kind_label(t):
+            k = (t.get("kind") or "").strip().upper()
+            if k == "OTHER" and (t.get("kind_other") or "").strip():
+                return (t.get("kind_other") or "").strip()
+            return t.get("kind", "")
+
         # 1) Past (in window): keep (gray if done)
         for t in tasks:
-            kind  = t.get("kind","")
+            kind  = _task_kind_label(t)
             title = t.get("title","")
             for orig, disp, is_done in occurs_between(t, window_start, yesterday):
                 if window_start <= disp <= yesterday:
@@ -1040,7 +1165,7 @@ def init_profile_tab(
 
         # 2) Today & future: nearest-upcoming rule (match Dashboard)
         for t in tasks:
-            kind  = t.get("kind","")
+            kind  = _task_kind_label(t)
             title = t.get("title","")
             futures = [(disp, is_done, t, kind, title, orig)
                     for (orig, disp, is_done) in occurs_between(t, today, window_end)
