@@ -2164,6 +2164,8 @@ class App(ttk.Frame):
 
 
     def _detail_edit(self, idx: int):
+        # Use the detail page's client index so Edit Client from profile/detail uses the correct client
+        self._current_detail_idx = idx
         self.on_edit()
 
     def on_delete(self):

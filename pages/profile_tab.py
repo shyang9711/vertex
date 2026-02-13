@@ -137,7 +137,6 @@ def init_profile_tab(
         else:
             kind, val = link_id.split(":", 1)
 
-        kind, val = link_id.split(":", 1)
         kind = (kind or "").strip().lower()
         val = (val or "").strip()
 

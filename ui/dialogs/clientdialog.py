@@ -249,7 +249,8 @@ class ClientDialog(tk.Toplevel):
             self.off_tree.column(col, width=0, stretch=False)
 
         
-        self.off_tree.grid(row=PERSONNEL_R+1, column=0, columnspan=4, sticky="nsew")
+        self.off_tree.grid(row=PERSONNEL_R+1, column=0, columnspan=4, sticky="ew")
+        frm.grid_rowconfigure(PERSONNEL_R+1, weight=0)  # fixed height for personnel list
         off_btns = ttk.Frame(frm)
         off_btns.grid(row=PERSONNEL_R+2, column=0, sticky="w", pady=(4,6), columnspan=4)
         ttk.Button(off_btns, text="Link", command=self._rel_link).pack(side=tk.LEFT)
@@ -261,6 +262,7 @@ class ClientDialog(tk.Toplevel):
         ttk.Label(frm, text="Memo").grid(row=PERSONNEL_R+4, column=0, sticky="w", pady=(4,2), columnspan=4)
         self.memo_txt = ScrolledText(frm, width=72, height=6, wrap="word")
         self.memo_txt.grid(row=PERSONNEL_R+5, column=0, columnspan=4, sticky="we", pady=(0,6))
+        frm.grid_rowconfigure(PERSONNEL_R+5, weight=0)  # fixed height for notes/memo
         if self.memo_init: self.memo_txt.insert("1.0", self.memo_init)
         
         # --- Legacy migration (if some business links were stored in officers) ---
