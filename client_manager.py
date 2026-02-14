@@ -1445,9 +1445,9 @@ class App(ttk.Frame):
         docs = ttk.Frame(nb, padding=10); nb.add(docs, text="Documents")
         ttk.Label(docs, text="Attach or link personnel documents here (not implemented).").pack(anchor="w")
 
-        # Logs tab (placeholder)
-        logs = ttk.Frame(nb, padding=10); nb.add(logs, text="Logs")
-        ttk.Label(logs, text="Personnel logs go here (not implemented).").pack(anchor="w")
+        # Notes tab (placeholder)
+        logs = ttk.Frame(nb, padding=10); nb.add(logs, text="Notes")
+        ttk.Label(logs, text="Personnel notes go here (not implemented).").pack(anchor="w")
 
         footer = ttk.Frame(page, padding=(8,2)); footer.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -1742,74 +1742,74 @@ class App(ttk.Frame):
     def _build_logs_panel(self, parent, logs_list, on_change):
         """
         parent: a Frame to build into
-        logs_list: list[dict] (ts,user,text)
+        logs_list: list[dict] (ts, text, done, edited)
         on_change: callback(new_logs_list) to persist from page
         """
         frame = ttk.Frame(parent); frame.pack(fill=tk.BOTH, expand=True)
-    
-        cols = ("ts", "user", "text")
+
+        cols = ("ts", "text")
         tv = ttk.Treeview(frame, columns=cols, show="headings", selectmode="browse")
         tv.heading("ts",   text="Timestamp")
-        tv.heading("user", text="User")
         tv.heading("text", text="Text")
-        tv.column("ts", width=160, anchor="w")
-        tv.column("user", width=80, anchor="w")
+        tv.column("ts", width=200, anchor="w")
         tv.column("text", width=600, anchor="w")
         y = ttk.Scrollbar(frame, orient="vertical", command=tv.yview)
         tv.configure(yscrollcommand=y.set)
         tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         y.pack(side=tk.RIGHT, fill=tk.Y)
-    
+
+        def _ts_display(entry):
+            ts = entry.get("ts", "")
+            return f"{ts} (Edited)" if entry.get("edited") and ts else (ts or ("(Edited)" if entry.get("edited") else ""))
+
         def refresh_tv():
             tv.delete(*tv.get_children())
             for entry in logs_list:
-                tv.insert("", "end", values=(entry.get("ts",""), entry.get("user",""), entry.get("text","")))
-    
+                tv.insert("", "end", values=(_ts_display(entry), entry.get("text", "")))
+
         def add_log():
-            d = LogDialog(self.winfo_toplevel(), "Add Log")
+            d = LogDialog(self.winfo_toplevel(), "Add Note", initial={})
             self.wait_window(d)
             if d.result:
                 logs_list.append(d.result)
                 on_change(logs_list)
                 refresh_tv()
-    
+
         def edit_log():
             sel = tv.selection()
             if not sel:
-                messagebox.showinfo("Edit Log", "Select a log row to edit."); return
-            v = tv.item(sel[0], "values")
-            init = {"ts": v[0], "user": v[1], "text": v[2]}
-            d = LogDialog(self.winfo_toplevel(), "Edit Log", init)
+                messagebox.showinfo("Edit Note", "Select a note row to edit."); return
+            idx = tv.index(sel[0])
+            d = LogDialog(self.winfo_toplevel(), "Edit Note", initial=logs_list[idx])
             self.wait_window(d)
             if d.result:
-                idx = tv.index(sel[0])
                 logs_list[idx] = d.result
                 on_change(logs_list)
                 refresh_tv()
-    
+
         def delete_log():
             sel = tv.selection()
             if not sel:
-                messagebox.showinfo("Delete Log", "Select a log row to delete."); return
-            if not messagebox.askyesno("Confirm Delete", "Delete selected log?"):
+                messagebox.showinfo("Delete Note", "Select a note row to delete."); return
+            if not messagebox.askyesno("Confirm Delete", "Delete selected note?"):
                 return
             idx = tv.index(sel[0])
             del logs_list[idx]
             on_change(logs_list)
             refresh_tv()
-    
+
         # context & double-click
         menu = tk.Menu(frame, tearoff=False)
         menu.add_command(label="Edit", command=edit_log)
         menu.add_command(label="Delete", command=delete_log)
         tv.bind("<Button-3>", lambda e: (tv.identify_row(e.y) and tv.selection_set(tv.identify_row(e.y)), menu.tk_popup(e.x_root, e.y_root)))
         tv.bind("<Double-1>", lambda _e: edit_log())
-    
+
         btns = ttk.Frame(parent); btns.pack(fill="x", pady=(6,0))
         ttk.Button(btns, text="Add", command=add_log).pack(side=tk.LEFT)
         ttk.Button(btns, text="Edit", command=edit_log).pack(side=tk.LEFT, padx=(6,0))
         ttk.Button(btns, text="Delete", command=delete_log).pack(side=tk.LEFT, padx=(6,0))
-    
+
         refresh_tv()
         return frame
 
@@ -3237,7 +3237,7 @@ class App(ttk.Frame):
 
     def select_detail_tab(self, title: str):
         """
-        Called from NotePage to switch to the Logs tab if your detail page uses a ttk.Notebook.
+        Called from NotePage to switch to the Notes tab if your detail page uses a ttk.Notebook.
         Safe no-op if not found.
         """
         nb = getattr(self, "detail_notebook", None) or getattr(self, "detail_nb", None) or getattr(self, "notebook", None)

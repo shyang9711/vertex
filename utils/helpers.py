@@ -131,14 +131,34 @@ def relations_to_display_lines(relations: List[Dict[str,str]]) -> List[str]:
     return [display_relation_name(o) for o in (relations or []) if display_relation_name(o)]
 
 
+def parse_emails_from_field(email_field: str) -> List[str]:
+    """Parse comma-, semicolon-, and newline-separated email string into list of trimmed, non-empty emails."""
+    if not email_field:
+        return []
+    s = str(email_field).strip()
+    out = []
+    for part in re.split(r"[,;\n]", s):
+        e = part.strip()
+        if e:
+            out.append(e)
+    return out
+
+
+def email_display_string(email_field: str) -> str:
+    """Format email field for display: multiple emails shown one per line (\\n)."""
+    emails = parse_emails_from_field(email_field)
+    return "\n".join(emails) if emails else ""
+
+
 def relations_to_flat_emails(relations: List[Dict[str,str]]) -> List[str]:
-    """Extract unique emails from relations list."""
+    """Extract unique emails from relations list. Treats each relation's email as comma/semicolon-separated (multiple)."""
     seen, out = set(), []
     for o in relations or []:
-        e = str(ensure_relation_dict(o).get("email","")).strip()
-        if e and e not in seen:
-            seen.add(e)
-            out.append(e)
+        raw = str(ensure_relation_dict(o).get("email","")).strip()
+        for e in parse_emails_from_field(raw):
+            if e and e not in seen:
+                seen.add(e)
+                out.append(e)
     return out
 
 
@@ -247,12 +267,49 @@ def get_client_uid(client: Dict[str, Any]) -> str:
         ein = _digits(client.get("ein", ""))
         return f"ein:{ein}" if ein else ""
 
+
+def _client_matches_uid(client: Dict[str, Any], uid: str) -> bool:
+    """
+    Return True if this client is the one referred to by uid.
+    uid can be: get_client_uid(client), or "ein:<9>", "ssn:<9>", "client:<id>", or raw id.
+    Ensures linking works when clients have id stored as UUID but link dialog uses ein:/ssn:.
+    """
+    if not isinstance(client, dict) or not uid:
+        return False
+    uid = uid.strip()
+    # Exact match with canonical get_client_uid
+    if get_client_uid(client) == uid:
+        return True
+    # ein:<digits> -> match by EIN
+    if uid.lower().startswith("ein:"):
+        want = normalize_ein_digits(uid.split(":", 1)[1])
+        if want and normalize_ein_digits(client.get("ein", "")) == want:
+            return True
+    # ssn:<digits> -> match by SSN (or EIN for individuals that use EIN field)
+    if uid.lower().startswith("ssn:"):
+        want = normalize_ssn_digits(uid.split(":", 1)[1])
+        have = normalize_ssn_digits(client.get("ssn", "") or client.get("ein", ""))
+        if want and have == want:
+            return True
+    # client:<id> or raw id
+    raw_id = str(client.get("id") or "").strip()
+    if uid.lower().startswith("client:"):
+        want = (uid.split(":", 1)[1] or "").strip()
+        return want and raw_id == want
+    return raw_id == uid
+
+
 def find_client_by_uid(clients: List[Dict[str, Any]], uid: str) -> Optional[Dict[str, Any]]:
+    """
+    Find a client by uid in any supported form: get_client_uid(c), ein:<9>, ssn:<9>, client:<id>, or raw id.
+    This makes business-business and spouse-spouse (and all) linking work even when client['id']
+    is stored as a UUID while the link dialog passes ein:/ssn: from candidates.
+    """
     uid = (uid or "").strip()
     if not uid:
         return None
     for c in clients:
-        if get_client_uid(c) == uid:
+        if _client_matches_uid(c, uid):
             return c
     return None
 

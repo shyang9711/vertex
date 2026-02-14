@@ -12,6 +12,7 @@ try:
         ensure_relation_link, merge_relations,
         migrate_officer_business_links_to_relations,
         normalize_ein_digits, normalize_ssn_digits,
+        email_display_string,
     )
 except ModuleNotFoundError:
     from utils.helpers import (
@@ -19,6 +20,7 @@ except ModuleNotFoundError:
         ensure_relation_link, merge_relations,
         migrate_officer_business_links_to_relations,
         normalize_ein_digits, normalize_ssn_digits,
+        email_display_string,
     )
 
 
@@ -352,7 +354,7 @@ class ClientDialog(tk.Toplevel):
             print(f"[ClientDialog] Row {i} full data: {o}")
             vals = (
                 display_relation_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
-                o["email"], o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
+                email_display_string(o["email"]), o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
                 o.get("role","officer"), o.get("id",""), "",  # No longer using linked_client_label
             )
             self.off_tree.insert("", "end", values=vals)
@@ -513,7 +515,7 @@ class ClientDialog(tk.Toplevel):
         o = ensure_relation_dict(o)
         return (
             display_relation_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
-            o["email"], o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
+            email_display_string(o["email"]), o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
             o.get("role", "officer"), o.get("id", ""), "",  # Use "id" instead of "linked_client_id"
         )
 
@@ -614,7 +616,7 @@ class ClientDialog(tk.Toplevel):
         values = (
             r.get("name", ""),
             r.get("first_name", ""), r.get("middle_name", ""), r.get("last_name", ""), r.get("nickname", ""),
-            r.get("email", ""), r.get("phone", ""),
+            email_display_string(r.get("email", "")), r.get("phone", ""),
             r.get("addr1", ""), r.get("addr2", ""), r.get("city", ""), r.get("state", ""), r.get("zip", ""),
             r.get("dob", ""),
             (r.get("role", "") or "officer").strip().lower(),
@@ -678,7 +680,7 @@ class ClientDialog(tk.Toplevel):
         values = (
             r.get("name", ""),
             r.get("first_name", ""), r.get("middle_name", ""), r.get("last_name", ""), r.get("nickname", ""),
-            r.get("email", ""), r.get("phone", ""),
+            email_display_string(r.get("email", "")), r.get("phone", ""),
             r.get("addr1", ""), r.get("addr2", ""), r.get("city", ""), r.get("state", ""), r.get("zip", ""),
             r.get("dob", ""),
             (r.get("role", "") or "officer").strip().lower(),

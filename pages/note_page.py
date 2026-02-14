@@ -52,7 +52,7 @@ class NotePage:
     Newest first.
     Double-click:
       - on ✓ column: toggle done
-      - elsewhere: open client and focus Logs tab
+      - elsewhere: open client and focus Notes tab
     """
 
     def __init__(self, app):
@@ -152,10 +152,11 @@ class NotePage:
             mgr = c.get("acct_mgr", "")
             for log_idx, lg in enumerate(c.get("logs", []) or []):
                 ts = str(lg.get("ts", "")).strip()
+                date_display = f"{ts} (Edited)" if lg.get("edited") and ts else (ts or ("(Edited)" if lg.get("edited") else ""))
                 rows.append({
                     "client_idx": client_idx,
                     "log_idx": log_idx,
-                    "date": ts,
+                    "date": date_display,
                     "_dt": self._parse_ts(ts),
                     "client": cname,
                     "manager": mgr,
@@ -270,9 +271,9 @@ class NotePage:
         # IMPORTANT: positional arg for data (your navigate() expects data, not idx=)
         self.app.navigate("detail", client_idx, push=True)
 
-        # try to focus Logs tab if available
+        # try to focus Notes tab if available
         if hasattr(self.app, "select_detail_tab"):
             try:
-                self.app.select_detail_tab("Logs")
+                self.app.select_detail_tab("Notes")
             except Exception:
                 pass

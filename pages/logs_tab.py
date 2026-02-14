@@ -65,28 +65,27 @@ def _ensure_row_tags(tv: ttk.Treeview, dark: bool):
     }
 
 def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
-    """Builds the Logs tab for a given client inside the provided notebook."""
+    """Builds the Notes tab for a given client inside the provided notebook."""
     logs_tab = ttk.Frame(notebook, padding=8)
-    notebook.add(logs_tab, text="Logs")
+    notebook.add(logs_tab, text="Notes")
 
-    # ---- Treeview with checkbox-ish Done column ----
-    cols = ("done", "ts", "user", "text")
+    # ---- Treeview with checkbox-ish Done column; fixed row height ----
+    cols = ("done", "ts", "text")
+    _notes_tab_style = ttk.Style(logs_tab)
+    _notes_tab_style.configure("NotesTab.Treeview", rowheight=28)
     tv = ttk.Treeview(
-        logs_tab, columns=cols, show="headings", selectmode="browse", height=10
+        logs_tab, columns=cols, show="headings", selectmode="browse", height=10, style="NotesTab.Treeview"
     )
 
     DARK = _is_dark(app)
     ROW_TAGS = _ensure_row_tags(tv, DARK)
 
-
     tv.heading("done", text="✓")
     tv.heading("ts",   text="When")
-    tv.heading("user", text="User")
     tv.heading("text", text="Entry")
 
     tv.column("done", width=40,  anchor="center", stretch=False)
-    tv.column("ts",   width=160, anchor="w",      stretch=False)
-    tv.column("user", width=80,  anchor="w",      stretch=False)
+    tv.column("ts",   width=200, anchor="w",      stretch=False)
     tv.column("text", width=700, anchor="w",      stretch=True)
 
     yscr = ttk.Scrollbar(logs_tab, orient="vertical", command=tv.yview)
@@ -97,6 +96,12 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
     logs_tab.grid_rowconfigure(0, weight=1)
     logs_tab.grid_columnconfigure(0, weight=1)
 
+    def _ts_display(entry):
+        ts = entry.get("ts", "")
+        if entry.get("edited"):
+            return f"{ts} (Edited)" if ts else "(Edited)"
+        return ts
+
     def refresh_tv():
         tv.delete(*tv.get_children())
         iids = []
@@ -104,8 +109,7 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
             done_mark = "☑" if entry.get("done") else "☐"
             iid = tv.insert("", "end", values=(
                 done_mark,
-                entry.get("ts", ""),
-                entry.get("user", ""),
+                _ts_display(entry),
                 entry.get("text", ""),
             ))
             iids.append((iid, bool(entry.get("done"))))
@@ -124,23 +128,14 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         # We match by index to keep it simple & robust
         return tv.index(sel[0])
 
-    def add_log():
-        LOG.info("Add log clicked")
-        d = LogDialog(app.winfo_toplevel(), "Add Log")
-        app.wait_window(d)
-        if d.result:
-            client.setdefault("logs", []).append(d.result)
-            save_clients_cb(app.items)
-            refresh_tv()
-
     def edit_log():
-        LOG.info("Edit log clicked")
+        LOG.info("Edit note clicked")
         i = selected_index()
         if i is None:
-            messagebox.showinfo("Edit Log", "Select a log row to edit.")
+            messagebox.showinfo("Edit Note", "Select a note row to edit.")
             return
         entry = (client.get("logs") or [])[i]
-        d = LogDialog(app.winfo_toplevel(), "Edit Log", initial=entry)
+        d = LogDialog(app.winfo_toplevel(), "Edit Note", initial=entry)
         app.wait_window(d)
         if d.result:
             client["logs"][i] = d.result
@@ -148,12 +143,12 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
             refresh_tv()
 
     def delete_log():
-        LOG.info("Delete log clicked")
+        LOG.info("Delete note clicked")
         i = selected_index()
         if i is None:
-            messagebox.showinfo("Delete Log", "Select a log row to delete.")
+            messagebox.showinfo("Delete Note", "Select a note row to delete.")
             return
-        if not messagebox.askyesno("Delete Log", "Delete the selected log entry?"):
+        if not messagebox.askyesno("Delete Note", "Delete the selected note entry?"):
             return
         del client["logs"][i]
         save_clients_cb(app.items)
@@ -163,7 +158,7 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         LOG.info("Toggle done clicked")
         sel = tv.selection()
         if not sel:
-            messagebox.showinfo("Toggle", "Select a log row to toggle done/undone.")
+            messagebox.showinfo("Toggle", "Select a note row to toggle done/undone.")
             return
         _toggle_done_by_iid(sel[0])
 
@@ -197,13 +192,12 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
     v_quick = tk.StringVar()
     ttk.Entry(controls, textvariable=v_quick).grid(row=0, column=0, sticky="we")
 
-    def quick_add():
+    def add_note():
         t = v_quick.get().strip()
         if not t:
             return
         client.setdefault("logs", []).append({
             "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "user": "",
             "text": t,
             "done": False
         })
@@ -211,11 +205,10 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         v_quick.set("")
         refresh_tv()
 
-    ttk.Button(controls, text="Add",    command=add_log).grid(row=0, column=1, padx=(6,0))
-    ttk.Button(controls, text="Edit",   command=edit_log).grid(row=0, column=2, padx=(6,0))
-    ttk.Button(controls, text="Delete", command=delete_log).grid(row=0, column=3, padx=(6,0))
+    ttk.Button(controls, text="Add",         command=add_note).grid(row=0, column=1, padx=(6,0))
+    ttk.Button(controls, text="Edit",         command=edit_log).grid(row=0, column=2, padx=(6,0))
+    ttk.Button(controls, text="Delete",      command=delete_log).grid(row=0, column=3, padx=(6,0))
     ttk.Button(controls, text="Toggle Done", command=toggle_done).grid(row=0, column=4, padx=(6,0))
-    ttk.Button(controls, text="Quick Add", command=quick_add).grid(row=0, column=5, padx=(6,0))
 
     # Double-click to edit, single-click on ✓ column to toggle
     def on_tree_double(_e):

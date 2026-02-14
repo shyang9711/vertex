@@ -23,8 +23,8 @@ try:
         display_date_for,
     )
     from vertex.utils.app_logging import get_logger
-    from vertex.utils.helpers import ensure_relation_dict
-    
+    from vertex.utils.helpers import ensure_relation_dict, email_display_string
+
 except ModuleNotFoundError:
     from models.tasks_model import (
         adjust_if_weekend_or_holiday,
@@ -36,7 +36,7 @@ except ModuleNotFoundError:
         display_date_for,
     )
     from utils.app_logging import get_logger
-    from utils.helpers import ensure_relation_dict
+    from utils.helpers import ensure_relation_dict, email_display_string
 
 try:
     from vertex.ui.components.scrollframe import ScrollFrame
@@ -237,7 +237,7 @@ def init_profile_tab(
                     role_display,
                     o2.get("first_name",""),
                     o2.get("last_name",""),
-                    o2.get("email",""),
+                    email_display_string(o2.get("email","")),
                     o2.get("phone",""),
                 )
             )
@@ -691,7 +691,7 @@ def init_profile_tab(
                 values=(
                     role_display,
                     entity_name,
-                    rel_dict.get("email",""),
+                    email_display_string(rel_dict.get("email","")),
                     rel_dict.get("phone",""),
                 )
             )
@@ -972,7 +972,7 @@ def init_profile_tab(
             rec = t.get("recurrence", {})
             freq = rec.get("freq", "one-off")
             schedule = "One-off" if freq == "one-off" else f"Recurring ({freq})"
-            # State: Stopped | Paused | In progress
+            # State: Stopped | Paused | Done | Canceled | Past due | In progress
             end_on = _parse_date_local(t.get("end_on"))
             if end_on and today > end_on:
                 state_str = "Stopped"
@@ -1007,6 +1007,23 @@ def init_profile_tab(
             if state_str == "Stopped" and freq != "one-off":
                 due = "—"
             due_or_next = due or "—"
+            # Done / Canceled / Past due: when due date is in the past, check occurrence status
+            if state_str == "In progress" and due and due != "—":
+                due_date = _parse_date_local(due)
+                if due_date and due_date < today:
+                    comp = set(t.get("completed") or [])
+                    canc = set(t.get("cancelled") or [])
+                    s_actual = due_date.isoformat()
+                    try:
+                        s_disp = display_date_for(t, due_date).isoformat()
+                    except Exception:
+                        s_disp = s_actual
+                    if s_actual in comp or s_disp in comp:
+                        state_str = "Done"
+                    elif s_actual in canc or s_disp in canc:
+                        state_str = "Canceled"
+                    else:
+                        state_str = "Past due"
             iid = tv.insert("", "end", values=(title, type_str, schedule, state_str, due_or_next))
             _all_tasks_rows.append((iid, gidx))
 
@@ -1064,6 +1081,22 @@ def init_profile_tab(
                 if state_str == "Stopped" and freq != "one-off":
                     due = "—"
                 due_or_next = due or "—"
+                if state_str == "In progress" and due and due != "—":
+                    due_date = _parse_date_local(due)
+                    if due_date and due_date < today:
+                        comp = set(t.get("completed") or [])
+                        canc = set(t.get("cancelled") or [])
+                        s_actual = due_date.isoformat()
+                        try:
+                            s_disp = display_date_for(t, due_date).isoformat()
+                        except Exception:
+                            s_disp = s_actual
+                        if s_actual in comp or s_disp in comp:
+                            state_str = "Done"
+                        elif s_actual in canc or s_disp in canc:
+                            state_str = "Canceled"
+                        else:
+                            state_str = "Past due"
                 iid = tv.insert("", "end", values=(title, type_str, schedule, state_str, due_or_next))
                 _all_tasks_rows.append((iid, gidx))
 

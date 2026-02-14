@@ -698,9 +698,11 @@ def init_documents_tab(nb: ttk.Notebook, self_ref, c: dict, save_clients_cb):
     csv_wrap = ttk.Frame(csv_area)
     csv_wrap.pack(fill="both", expand=True)
 
-    # Treeview with 4 columns
+    # Treeview with 4 columns; fixed row height
     csv_cols = ("name", "type", "year", "quarter")
-    csv_tree = ttk.Treeview(csv_wrap, columns=csv_cols, show="headings", selectmode="browse")
+    _docs_style = ttk.Style(docs_tab)
+    _docs_style.configure("DocumentsTab.Treeview", rowheight=28)
+    csv_tree = ttk.Treeview(csv_wrap, columns=csv_cols, show="headings", selectmode="browse", style="DocumentsTab.Treeview")
     for cid, label, w in (
         ("name","name",420),
         ("type","document type",220),
