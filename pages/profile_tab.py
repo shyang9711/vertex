@@ -1511,6 +1511,26 @@ def init_profile_tab(
     memo_txt = ScrolledText(left, width=56, height=4, wrap="word")
     memo_txt.pack(fill=tk.X, pady=(4,0))
     memo_txt.insert("1.0", client.get("memo",""))
-    memo_txt.configure(state="disabled")
+
+    _memo_save_job = [None]  # mutable to cancel pending after_id
+
+    def _save_memo():
+        try:
+            text = memo_txt.get("1.0", "end").strip()
+            client["memo"] = text
+            save_fn = getattr(app, "save_clients_data", None)
+            if save_fn and callable(save_fn):
+                save_fn()
+        except Exception:
+            pass
+
+    def _debounced_save_memo(_e=None):
+        job = _memo_save_job[0]
+        if job is not None:
+            left.after_cancel(job)
+        _memo_save_job[0] = left.after(500, lambda: (_save_memo(), _memo_save_job.__setitem__(0, None)))
+
+    memo_txt.bind("<FocusOut>", lambda _: _save_memo())
+    memo_txt.bind("<KeyRelease>", _debounced_save_memo)
 
     return prof
