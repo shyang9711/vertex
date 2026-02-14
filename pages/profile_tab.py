@@ -933,24 +933,36 @@ def init_profile_tab(
         frm.columnconfigure(0, weight=1)
         frm.rowconfigure(1, weight=1)
         ttk.Label(frm, text="Recurring and one-off tasks for this client (including disabled):", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0,6))
-        cols = ("title", "type", "schedule", "state", "due_or_next", "enabled")
-        tv = ttk.Treeview(frm, columns=cols, show="headings", height=14, selectmode="browse")
+        cols = ("title", "type", "schedule", "state", "due_or_next")
+        _all_tasks_style = ttk.Style(win)
+        _all_tasks_style.configure("AllTasks.Treeview", rowheight=26)
+        tv = ttk.Treeview(frm, columns=cols, show="headings", height=14, selectmode="browse", style="AllTasks.Treeview")
         tv.heading("title", text="Title")
         tv.heading("type", text="Type")
         tv.heading("schedule", text="Schedule")
         tv.heading("state", text="State")
         tv.heading("due_or_next", text="Due / Next")
-        tv.heading("enabled", text="Enabled")
-        tv.column("title", width=240)
+        tv.column("title", width=260)
         tv.column("type", width=90)
-        tv.column("schedule", width=100)
+        tv.column("schedule", width=120)
         tv.column("state", width=90)
         tv.column("due_or_next", width=100)
-        tv.column("enabled", width=56)
         tv.grid(row=1, column=0, sticky="nsew", pady=(0,8))
         ysb = ttk.Scrollbar(frm, orient="vertical", command=tv.yview)
         ysb.grid(row=1, column=1, sticky="ns")
         tv.configure(yscrollcommand=ysb.set)
+        def _on_mousewheel(e):
+            if not tv.winfo_exists():
+                return
+            if e.delta:
+                tv.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            elif e.num == 4:
+                tv.yview_scroll(-3, "units")
+            elif e.num == 5:
+                tv.yview_scroll(3, "units")
+        tv.bind("<MouseWheel>", _on_mousewheel)
+        tv.bind("<Button-4>", _on_mousewheel)
+        tv.bind("<Button-5>", _on_mousewheel)
         today = _dt.date.today()
         _all_tasks_rows = []
         for t, gidx in all_tasks:
@@ -995,9 +1007,119 @@ def init_profile_tab(
             if state_str == "Stopped" and freq != "one-off":
                 due = "—"
             due_or_next = due or "—"
-            enabled = "Yes" if t.get("is_enabled", True) else "No"
-            iid = tv.insert("", "end", values=(title, type_str, schedule, state_str, due_or_next, enabled))
+            iid = tv.insert("", "end", values=(title, type_str, schedule, state_str, due_or_next))
             _all_tasks_rows.append((iid, gidx))
+
+        def _gidx_for_selection():
+            sel = tv.selection()
+            if not sel:
+                return None
+            iid = sel[0]
+            for (row_iid, gidx) in _all_tasks_rows:
+                if row_iid == iid:
+                    return gidx
+            return None
+
+        def _repopulate_tree():
+            for iid in list(tv.get_children("")):
+                tv.delete(iid)
+            _all_tasks_rows.clear()
+            for t, gidx in _client_tasks_all_source():
+                title = t.get("title", "")
+                k = (t.get("kind") or "").strip().upper()
+                type_str = (t.get("kind_other") or "").strip() if k == "OTHER" else (t.get("kind") or "")
+                rec = t.get("recurrence", {})
+                freq = rec.get("freq", "one-off")
+                schedule = "One-off" if freq == "one-off" else f"Recurring ({freq})"
+                end_on = _parse_date_local(t.get("end_on"))
+                if end_on and today > end_on:
+                    state_str = "Stopped"
+                elif t.get("is_paused"):
+                    state_str = "Paused"
+                else:
+                    state_str = "In progress"
+                due = t.get("due", "")
+                if freq != "one-off" and state_str != "Stopped":
+                    try:
+                        from vertex.models.tasks_model import next_monthly_on_or_after, next_semi_monthly_on_or_after, next_quarterly_on_or_after
+                    except ImportError:
+                        from models.tasks_model import next_monthly_on_or_after, next_semi_monthly_on_or_after, next_quarterly_on_or_after
+                    start = _parse_date_local(t.get("start_on")) or today
+                    if freq == "monthly":
+                        due = str(next_monthly_on_or_after(start, int(rec.get("dom", 5))))
+                    elif freq == "semi-monthly":
+                        due = str(next_semi_monthly_on_or_after(start, int(rec.get("dom", 5)), int(rec.get("dom2", 20))))
+                    elif freq == "quarterly":
+                        months = rec.get("months") or [1, 4, 7, 10]
+                        due = str(next_quarterly_on_or_after(start, months, int(rec.get("dom", 15))))
+                    elif freq in ("weekly", "biweekly") and dash and getattr(dash, "store", None):
+                        horizon = today + _dt.timedelta(days=400)
+                        try:
+                            occ = next(dash.store.iter_occurrences(t, today, horizon), None)
+                            due = str(occ[0]) if occ else "—"
+                        except Exception:
+                            due = "—"
+                    else:
+                        due = due or "—"
+                if state_str == "Stopped" and freq != "one-off":
+                    due = "—"
+                due_or_next = due or "—"
+                iid = tv.insert("", "end", values=(title, type_str, schedule, state_str, due_or_next))
+                _all_tasks_rows.append((iid, gidx))
+
+        def _on_context(e):
+            gidx = _gidx_for_selection()
+            if gidx is None:
+                return
+            task = dash.store.tasks[gidx]
+            rec = task.get("recurrence") or {}
+            freq = (rec.get("freq") or "one-off").lower()
+            is_recurring = freq != "one-off"
+            is_paused = bool(task.get("is_paused"))
+            m = tk.Menu(win, tearoff=0)
+            m.add_command(label="Delete", command=lambda: _context_delete(gidx))
+            if is_recurring:
+                if is_paused:
+                    m.add_command(label="Resume", command=lambda: _context_resume(gidx))
+                else:
+                    m.add_command(label="Pause", command=lambda: _context_pause(gidx))
+            try:
+                m.tk_popup(e.x_root, e.y_root)
+            finally:
+                m.grab_release()
+
+        def _context_delete(gidx):
+            if not messagebox.askyesno("Delete Task", "Delete this task permanently?"):
+                return
+            dash.store.tasks.pop(gidx)
+            dash.store.save()
+            dash._refresh_todo_feed()
+            _safe_redraw_dashboard()
+            _refresh_client_tasks_tv()
+            _repopulate_tree()
+
+        def _context_pause(gidx):
+            t = dash.store.tasks[gidx]
+            t["pause_from"] = _dt.date.today().isoformat()
+            t["resume_from"] = ""
+            t["is_paused"] = True
+            dash.store.save()
+            dash._refresh_todo_feed()
+            _safe_redraw_dashboard()
+            _refresh_client_tasks_tv()
+            _repopulate_tree()
+
+        def _context_resume(gidx):
+            t = dash.store.tasks[gidx]
+            t["resume_from"] = _dt.date.today().isoformat()
+            t["is_paused"] = False
+            dash.store.save()
+            dash._refresh_todo_feed()
+            _safe_redraw_dashboard()
+            _refresh_client_tasks_tv()
+            _repopulate_tree()
+
+        tv.bind("<Button-3>", _on_context)
         def _on_dbl(e):
             sel = tv.selection()
             if not sel:
