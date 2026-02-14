@@ -1084,13 +1084,17 @@ class DashboardPage:
                 strike = getattr(self, "_strike_font", None)
                 base   = getattr(self, "_base_font", None)
                 grey   = getattr(self, "_grey_text", "#6B7280")
+                done = v_done.get()
+                cancelled = v_cancel.get()
                 if strike and base:
-                    if v_cancel.get():
+                    if cancelled:
                         lbl.configure(font=strike, foreground=grey)
+                    elif done:
+                        lbl.configure(font=base, foreground=grey)
                     else:
                         lbl.configure(font=base, foreground="")
                 else:
-                    lbl.configure(foreground=(grey if v_cancel.get() else ""))
+                    lbl.configure(foreground=(grey if (cancelled or done) else ""))
 
             def _flip_done(task=t, date_=orig_date, var=v_done, other=v_cancel):
                 # If marking done, clear cancellation
@@ -1324,7 +1328,6 @@ class DashboardPage:
         v_freq = tk.StringVar(value=rec.get("freq","one-off"))
         v_due  = tk.StringVar(value=init.get("due",""))
         v_title = tk.StringVar()
-        v_enabled = tk.BooleanVar(value=init.get("is_enabled", True))
         v_notify = tk.IntVar(value=int(init.get("notify_days", 4)))
         v_method = tk.StringVar(value=init.get("method", "none"))
         v_action_lead = tk.IntVar(value=int(init.get("action_lead_days", 0)))
@@ -1401,13 +1404,16 @@ class DashboardPage:
                 _title_locked["value"] = True
         title_entry.bind("<KeyRelease>", _on_title_key)
 
-        # Row: Type / Enabled / Notify days
+        # Row: Type / Notify days (tasks always enabled and shown in lists)
         ttk.Label(frm, text="Type").grid(row=1, column=0, sticky="w", pady=(4,0))
-        kind_combo = ttk.Combobox(frm, textvariable=v_kind, values=["PAYROLL","BOOKKEEPING","PAYROLL TAX","SALES TAX","CALSAVERS","WORKERS COMP", "OTHER"], width=18, state="readonly")
+        kind_combo = ttk.Combobox(frm, textvariable=v_kind, values=[
+            "PAYROLL","BOOKKEEPING","PAYROLL TAX","SALES TAX","CALSAVERS","WORKERS COMP",
+            "MEETING","CHILD CARE SUPPORT","INCOME TAX","BUSINESS TAX","STATEMENT OF INFORMATION",
+            "DOCUMENT REQUEST","PROFIT AND LOSS","SIMPLE IRA","OTHER"
+        ], width=22, state="readonly")
         kind_combo.grid(row=1, column=1, sticky="w", padx=(6,0), pady=(4,0))
-        ttk.Checkbutton(frm, text="Enabled (show in lists)", variable=v_enabled).grid(row=1, column=2, sticky="w", padx=(12,0), pady=(4,0))
-        ttk.Label(frm, text="Notify days").grid(row=1, column=3, sticky="e", pady=(4,0))
-        ttk.Entry(frm, textvariable=v_notify, width=6).grid(row=1, column=4, sticky="w", padx=(6,0), pady=(4,0))
+        ttk.Label(frm, text="Notify days").grid(row=1, column=2, sticky="e", pady=(4,0))
+        ttk.Entry(frm, textvariable=v_notify, width=6).grid(row=1, column=3, sticky="w", padx=(6,0), pady=(4,0))
 
         # Row: "Specify (if Other):" — visible only when Type is OTHER
         kind_other_lbl = ttk.Label(frm, text="Specify (if Other)")
@@ -1715,7 +1721,7 @@ class DashboardPage:
                 "due_time": init.get("due_time", ""),
                 "notify_days": int(v_notify.get()),
                 "completed": init.get("completed", []),
-                "is_enabled": bool(v_enabled.get()),
+                "is_enabled": True,
                 # keep cancellation & pause related flags when editing
                 "cancelled": init.get("cancelled", []),
                 "end_on": init.get("end_on", ""),

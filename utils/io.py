@@ -81,6 +81,10 @@ MATCH_RULES_DIR  = DATA_ROOT / "match_rules"
 MONTHLY_DATA_DIR = DATA_ROOT / "monthly_data"
 VENDOR_LISTS_DIR = DATA_ROOT / "vendor_lists"
 
+# Log folder at same level as data folder (e.g. .../log next to .../data)
+LOG_DIR = DATA_ROOT.parent / "log"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 for _p in (CLIENTS_DIR, TASKS_DIR, MATCH_RULES_DIR, MONTHLY_DATA_DIR, VENDOR_LISTS_DIR):
     _p.mkdir(parents=True, exist_ok=True)
 

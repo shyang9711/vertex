@@ -2173,14 +2173,17 @@ class App(ttk.Frame):
 
     # ---------- Actions ----------
     def copy_emails(self):
-        items = self.filtered_items()
+        idx = self.selected_index()
+        if idx is None:
+            self.status.set("Select a client first."); return
+        items = [self.items[idx]]
         seen, acc = set(), []
         for c in items:
             for e in relations_to_flat_emails(c.get("relations",[])):
                 if e and e not in seen:
                     seen.add(e); acc.append(e)
         if not acc:
-            self.status.set("No emails found for current filter."); return
+            self.status.set("No emails found for selected client."); return
         if len(acc) == 1:
             self.clipboard_clear(); self.clipboard_append(acc[0])
             self.status.set("Copied 1 email to clipboard."); return

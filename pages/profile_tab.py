@@ -193,7 +193,8 @@ def init_profile_tab(
     ysb = ttk.Scrollbar(people_wrap, orient="vertical")
     _profile_style = ttk.Style(prof)
     _profile_style.configure("Profile.Treeview", rowheight=40)
-    people_tree = ttk.Treeview(people_wrap, columns=people_cols, show="headings", height=5, selectmode="browse", style="Profile.Treeview")
+    people_tree = ttk.Treeview(people_wrap, columns=people_cols, show="headings", height=6, selectmode="browse", style="Profile.Treeview")
+    people_tree.configure(yscrollcommand=ysb.set)
     for col, label, w in (("role","Role",80),("entity","Entity",200),("email","Email",200),("phone","Phone",100)):
         people_tree.heading(col, text=label)
         people_tree.column(col, width=w, anchor="w", stretch=True)
@@ -394,18 +395,48 @@ def init_profile_tab(
             app.dashboard._show_all_past = val
         _refresh_client_tasks_tv()
 
-    ttk.Checkbutton(toolbar, text="Show all past", variable=_show_all_past_var,
-                    command=_flip_show_all_past).pack(side="left")
-    ttk.Button(toolbar, text="Add", command=lambda: _open_add_task_dialog()).pack(side="left", padx=(8,0))
-    ttk.Button(toolbar, text="Edit",   command=lambda: _edit_client_task()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Delete", command=lambda: _delete_client_task()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="See all tasks", command=lambda: _open_all_tasks_dialog()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Stop", command=lambda: _stop_client_recurring()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Pause",  command=lambda: _pause_client_recurring()).pack(side="left", padx=(6,0))
-    ttk.Button(toolbar, text="Resume", command=lambda: _resume_client_recurring()).pack(side="left", padx=(6,0))
+    def _pause_or_resume():
+        dash = getattr(app, "dashboard", None)
+        if not dash or not getattr(dash, "store", None):
+            return
+        i_task, _ = _selected_client_task_ref()
+        if i_task is None:
+            messagebox.showinfo("Pause/Resume", "Select a task first.")
+            return
+        t = dash.store.tasks[i_task]
+        rec = (t.get("recurrence") or {})
+        if (rec.get("freq") or "one-off") == "one-off":
+            messagebox.showinfo("Pause/Resume", "This task is not recurring.")
+            return
+        if t.get("is_paused"):
+            today = _dt.date.today().isoformat()
+            t["resume_from"] = today
+            t["is_paused"] = False
+        else:
+            today = _dt.date.today().isoformat()
+            t["pause_from"] = today
+            t["resume_from"] = ""
+            t["is_paused"] = True
+        dash.store.save()
+        dash._refresh_todo_feed()
+        _safe_redraw_dashboard()
+        _refresh_client_tasks_tv()
+
+    # Rightmost: See all tasks
+    ttk.Button(toolbar, text="See all", width=8, command=lambda: _open_all_tasks_dialog()).pack(side=tk.RIGHT, padx=(4,0))
+    ttk.Frame(toolbar).pack(side=tk.LEFT, fill=tk.X, expand=True)
+    # Left group: short buttons (Pause/Resume merged into one)
+    ttk.Button(toolbar, text="Pause/Resume", width=11, command=_pause_or_resume).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Button(toolbar, text="Stop", width=4, command=lambda: _stop_client_recurring()).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Button(toolbar, text="Del", width=3, command=lambda: _delete_client_task()).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Button(toolbar, text="Edit", width=4, command=lambda: _edit_client_task()).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Button(toolbar, text="Add", width=4, command=lambda: _open_add_task_dialog()).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Checkbutton(toolbar, text="Show all past", variable=_show_all_past_var, command=_flip_show_all_past).pack(side=tk.LEFT)
 
     cols = ("mark","title","kind","due")
-    client_tasks_tv = ttk.Treeview(right, columns=cols, show="headings", height=10, selectmode="browse", style="Profile.Treeview")
+    tasks_wrap = ttk.Frame(right)
+    tasks_wrap.pack(fill=tk.X)
+    client_tasks_tv = ttk.Treeview(tasks_wrap, columns=cols, show="headings", height=6, selectmode="browse", style="Profile.Treeview")
     client_tasks_tv.heading("mark", text="")
     client_tasks_tv.heading("title", text="Task")
     client_tasks_tv.heading("kind", text="Type")
@@ -416,7 +447,10 @@ def init_profile_tab(
     client_tasks_tv.column("kind",  width=120, anchor="w")
     client_tasks_tv.column("due",   width=120, anchor="w", stretch=False)
 
-    client_tasks_tv.pack(fill="both", expand=True)
+    tasks_vsb = ttk.Scrollbar(tasks_wrap, orient="vertical", command=client_tasks_tv.yview)
+    client_tasks_tv.configure(yscrollcommand=tasks_vsb.set)
+    client_tasks_tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    tasks_vsb.pack(side=tk.RIGHT, fill=tk.Y)
     client_tasks_tv.tag_configure("done", foreground="#6B7280")
     client_tasks_tv.tag_configure("cancelled", foreground="#6B7280")
     client_tasks_tv.tag_configure("due",  background="#FEF3C7")
@@ -659,7 +693,7 @@ def init_profile_tab(
             # Store as "relations" with index
             person_index_map[iid] = ("relations", i)
 
-        people_tree.configure(height=min(5, len(person_index_map)))
+        people_tree.configure(height=min(6, max(1, len(person_index_map))))
 
     _refresh_people_tree()
     people_tree.bind("<Double-1>", _open_person_page)
@@ -1295,7 +1329,7 @@ def init_profile_tab(
 
     ttk.Label(left, text="Memo", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     memo_txt = ScrolledText(left, width=56, height=4, wrap="word")
-    memo_txt.pack(fill=tk.BOTH, expand=True, pady=(4,0))
+    memo_txt.pack(fill=tk.X, pady=(4,0))
     memo_txt.insert("1.0", client.get("memo",""))
     memo_txt.configure(state="disabled")
 

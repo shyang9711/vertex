@@ -7,15 +7,22 @@ _DEFAULT_LOG_NAME = "client_manager"
 
 def _logs_dir() -> Path:
     """
-    Persistent logs directory for EXE and dev:
-    %LOCALAPPDATA%/Vertex/logs
+    Log folder at the same level as the data folder (e.g. .../log next to .../data).
+    Uses utils.io LOG_DIR when available; otherwise falls back to LOCALAPPDATA/Vertex/log or cwd/logs.
     """
-    base = os.environ.get("LOCALAPPDATA")
-    if base:
-        logs = Path(base) / "Vertex" / "logs"
-    else:
-        logs = Path.cwd() / "logs"
-
+    try:
+        from vertex.utils.io import LOG_DIR
+        logs = Path(LOG_DIR)
+    except Exception:
+        try:
+            from utils.io import LOG_DIR
+            logs = Path(LOG_DIR)
+        except Exception:
+            base = os.environ.get("LOCALAPPDATA")
+            if base:
+                logs = Path(base) / "Vertex" / "log"
+            else:
+                logs = Path.cwd() / "log"
     logs.mkdir(parents=True, exist_ok=True)
     return logs
 

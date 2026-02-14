@@ -234,7 +234,8 @@ class ClientDialog(tk.Toplevel):
 
         off_tree_frm = ttk.Frame(frm)
         off_tree_frm.grid(row=PERSONNEL_R+1, column=0, columnspan=4, sticky="ew")
-        frm.grid_rowconfigure(PERSONNEL_R+1, weight=0)  # fixed height for personnel list
+        frm.grid_rowconfigure(PERSONNEL_R+1, weight=0, minsize=200)  # fixed height so scrollbar works
+        off_tree_frm.rowconfigure(0, minsize=200)
         off_tree_frm.columnconfigure(0, weight=1)
         self.off_tree = ttk.Treeview(off_tree_frm, columns=self.off_cols, show="headings", height=6, selectmode="browse")
 
@@ -359,9 +360,19 @@ class ClientDialog(tk.Toplevel):
 
         btns = ttk.Frame(self); btns.pack(fill="x", pady=(6,6))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=(6,0))
-        ttk.Button(btns, text="Save", command=self._save).pack(side=tk.RIGHT)
+        def _on_save():
+            try:
+                self._save()
+            except Exception:
+                pass
+            if self.winfo_exists() and getattr(self, "result", None) is not None:
+                try:
+                    self.destroy()
+                except Exception:
+                    pass
+        ttk.Button(btns, text="Save", command=_on_save).pack(side=tk.RIGHT)
 
-        self.bind("<Return>", lambda _e: self._save()); self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Return>", lambda _e: _on_save()); self.bind("<Escape>", lambda _e: self.destroy())
 
         def _focus_first():
             # focus correct field depending on entity
@@ -1557,4 +1568,8 @@ class ClientDialog(tk.Toplevel):
                 self._dlog("Save: exception in post-save linking stage:\n" + traceback.format_exc())
             # Don't block saving the dialog; caller can still proceed
 
-        self.destroy()
+        if self.winfo_exists():
+            try:
+                self.destroy()
+            except Exception:
+                pass

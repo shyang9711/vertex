@@ -88,7 +88,7 @@ class NotePage:
                                      values=("All", "Open", "Done"))
         self.cmb_done.pack(side=tk.LEFT)
 
-        ttk.Label(header, text="Search:").pack(side=tk.RIGHT, padx=(6, 4))
+        ttk.Label(header, text="Search").pack(side=tk.RIGHT, padx=(6, 4))
         ent = ttk.Entry(header, textvariable=self.q, width=42)
         ent.pack(side=tk.RIGHT)
         ent.bind("<KeyRelease>", lambda _e: self.refresh())
@@ -96,10 +96,17 @@ class NotePage:
         self.cmb_mgr.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
         self.cmb_done.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
 
-        # Tree (NO user column)
+        # Tree (NO user column) with scrollbar
         cols = ("done", "date", "client", "manager", "note")
-        self.tree = ttk.Treeview(self.page, columns=cols, show="headings", height=22)
-        self.tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        tree_frm = ttk.Frame(self.page)
+        tree_frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        tree_frm.columnconfigure(0, weight=1)
+        tree_frm.rowconfigure(0, weight=1)
+        self.tree = ttk.Treeview(tree_frm, columns=cols, show="headings", height=22)
+        tree_vsb = ttk.Scrollbar(tree_frm, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_vsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        tree_vsb.grid(row=0, column=1, sticky="ns")
 
         self.tree.heading("done", text="✓")
         self.tree.heading("date", text="Date")
