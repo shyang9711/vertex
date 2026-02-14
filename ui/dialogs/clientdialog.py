@@ -1532,30 +1532,13 @@ class ClientDialog(tk.Toplevel):
                     else:
                         print(f"[ClientDialog][LINK] _save: master has no link_clients_relations method")
                 
-                # Link new relations (only those that are actually new, not already linked)
-                # Get currently linked IDs from app.items to avoid re-linking (use this_id_for_linking so we find the client)
-                currently_linked_ids = set()
-                if hasattr(self.master, "items") and this_id_for_linking:
-                    from vertex.utils.helpers import find_client_by_uid
-                    try:
-                        current_client = find_client_by_uid(self.master.items, this_id_for_linking)
-                        if isinstance(current_client, dict):
-                            for rel in current_client.get("relations", []) or []:
-                                rel_link = ensure_relation_link(rel)
-                                rel_id = rel_link.get("id")
-                                if rel_id:
-                                    currently_linked_ids.add(rel_id)
-                            print(f"[ClientDialog][LINK] _save: Currently linked IDs from app.items: {currently_linked_ids}")
-                    except Exception as e:
-                        print(f"[ClientDialog][LINK] _save: Error getting currently linked IDs: {e}")
-                
-                # Only link relations that aren't already linked; use this_id_for_linking so the other client gets the back-link
-                new_relations_to_link = [r for r in normalized_rels if ensure_relation_link(r).get("id") not in currently_linked_ids]
-                print(f"[ClientDialog][LINK] _save: About to call _apply_symmetric_links_now_if_possible with {len(new_relations_to_link)} new relations (out of {len(normalized_rels)} total)")
-                if new_relations_to_link:
-                    self._apply_symmetric_links_now_if_possible(this_id_for_linking, new_relations_to_link)
-                else:
-                    print(f"[ClientDialog][LINK] _save: No new relations to link (all already linked)")
+                # Apply symmetric links for ALL linked relations (not just new ones).
+                # This ensures the other side always has the back-link and up-to-date data (name, email, etc.),
+                # so both clients show the relation when you open either profile.
+                linked_relations = [r for r in normalized_rels if ensure_relation_link(r).get("id")]
+                print(f"[ClientDialog][LINK] _save: Applying symmetric links for {len(linked_relations)} relation(s) so both sides have the relation")
+                if linked_relations:
+                    self._apply_symmetric_links_now_if_possible(this_id_for_linking, linked_relations)
                 print(f"[ClientDialog][LINK] _save: After _apply_symmetric_links_now_if_possible, result relations: {self.result.get('relations', [])}")
                 
                 # IMPORTANT: Use normalized_rels (from tree) as the source of truth for this client's relations.
