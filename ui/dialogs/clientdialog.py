@@ -237,7 +237,9 @@ class ClientDialog(tk.Toplevel):
         frm.grid_rowconfigure(PERSONNEL_R+1, weight=0, minsize=200)  # fixed height so scrollbar works
         off_tree_frm.rowconfigure(0, minsize=200)
         off_tree_frm.columnconfigure(0, weight=1)
-        self.off_tree = ttk.Treeview(off_tree_frm, columns=self.off_cols, show="headings", height=6, selectmode="browse")
+        _off_style = ttk.Style(self)
+        _off_style.configure("ClientDialog.Treeview", rowheight=26)
+        self.off_tree = ttk.Treeview(off_tree_frm, columns=self.off_cols, show="headings", height=6, selectmode="browse", style="ClientDialog.Treeview")
 
         for col, label, w in (
             ("name","Entity",220),

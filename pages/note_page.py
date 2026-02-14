@@ -96,13 +96,15 @@ class NotePage:
         self.cmb_mgr.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
         self.cmb_done.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
 
-        # Tree (NO user column) with scrollbar
+        # Tree (NO user column) with scrollbar; fixed row height so list doesn't resize when client selection changes
         cols = ("done", "date", "client", "manager", "note")
         tree_frm = ttk.Frame(self.page)
         tree_frm.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         tree_frm.columnconfigure(0, weight=1)
         tree_frm.rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(tree_frm, columns=cols, show="headings", height=22)
+        _notes_style = ttk.Style(self.page)
+        _notes_style.configure("Notes.Treeview", rowheight=26)
+        self.tree = ttk.Treeview(tree_frm, columns=cols, show="headings", height=22, style="Notes.Treeview")
         tree_vsb = ttk.Scrollbar(tree_frm, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_vsb.set)
         self.tree.grid(row=0, column=0, sticky="nsew")

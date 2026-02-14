@@ -38,6 +38,11 @@ except ModuleNotFoundError:
     from utils.app_logging import get_logger
     from utils.helpers import ensure_relation_dict
 
+try:
+    from vertex.ui.components.scrollframe import ScrollFrame
+except ModuleNotFoundError:
+    from ui.components.scrollframe import ScrollFrame
+
 LOG = get_logger("profile")
 
 def _parse_date_flex_local(s):
@@ -73,10 +78,12 @@ def init_profile_tab(
 ):
     """
     Builds the Profile tab into the provided Notebook.
-    Returns the created Frame.
+    Returns the created Frame (the scrollable inner frame).
     """
-    prof = ttk.Frame(nb, padding=8)
-    nb.add(prof, text="Profile")
+    scroll_frm = ScrollFrame(nb, height=520)
+    nb.add(scroll_frm, text="Profile")
+    prof = scroll_frm.inner
+    prof.configure(padding=8)
     prof.columnconfigure(0, weight=1, uniform="cols")
     prof.columnconfigure(1, weight=1, uniform="cols")
 
@@ -184,16 +191,16 @@ def init_profile_tab(
         if isinstance(items, list) and idx is not None and 0 <= idx < len(items):
             return items[idx]
         return client  # fallback
-    # ---------- RIGHT: Relations ----------
+    # ---------- RIGHT: Relations (fixed height max 3 rows + scrollbar) ----------
     ttk.Label(right, text="Relations", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     people_cols = ("role","entity","email","phone")
     people_wrap = ttk.Frame(right)
-    people_wrap.pack(fill=tk.BOTH, expand=True, pady=(4,8))
+    people_wrap.pack(fill=tk.X, pady=(4,8))
 
     ysb = ttk.Scrollbar(people_wrap, orient="vertical")
     _profile_style = ttk.Style(prof)
-    _profile_style.configure("Profile.Treeview", rowheight=40)
-    people_tree = ttk.Treeview(people_wrap, columns=people_cols, show="headings", height=6, selectmode="browse", style="Profile.Treeview")
+    _profile_style.configure("Profile.Treeview", rowheight=28)
+    people_tree = ttk.Treeview(people_wrap, columns=people_cols, show="headings", height=3, selectmode="browse", style="Profile.Treeview")
     people_tree.configure(yscrollcommand=ysb.set)
     for col, label, w in (("role","Role",80),("entity","Entity",200),("email","Email",200),("phone","Phone",100)):
         people_tree.heading(col, text=label)
@@ -422,16 +429,14 @@ def init_profile_tab(
         _safe_redraw_dashboard()
         _refresh_client_tasks_tv()
 
-    # Rightmost: See all tasks
-    ttk.Button(toolbar, text="See all", width=8, command=lambda: _open_all_tasks_dialog()).pack(side=tk.RIGHT, padx=(4,0))
-    ttk.Frame(toolbar).pack(side=tk.LEFT, fill=tk.X, expand=True)
-    # Left group: short buttons (Pause/Resume merged into one)
-    ttk.Button(toolbar, text="Pause/Resume", width=11, command=_pause_or_resume).pack(side=tk.LEFT, padx=(2,0))
-    ttk.Button(toolbar, text="Stop", width=4, command=lambda: _stop_client_recurring()).pack(side=tk.LEFT, padx=(2,0))
-    ttk.Button(toolbar, text="Del", width=3, command=lambda: _delete_client_task()).pack(side=tk.LEFT, padx=(2,0))
-    ttk.Button(toolbar, text="Edit", width=4, command=lambda: _edit_client_task()).pack(side=tk.LEFT, padx=(2,0))
-    ttk.Button(toolbar, text="Add", width=4, command=lambda: _open_add_task_dialog()).pack(side=tk.LEFT, padx=(2,0))
+    # All task buttons aligned from left
     ttk.Checkbutton(toolbar, text="Show all past", variable=_show_all_past_var, command=_flip_show_all_past).pack(side=tk.LEFT)
+    ttk.Button(toolbar, text="Add", width=4, command=lambda: _open_add_task_dialog()).pack(side=tk.LEFT, padx=(6,0))
+    ttk.Button(toolbar, text="Edit", width=4, command=lambda: _edit_client_task()).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Button(toolbar, text="Del", width=3, command=lambda: _delete_client_task()).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Button(toolbar, text="Stop", width=4, command=lambda: _stop_client_recurring()).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Button(toolbar, text="Pause/Resume", width=11, command=_pause_or_resume).pack(side=tk.LEFT, padx=(2,0))
+    ttk.Button(toolbar, text="See all", width=8, command=lambda: _open_all_tasks_dialog()).pack(side=tk.LEFT, padx=(2,0))
 
     cols = ("mark","title","kind","due")
     tasks_wrap = ttk.Frame(right)
@@ -693,7 +698,7 @@ def init_profile_tab(
             # Store as "relations" with index
             person_index_map[iid] = ("relations", i)
 
-        people_tree.configure(height=min(6, max(1, len(person_index_map))))
+        # Keep fixed height 3; scrollbar shows more
 
     _refresh_people_tree()
     people_tree.bind("<Double-1>", _open_person_page)
@@ -928,22 +933,25 @@ def init_profile_tab(
         frm.columnconfigure(0, weight=1)
         frm.rowconfigure(1, weight=1)
         ttk.Label(frm, text="Recurring and one-off tasks for this client (including disabled):", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0,6))
-        cols = ("title", "type", "schedule", "due_or_next", "enabled")
+        cols = ("title", "type", "schedule", "state", "due_or_next", "enabled")
         tv = ttk.Treeview(frm, columns=cols, show="headings", height=14, selectmode="browse")
         tv.heading("title", text="Title")
         tv.heading("type", text="Type")
         tv.heading("schedule", text="Schedule")
+        tv.heading("state", text="State")
         tv.heading("due_or_next", text="Due / Next")
         tv.heading("enabled", text="Enabled")
-        tv.column("title", width=280)
-        tv.column("type", width=120)
+        tv.column("title", width=240)
+        tv.column("type", width=90)
         tv.column("schedule", width=100)
-        tv.column("due_or_next", width=120)
-        tv.column("enabled", width=60)
+        tv.column("state", width=90)
+        tv.column("due_or_next", width=100)
+        tv.column("enabled", width=56)
         tv.grid(row=1, column=0, sticky="nsew", pady=(0,8))
         ysb = ttk.Scrollbar(frm, orient="vertical", command=tv.yview)
         ysb.grid(row=1, column=1, sticky="ns")
         tv.configure(yscrollcommand=ysb.set)
+        today = _dt.date.today()
         _all_tasks_rows = []
         for t, gidx in all_tasks:
             title = t.get("title", "")
@@ -952,13 +960,20 @@ def init_profile_tab(
             rec = t.get("recurrence", {})
             freq = rec.get("freq", "one-off")
             schedule = "One-off" if freq == "one-off" else f"Recurring ({freq})"
+            # State: Stopped | Paused | In progress
+            end_on = _parse_date_local(t.get("end_on"))
+            if end_on and today > end_on:
+                state_str = "Stopped"
+            elif t.get("is_paused"):
+                state_str = "Paused"
+            else:
+                state_str = "In progress"
             due = t.get("due", "")
-            if freq != "one-off":
+            if freq != "one-off" and state_str != "Stopped":
                 try:
                     from vertex.models.tasks_model import next_monthly_on_or_after, next_semi_monthly_on_or_after, next_quarterly_on_or_after
                 except ImportError:
                     from models.tasks_model import next_monthly_on_or_after, next_semi_monthly_on_or_after, next_quarterly_on_or_after
-                today = _dt.date.today()
                 start = _parse_date_local(t.get("start_on")) or today
                 if freq == "monthly":
                     due = str(next_monthly_on_or_after(start, int(rec.get("dom", 5))))
@@ -967,11 +982,21 @@ def init_profile_tab(
                 elif freq == "quarterly":
                     months = rec.get("months") or [1, 4, 7, 10]
                     due = str(next_quarterly_on_or_after(start, months, int(rec.get("dom", 15))))
+                elif freq in ("weekly", "biweekly") and dash and getattr(dash, "store", None):
+                    # Next occurrence on or after today
+                    horizon = today + _dt.timedelta(days=400)
+                    try:
+                        occ = next(dash.store.iter_occurrences(t, today, horizon), None)
+                        due = str(occ[0]) if occ else "—"
+                    except Exception:
+                        due = "—"
                 else:
-                    due = "—"
+                    due = due or "—"
+            if state_str == "Stopped" and freq != "one-off":
+                due = "—"
             due_or_next = due or "—"
             enabled = "Yes" if t.get("is_enabled", True) else "No"
-            iid = tv.insert("", "end", values=(title, type_str, schedule, due_or_next, enabled))
+            iid = tv.insert("", "end", values=(title, type_str, schedule, state_str, due_or_next, enabled))
             _all_tasks_rows.append((iid, gidx))
         def _on_dbl(e):
             sel = tv.selection()
