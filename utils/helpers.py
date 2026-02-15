@@ -546,6 +546,74 @@ def _build_full_relation_from_client(src_client: dict, src_id: str, role_value: 
     return ensure_relation_link(rel_record)
 
 
+def _inverse_role(role: str) -> str:
+    """Return the role for the reverse direction of a relation (e.g. parent <-> child)."""
+    r = (role or "").strip().lower()
+    if r == "child":
+        return "parent"
+    if r == "parent":
+        return "child"
+    if r == "owner":
+        return "business"
+    if r == "business":
+        return "owner"
+    return r
+
+
+def sync_inverse_relations(clients: List[Dict[str, Any]]) -> int:
+    """
+    Ensure every client has back-links for relations pointing to them.
+    If entity D has Chris Lim in its relations, Chris Lim will get D in its relations.
+    Mutates clients in place. Returns the number of clients that were updated.
+    """
+    if not clients:
+        return 0
+    # Build id -> client index so we can resolve relation ids
+    id_to_client: Dict[str, Dict[str, Any]] = {}
+    for c in clients:
+        uid = get_client_uid(c)
+        if uid:
+            id_to_client[uid] = c
+    # Also match by id field directly for relation link resolution
+    for c in clients:
+        raw_id = str(c.get("id") or "").strip()
+        if raw_id and raw_id not in id_to_client:
+            id_to_client[raw_id] = c
+
+    updated = 0
+    for c in clients:
+        c_id = get_client_uid(c)
+        if not c_id:
+            continue
+        c_rels = c.get("relations", []) or []
+        c_rels_by_id = {str(ensure_relation_link(r).get("id") or "").strip(): r for r in c_rels if ensure_relation_link(r).get("id")}
+
+        for other in clients:
+            if other is c:
+                continue
+            other_id = get_client_uid(other)
+            if not other_id:
+                continue
+            other_rels = other.get("relations", []) or []
+            for rel in other_rels:
+                rr = ensure_relation_link(rel)
+                rel_id = str(rr.get("id") or "").strip()
+                if not rel_id or rel_id != c_id:
+                    continue
+                # other points to c; ensure c has a relation back to other
+                if c_rels_by_id.get(other_id):
+                    continue
+                forward_role = (rr.get("role") or "").strip().lower()
+                back_role = _inverse_role(forward_role)
+                back_rel = _build_full_relation_from_client(other, other_id, back_role)
+                c["relations"] = merge_relations(c.get("relations", []) or [], [back_rel])
+                c_rels_by_id[other_id] = back_rel
+                updated += 1
+                break
+
+    return updated
+
+
 def link_clients_relations(app, this_id: str, other_id: str, link: bool = True, role: str = "", other_label: str = "", this_label: str = ""):
     """
     Symmetric link/unlink using client['relations'] (NOT officers).
