@@ -273,10 +273,15 @@ def save_clients(items: List[Dict[str, Any]]) -> None:
     Save current in-memory clients to the program's internal clients.json.
     Runs remove_stale_back_links so relation changes are reflected in data every time.
     """
+    if not items:
+        return
     remove_stale_back_links(items, log=LOG)
     to_save = _normalize_clients_for_io(items)
     try:
-        DATA_FILE.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
+        path = DATA_FILE.resolve()
+        path.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
+        rel_counts = [len(c.get("relations") or []) for c in to_save]
+        LOG.info("save_clients: wrote %s to %s (relation counts: %s)", len(to_save), path, rel_counts)
     except Exception as e:
         LOG.exception("Error writing clients.json: %s", e)
         if messagebox:

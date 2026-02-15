@@ -13,6 +13,7 @@ try:
         migrate_officer_business_links_to_relations,
         normalize_ein_digits, normalize_ssn_digits,
         email_display_string,
+        find_client_by_uid,
     )
 except ModuleNotFoundError:
     from utils.helpers import (
@@ -21,6 +22,7 @@ except ModuleNotFoundError:
         migrate_officer_business_links_to_relations,
         normalize_ein_digits, normalize_ssn_digits,
         email_display_string,
+        find_client_by_uid,
     )
 
 
@@ -350,10 +352,11 @@ class ClientDialog(tk.Toplevel):
         print(f"[ClientDialog] Total combined rows to insert: {len(combined_rows)}")
         for i, o in enumerate(combined_rows):
             o = ensure_relation_dict(o)
-            print(f"[ClientDialog] Row {i}: name={display_relation_name(o)}, role={o.get('role')}, id={o.get('id')}")
+            entity_display = self._relation_entity_display_name(o)
+            print(f"[ClientDialog] Row {i}: name={entity_display}, role={o.get('role')}, id={o.get('id')}")
             print(f"[ClientDialog] Row {i} full data: {o}")
             vals = (
-                display_relation_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
+                entity_display, o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
                 email_display_string(o["email"]), o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
                 o.get("role","officer"), o.get("id",""), "",  # No longer using linked_client_label
             )
@@ -511,10 +514,28 @@ class ClientDialog(tk.Toplevel):
         d.setdefault("role", "officer")
         return ensure_relation_dict(d)
 
+    def _relation_entity_display_name(self, o: Dict[str, str]) -> str:
+        """Current display name for the relation's entity: resolve from master.items so renames (e.g. to Chris Lim Spouse) show correctly."""
+        o = ensure_relation_dict(o)
+        link_id = (o.get("id") or "").strip()
+        if link_id and hasattr(self.master, "items"):
+            items = getattr(self.master, "items", []) or []
+            linked = find_client_by_uid(items, link_id) if items else None
+            if isinstance(linked, dict):
+                name = (linked.get("name") or "").strip()
+                if name:
+                    return name
+                first = (linked.get("first_name") or "").strip()
+                last = (linked.get("last_name") or "").strip()
+                if first or last:
+                    return f"{first} {last}".strip()
+        return display_relation_name(o)
+
     def _rel_dict_to_values(self, o: Dict[str, str]) -> tuple:
         o = ensure_relation_dict(o)
+        entity_display = self._relation_entity_display_name(o)
         return (
-            display_relation_name(o), o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
+            entity_display, o["first_name"], o["middle_name"], o["last_name"], o["nickname"],
             email_display_string(o["email"]), o["phone"], o["addr1"], o["addr2"], o["city"], o["state"], o["zip"], o["dob"],
             o.get("role", "officer"), o.get("id", ""), "",  # Use "id" instead of "linked_client_id"
         )
