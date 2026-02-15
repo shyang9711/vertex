@@ -250,7 +250,8 @@ class App(ttk.Frame):
 
         self.items: List[Dict[str, Any]] = load_clients()
         # Ensure back-links (e.g. Chris Lim gets relations when others point to him), then persist so clients.json is updated
-        sync_updated = sync_inverse_relations(self.items)
+        # Pass self.log so sync debug lines go to app log (works in .exe when "sync" logger may be missing)
+        sync_updated = sync_inverse_relations(self.items, log=self.log)
         self.log.info("sync_inverse_relations on load: updated_count=%s", sync_updated)
         if sync_updated > 0:
             save_clients(self.items)

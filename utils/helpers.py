@@ -573,15 +573,18 @@ def _inverse_role(role: str) -> str:
     return r
 
 
-def sync_inverse_relations(clients: List[Dict[str, Any]]) -> int:
+def sync_inverse_relations(clients: List[Dict[str, Any]], log=None) -> int:
     """
     Ensure every client has back-links for relations pointing to them.
     If entity D has Chris Lim in its relations, Chris Lim will get D in its relations.
     Uses find_client_by_uid so relation ids in any format (ein:/ssn:/raw) match.
     Mutates clients in place. Returns the number of clients that were updated.
+    If log is provided (e.g. from client_manager), sync debug lines are written there so
+    they appear in the main app log file when running as .exe.
     """
-    if _LOG_SYNC:
-        _LOG_SYNC.info("sync_inverse_relations: start, clients_count=%s", len(clients or []))
+    _log = log or _LOG_SYNC
+    if _log:
+        _log.info("sync_inverse_relations: start, clients_count=%s", len(clients or []))
     if not clients:
         return 0
 
@@ -628,15 +631,15 @@ def sync_inverse_relations(clients: List[Dict[str, Any]]) -> int:
                 c["relations"] = merge_relations(c.get("relations", []) or [], [back_rel])
                 c_rels = c.get("relations", []) or []
                 updated += 1
-                if _LOG_SYNC:
-                    _LOG_SYNC.info(
+                if _log:
+                    _log.info(
                         "sync_inverse_relations: added back-link from %s (%s) to %s (%s), role=%s",
                         c_name, c_id, other_name, other_id, back_role,
                     )
                 break
 
-    if _LOG_SYNC:
-        _LOG_SYNC.info("sync_inverse_relations: done, updated_count=%s", updated)
+    if _log:
+        _log.info("sync_inverse_relations: done, updated_count=%s", updated)
     return updated
 
 
