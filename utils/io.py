@@ -25,7 +25,6 @@ try:
         tokenize,
         _account_manager_key,
         _account_manager_id_from_key,
-        sync_inverse_relations,
     )
 except ModuleNotFoundError:
     from utils.app_logging import get_logger
@@ -39,7 +38,6 @@ except ModuleNotFoundError:
         tokenize,
         _account_manager_key,
         _account_manager_id_from_key,
-        sync_inverse_relations,
     )
 
 try:
@@ -210,8 +208,6 @@ def load_clients() -> List[Dict[str, Any]]:
             c["logs"] = normalize_logs(c.get("logs", []))
 
             out.append(c)
-        # Ensure every client has back-links when others point to them (e.g. Chris Lim gets relations from CHRIS LIM SPOUSE and LOYAL CMB)
-        sync_inverse_relations(out)
         return out
     except Exception as e:
         LOG.exception("Failed to load clients.json: %s", e)

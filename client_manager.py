@@ -79,6 +79,7 @@ try:
         is_valid_person_payload, today_date, quarter_start, new_quarter_started,
         safe_fetch_sales_tax_rate, _account_manager_key, _account_manager_id_from_key,
         PHONE_DIGITS_RE,
+        sync_inverse_relations,
     )
 
 except ModuleNotFoundError:
@@ -95,10 +96,11 @@ except ModuleNotFoundError:
     from utils.app_logging import get_logger
     from utils.app_update import check_for_updates, enforce_major_update_on_startup
     from utils.helpers import (
-    ensure_relation_dict, display_relation_name,
-    ensure_relation_link, merge_relations,
-    migrate_officer_business_links_to_relations,
-    is_migration_done, mark_migration_done,
+        ensure_relation_dict, display_relation_name,
+        ensure_relation_link, merge_relations,
+        migrate_officer_business_links_to_relations,
+        is_migration_done, mark_migration_done,
+        sync_inverse_relations,
     )
     
     from config import APP_NAME, UPDATE_POLICY_ASSET_NAME, APP_VERSION, GITHUB_REPO, GITHUB_RELEASES_URL, GITHUB_API_LATEST, UPDATE_ASSET_NAME, ENTITY_TYPES, US_STATES, ROLES
@@ -247,7 +249,9 @@ class App(ttk.Frame):
         self.root = master
 
         self.items: List[Dict[str, Any]] = load_clients()
-        
+        # Ensure back-links (e.g. Chris Lim gets relations when others point to him), then persist so clients.json is updated
+        if sync_inverse_relations(self.items) > 0:
+            save_clients(self.items)
         # Run migration automatically on load if needed
         self._run_auto_migration()
 
