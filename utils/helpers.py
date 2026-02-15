@@ -705,14 +705,25 @@ def link_clients_relations(app, this_id: str, other_id: str, link: bool = True, 
         print(f"[helpers][LINK] link_clients_relations: b relations data: {b.get('relations', [])}")
     else:
         print(f"[helpers][LINK] link_clients_relations: Unlinking this_id='{this_id}' from other_id='{other_id}'")
+        def _relation_points_to_client(rel_id: str, target_uid: str) -> bool:
+            """True if the relation id refers to the same client as target_uid (handles ein:/ssn:/raw formats)."""
+            if not (rel_id and target_uid):
+                return False
+            if rel_id.strip() == target_uid.strip():
+                return True
+            client_rel = find_client_by_uid(items, rel_id)
+            client_tgt = find_client_by_uid(items, target_uid)
+            return client_rel is not None and client_tgt is not None and client_rel is client_tgt
+
         def _drop(rels, oid):
             out = []
             print(f"[helpers][LINK] link_clients_relations: _drop: Processing {len(rels or [])} relations, removing oid='{oid}'")
             for i, r in enumerate(rels or []):
                 rr = ensure_relation_link(r)
-                rel_id = rr.get("id") or ""
-                print(f"[helpers][LINK] link_clients_relations: _drop: Relation {i} - id='{rel_id}', oid='{oid}', match={rel_id == oid}")
-                if rel_id and rel_id != oid:
+                rel_id = (rr.get("id") or "").strip()
+                match = _relation_points_to_client(rel_id, oid)
+                print(f"[helpers][LINK] link_clients_relations: _drop: Relation {i} - id='{rel_id}', oid='{oid}', match={match}")
+                if not match:
                     out.append(rr)
                     print(f"[helpers][LINK] link_clients_relations: _drop: Keeping relation {i}")
                 else:

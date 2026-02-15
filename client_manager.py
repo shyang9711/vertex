@@ -1340,7 +1340,7 @@ class App(ttk.Frame):
             edit_rates_cb=lambda i=idx: self._edit_rates(i),
             refresh_sales_cb=lambda i=idx: self._refresh_sales_tax_for(i),
         )
-        
+        self._detail_profile_frame = prof_frame  # so we can refresh relations list after Edit dialog closes
         # Ensure profile tab refreshes when navigating between entities
         # Refresh immediately after creation to ensure data is current
         if hasattr(prof_frame, "_refresh_people_tree"):
@@ -2106,6 +2106,12 @@ class App(ttk.Frame):
         
         print("=" * 80)
         dlg = ClientDialog(self, "Edit Client", client_data); self.wait_window(dlg)
+        # Refresh profile tab relations list so removals (and other changes) show immediately without navigating away
+        if self._current_page[0] == "detail" and getattr(self, "_detail_profile_frame", None) and hasattr(self._detail_profile_frame, "_refresh_people_tree"):
+            try:
+                self._detail_profile_frame._refresh_people_tree()
+            except Exception:
+                pass
         if dlg.result:
             # Duplicate check is now done in the dialog's _save() method
             # If dlg.result exists, it means the save was successful (no duplicate)
