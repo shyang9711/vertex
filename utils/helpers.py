@@ -12,6 +12,19 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 import datetime as dt
 
+def _get_sync_logger():
+    try:
+        from vertex.utils.app_logging import get_logger
+        return get_logger("sync")
+    except Exception:
+        try:
+            from utils.app_logging import get_logger
+            return get_logger("sync")
+        except Exception:
+            return None
+
+_LOG_SYNC = _get_sync_logger()
+
 _PHONE_DIGITS_RE = re.compile(r"\d")
 PHONE_DIGITS_RE = _PHONE_DIGITS_RE  # Alias for backward compatibility
 _AM_WS_RE = re.compile(r"\s+")
@@ -564,21 +577,26 @@ def sync_inverse_relations(clients: List[Dict[str, Any]]) -> int:
     """
     Ensure every client has back-links for relations pointing to them.
     If entity D has Chris Lim in its relations, Chris Lim will get D in its relations.
+    Uses find_client_by_uid so relation ids in any format (ein:/ssn:/raw) match.
     Mutates clients in place. Returns the number of clients that were updated.
     """
+    if _LOG_SYNC:
+        _LOG_SYNC.info("sync_inverse_relations: start, clients_count=%s", len(clients or []))
     if not clients:
         return 0
-    # Build id -> client index so we can resolve relation ids
-    id_to_client: Dict[str, Dict[str, Any]] = {}
-    for c in clients:
-        uid = get_client_uid(c)
-        if uid:
-            id_to_client[uid] = c
-    # Also match by id field directly for relation link resolution
-    for c in clients:
-        raw_id = str(c.get("id") or "").strip()
-        if raw_id and raw_id not in id_to_client:
-            id_to_client[raw_id] = c
+
+    def _rel_points_to_client(rel_id: str, target: Dict[str, Any]) -> bool:
+        if not rel_id or not target:
+            return False
+        found = find_client_by_uid(clients, rel_id)
+        return found is target
+
+    def _c_has_relation_to(c_rels: list, other: Dict[str, Any]) -> bool:
+        for r in c_rels or []:
+            rid = (ensure_relation_link(r).get("id") or "").strip()
+            if _rel_points_to_client(rid, other):
+                return True
+        return False
 
     updated = 0
     for c in clients:
@@ -586,7 +604,7 @@ def sync_inverse_relations(clients: List[Dict[str, Any]]) -> int:
         if not c_id:
             continue
         c_rels = c.get("relations", []) or []
-        c_rels_by_id = {str(ensure_relation_link(r).get("id") or "").strip(): r for r in c_rels if ensure_relation_link(r).get("id")}
+        c_name = (c.get("name") or "").strip() or c_id
 
         for other in clients:
             if other is c:
@@ -595,22 +613,30 @@ def sync_inverse_relations(clients: List[Dict[str, Any]]) -> int:
             if not other_id:
                 continue
             other_rels = other.get("relations", []) or []
+            other_name = (other.get("name") or "").strip() or other_id
             for rel in other_rels:
                 rr = ensure_relation_link(rel)
-                rel_id = str(rr.get("id") or "").strip()
-                if not rel_id or rel_id != c_id:
+                rel_id = (rr.get("id") or "").strip()
+                if not _rel_points_to_client(rel_id, c):
                     continue
                 # other points to c; ensure c has a relation back to other
-                if c_rels_by_id.get(other_id):
+                if _c_has_relation_to(c_rels, other):
                     continue
                 forward_role = (rr.get("role") or "").strip().lower()
                 back_role = _inverse_role(forward_role)
                 back_rel = _build_full_relation_from_client(other, other_id, back_role)
                 c["relations"] = merge_relations(c.get("relations", []) or [], [back_rel])
-                c_rels_by_id[other_id] = back_rel
+                c_rels = c.get("relations", []) or []
                 updated += 1
+                if _LOG_SYNC:
+                    _LOG_SYNC.info(
+                        "sync_inverse_relations: added back-link from %s (%s) to %s (%s), role=%s",
+                        c_name, c_id, other_name, other_id, back_role,
+                    )
                 break
 
+    if _LOG_SYNC:
+        _LOG_SYNC.info("sync_inverse_relations: done, updated_count=%s", updated)
     return updated
 
 

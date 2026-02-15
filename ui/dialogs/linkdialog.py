@@ -144,8 +144,9 @@ class LinkDialog(tk.Toplevel):
         self.v_zip   = tk.StringVar(value=str(self._initial.get("zip") or ""))
         self.v_dob   = tk.StringVar(value=str(self._initial.get("dob") or ""))
 
-        self._linked_client_id = _norm_link_id(str(self._initial.get("linked_client_id") or ""))
-        self._linked_client_label = str(self._initial.get("linked_client_label") or "").strip()
+        # Preserve link when editing: accept both "id" and "linked_client_id" so Edit doesn't lose the relation
+        self._linked_client_id = _norm_link_id(str(self._initial.get("linked_client_id") or self._initial.get("id") or ""))
+        self._linked_client_label = str(self._initial.get("linked_client_label") or self._initial.get("name") or "").strip()
         self._linked_is_company = False
         
         # Determine if this client is individual or business

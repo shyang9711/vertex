@@ -250,8 +250,11 @@ class App(ttk.Frame):
 
         self.items: List[Dict[str, Any]] = load_clients()
         # Ensure back-links (e.g. Chris Lim gets relations when others point to him), then persist so clients.json is updated
-        if sync_inverse_relations(self.items) > 0:
+        sync_updated = sync_inverse_relations(self.items)
+        self.log.info("sync_inverse_relations on load: updated_count=%s", sync_updated)
+        if sync_updated > 0:
             save_clients(self.items)
+            self.log.info("sync_inverse_relations: saved clients after adding %s back-link(s)", sync_updated)
         # Run migration automatically on load if needed
         self._run_auto_migration()
 
@@ -2106,12 +2109,14 @@ class App(ttk.Frame):
         
         print("=" * 80)
         dlg = ClientDialog(self, "Edit Client", client_data); self.wait_window(dlg)
-        # Refresh profile tab relations list so removals (and other changes) show immediately without navigating away
+        # Refresh so relation changes (add/remove) show immediately: profile tab + main list
         if self._current_page[0] == "detail" and getattr(self, "_detail_profile_frame", None) and hasattr(self._detail_profile_frame, "_refresh_people_tree"):
             try:
                 self._detail_profile_frame._refresh_people_tree()
             except Exception:
                 pass
+        self.populate()
+        self._update_suggestions()
         if dlg.result:
             # Duplicate check is now done in the dialog's _save() method
             # If dlg.result exists, it means the save was successful (no duplicate)
@@ -2153,7 +2158,6 @@ class App(ttk.Frame):
             print(f"[client_manager][LINK] on_edit: After save_clients, relations: {self.items[idx].get('relations', [])}")
             self.populate()
             self._update_suggestions()
-            
             # Log the saved relations
             self.log.info(f"[EDIT] After save - relations count: {len(self.items[idx].get('relations', []))}")
             self.log.info(f"[EDIT] After save - relations: {self.items[idx].get('relations', [])}")
