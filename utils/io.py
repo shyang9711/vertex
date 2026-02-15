@@ -279,7 +279,11 @@ def save_clients(items: List[Dict[str, Any]]) -> None:
     to_save = _normalize_clients_for_io(items)
     try:
         path = DATA_FILE.resolve()
-        path.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")
+        data = json.dumps(to_save, indent=2, ensure_ascii=False)
+        with path.open("w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
         rel_counts = [len(c.get("relations") or []) for c in to_save]
         LOG.info("save_clients: wrote %s to %s (relation counts: %s)", len(to_save), path, rel_counts)
     except Exception as e:

@@ -249,6 +249,9 @@ class App(ttk.Frame):
         self.root = master
 
         self.items: List[Dict[str, Any]] = load_clients()
+        path = DATA_FILE.resolve()
+        rel_counts = [len(c.get("relations") or []) for c in self.items]
+        self.log.info("load: read %s clients from %s (relation counts: %s)", len(self.items), path, rel_counts)
         # Ensure back-links (e.g. Chris Lim gets relations when others point to him), then persist so clients.json is updated
         # Pass self.log so sync debug lines go to app log (works in .exe when "sync" logger may be missing)
         sync_updated = sync_inverse_relations(self.items, log=self.log)
@@ -2171,9 +2174,12 @@ class App(ttk.Frame):
                 print(f"[client_manager][LINK] on_edit: Calling _update_relations_for_client")
                 self._update_relations_for_client(new_id, dlg.result)
             
+            rel_counts = [len(c.get("relations") or []) for c in self.items]
+            self.log.info("on_edit: saving to %s with relation counts %s", DATA_FILE.resolve(), rel_counts)
             print(f"[client_manager][LINK] on_edit: Before save_clients, relations count: {len(self.items[idx].get('relations', []))}")
             print(f"[client_manager][LINK] on_edit: Before save_clients, relations: {self.items[idx].get('relations', [])}")
             save_clients(self.items)
+            self.log.info("on_edit: save_clients done; file=%s", DATA_FILE.resolve())
             print(f"[client_manager][LINK] on_edit: After save_clients")
             
             # Verify relations were saved
