@@ -118,13 +118,15 @@ def _write_json_file(path: Path, obj) -> None:
     path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def load_clients() -> List[Dict[str, Any]]:
-    """Load clients from clients.json file."""
-    if not DATA_FILE.exists():
-        DATA_FILE.write_text("[]", encoding="utf-8")
+def load_clients(path: Path | None = None) -> List[Dict[str, Any]]:
+    """Load clients from clients.json file. If path is given, use it (avoids path/cache confusion)."""
+    target = (path or DATA_FILE).resolve()
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("[]", encoding="utf-8")
         return []
     try:
-        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(data, list):
             return []
         out = []
@@ -268,24 +270,37 @@ def _normalize_clients_for_io(items: List[Dict[str, Any]]) -> List[Dict[str, Any
     return out
 
 
-def save_clients(items: List[Dict[str, Any]]) -> None:
+def save_clients(items: List[Dict[str, Any]], path: Path | None = None) -> None:
     """
     Save current in-memory clients to the program's internal clients.json.
+    If path is given, write there (same path as load avoids cache/path confusion).
     Runs remove_stale_back_links so relation changes are reflected in data every time.
     """
     if not items:
         return
     remove_stale_back_links(items, log=LOG)
     to_save = _normalize_clients_for_io(items)
+    target = (path or DATA_FILE).resolve()
     try:
-        path = DATA_FILE.resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
         data = json.dumps(to_save, indent=2, ensure_ascii=False)
-        with path.open("w", encoding="utf-8") as f:
+        with target.open("w", encoding="utf-8") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
         rel_counts = [len(c.get("relations") or []) for c in to_save]
-        LOG.info("save_clients: wrote %s to %s (relation counts: %s)", len(to_save), path, rel_counts)
+        LOG.info("save_clients: wrote %s to %s (relation counts: %s)", len(to_save), target, rel_counts)
+        # Verify read-back so we catch wrong path / cache / sync issues
+        try:
+            raw = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(raw, list) and len(raw) == len(to_save):
+                disk_counts = [len(c.get("relations") or []) for c in raw]
+                if disk_counts != rel_counts:
+                    LOG.error("save_clients: verify failed — wrote %s but disk has %s at %s", rel_counts, disk_counts, target)
+            else:
+                LOG.warning("save_clients: verify read-back shape mismatch at %s", target)
+        except Exception as verify_err:
+            LOG.warning("save_clients: verify read-back failed: %s", verify_err)
     except Exception as e:
         LOG.exception("Error writing clients.json: %s", e)
         if messagebox:

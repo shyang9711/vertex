@@ -248,10 +248,10 @@ class App(ttk.Frame):
         self.log.info("App init")
         self.root = master
 
-        self.items: List[Dict[str, Any]] = load_clients()
-        path = DATA_FILE.resolve()
+        self._data_file_path = DATA_FILE.resolve()
+        self.items: List[Dict[str, Any]] = load_clients(self._data_file_path)
         rel_counts = [len(c.get("relations") or []) for c in self.items]
-        self.log.info("load: read %s clients from %s (relation counts: %s)", len(self.items), path, rel_counts)
+        self.log.info("load: read %s clients from %s (relation counts: %s)", len(self.items), self._data_file_path, rel_counts)
         # Ensure back-links (e.g. Chris Lim gets relations when others point to him), then persist so clients.json is updated
         # Pass self.log so sync debug lines go to app log (works in .exe when "sync" logger may be missing)
         sync_updated = sync_inverse_relations(self.items, log=self.log)
@@ -265,7 +265,7 @@ class App(ttk.Frame):
         if stale_updated > 0:
             self.log.info("remove_stale_back_links on load: updated_count=%s", stale_updated)
         if sync_updated > 0 or stale_updated > 0:
-            save_clients(self.items)
+            save_clients(self.items, self._data_file_path)
             if sync_updated > 0:
                 self.log.info("sync_inverse_relations: saved clients after adding %s back-link(s)", sync_updated)
         # Run migration automatically on load if needed
@@ -381,7 +381,7 @@ class App(ttk.Frame):
         ttk.Button(search_box, text="✕",   command=self.clear_search).pack(side=tk.LEFT, padx=(6,0))
         
         # Status
-        self.status = tk.StringVar(value=f"Loaded {len(self.items)} clients. Data: {DATA_FILE}")
+        self.status = tk.StringVar(value=f"Loaded {len(self.items)} clients. Data: {self._data_file_path}")
         ttk.Label(self, textvariable=self.status).pack(side=tk.BOTTOM, fill=tk.X, pady=(6,0), anchor="w")
 
         # Page host
@@ -703,14 +703,14 @@ class App(ttk.Frame):
             if not is_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS):
                 stats = migrate_officers_to_relations(self.items, remove_old_key=True)
                 if stats.get("clients_touched", 0) > 0:
-                    save_clients(self.items)
+                    save_clients(self.items, self._data_file_path)
                     mark_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS, {"clients_touched": stats.get("clients_touched", 0)})
                     self.log.info(f"Auto-migrated officers to relations: {stats}")
             # Normalize relation link ids (legacy -> canonical) if needed
             if not is_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL):
                 stats_links = self._normalize_relation_link_ids_to_canonical()
                 if stats_links.get("clients_touched", 0) > 0:
-                    save_clients(self.items)
+                    save_clients(self.items, self._data_file_path)
                 mark_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL, stats_links)
                 self.log.info(f"Auto-normalized relation link ids: {stats_links}")
 
@@ -876,7 +876,7 @@ class App(ttk.Frame):
             # 2) clients.json migration (officers -> relations)
             if not is_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS):
                 stats_off = migrate_officers_to_relations(self.items, remove_old_key=True)
-                save_clients(self.items)
+                save_clients(self.items, self._data_file_path)
                 mark_migration_done(DATA_ROOT, MIG_OFFICERS_TO_RELATIONS, {"clients_touched": stats_off.get("clients_touched", 0)})
             else:
                 # still ensure clients are saved? usually no need
@@ -895,7 +895,7 @@ class App(ttk.Frame):
             if not is_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL):
                 stats_links = self._normalize_relation_link_ids_to_canonical()
                 if stats_links.get("clients_touched", 0) > 0:
-                    save_clients(self.items)
+                    save_clients(self.items, self._data_file_path)
                 mark_migration_done(DATA_ROOT, MIG_RELATION_LINK_IDS_TO_CANONICAL, stats_links)
             else:
                 stats_links = {"relations_scanned": 0, "relations_updated": 0, "clients_touched": 0, "unresolved": 0}
@@ -1366,7 +1366,7 @@ class App(ttk.Frame):
 
         # Documents tab (add to the SAME notebook that already has "Profile")
         def _save_clients(items):
-            save_clients(items)
+            save_clients(items, self._data_file_path)
 
         try:
             init_documents_tab(nb, self, c, _save_clients)
@@ -1494,7 +1494,7 @@ class App(ttk.Frame):
             c[role_key][person_idx] = newp
 
             # Persist this side first
-            save_clients(self.items)
+            save_clients(self.items, self._data_file_path)
 
             # Sync other side if link changed
             new_link = (newp.get("linked_client_id") or "").strip()
@@ -1526,7 +1526,7 @@ class App(ttk.Frame):
             c["sales_tax_rate"] = v_stx.get().strip()
             c["other_tax_rates"] = v_oth.get().strip()
             c["tax_rates_last_checked"] = today_date().isoformat()
-            save_clients(self.items)
+            save_clients(self.items, self._data_file_path)
             self.navigate("detail", idx, replace=True)
             dlg.destroy()
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="right", padx=(6,0))
@@ -1539,7 +1539,7 @@ class App(ttk.Frame):
         if rate is not None:
             c["sales_tax_rate"] = f"{rate}"
             c["tax_rates_last_checked"] = today_date().isoformat()
-            save_clients(self.items)
+            save_clients(self.items, self._data_file_path)
             messagebox.showinfo("Sales Tax", f"Sales tax rate updated to {rate}%")
             self.navigate("detail", idx, replace=True)
         else:
@@ -1555,7 +1555,7 @@ class App(ttk.Frame):
                     c["tax_rates_last_checked"] = today_date().isoformat()
                     changed = True
         if changed:
-            save_clients(self.items)
+            save_clients(self.items, self._data_file_path)
 
     # ---- Actions page integration ----
     def open_actions_page(self, tool_key: str | None = None):
@@ -1577,7 +1577,7 @@ class App(ttk.Frame):
     # --- Data operations used by Taskbar / File menu -----------------
     def _save_all_data(self):
         """Flush current in-memory data to internal storage (clients.json, later tasks/rules)."""
-        save_clients(self.items)
+        save_clients(self.items, self._data_file_path)
         if hasattr(self, "status"):
             self.status.set(f"Saved {len(self.items)} client(s).")
 
@@ -1609,7 +1609,7 @@ class App(ttk.Frame):
 
         # always persist clients list if any were added
         if stats.get("clients_added", 0):
-            save_clients(self.items)
+            save_clients(self.items, self._data_file_path)
 
         # refresh UI (clients + suggestions). Tasks pages read from TASKS_FILE, but remap above makes them consistent.
         self.populate()
@@ -1916,7 +1916,7 @@ class App(ttk.Frame):
             )
             self.tree.insert("", "end", values=vals)
         filt = ", ".join(sorted(self._mgr_filter_active)) or "All managers"
-        self.status.set(f"Showing {len(items)} / {len(self.items)} clients — {filt}. Data: {DATA_FILE}")
+        self.status.set(f"Showing {len(items)} / {len(self.items)} clients — {filt}. Data: {getattr(self, '_data_file_path', DATA_FILE)}")
 
         NewUI.stripe_tree(self.tree)
         try:
@@ -1981,7 +1981,7 @@ class App(ttk.Frame):
             w.destroy()
 
     def refresh(self):
-        self.items = load_clients()
+        self.items = load_clients(getattr(self, "_data_file_path", None))
         self.populate()
         self._update_suggestions()
 
@@ -2065,7 +2065,7 @@ class App(ttk.Frame):
             post_links = dlg.result.pop("post_save_links", [])
             
             self.items.append(dlg.result)
-            save_clients(self.items)
+            save_clients(self.items, self._data_file_path)
             
             # Process bidirectional links after client is saved
             if post_links:
@@ -2165,32 +2165,18 @@ class App(ttk.Frame):
             if removed_ids:
                 self.log.info("edit client: relation removed: %s", list(removed_ids))
             
-            print(f"[client_manager][LINK] on_edit: After setting items[idx], relations count: {new_relations_count}")
-            print(f"[client_manager][LINK] on_edit: After setting items[idx], relations: {self.items[idx].get('relations', [])}")
-            
             # BFS update: Update all relations that reference this client
             if old_id and new_id == old_id:
                 # Client ID hasn't changed, but data might have - update all relations
-                print(f"[client_manager][LINK] on_edit: Calling _update_relations_for_client")
                 self._update_relations_for_client(new_id, dlg.result)
             
             rel_counts = [len(c.get("relations") or []) for c in self.items]
-            self.log.info("on_edit: saving to %s with relation counts %s", DATA_FILE.resolve(), rel_counts)
-            print(f"[client_manager][LINK] on_edit: Before save_clients, relations count: {len(self.items[idx].get('relations', []))}")
-            print(f"[client_manager][LINK] on_edit: Before save_clients, relations: {self.items[idx].get('relations', [])}")
-            save_clients(self.items)
-            self.log.info("on_edit: save_clients done; file=%s", DATA_FILE.resolve())
-            print(f"[client_manager][LINK] on_edit: After save_clients")
-            
-            # Verify relations were saved
-            saved_relations_count = len(self.items[idx].get("relations", []))
-            print(f"[client_manager][LINK] on_edit: After save_clients, relations count: {saved_relations_count}")
-            print(f"[client_manager][LINK] on_edit: After save_clients, relations: {self.items[idx].get('relations', [])}")
+            self.log.info("on_edit: saving to %s with relation counts %s", self._data_file_path, rel_counts)
+            save_clients(self.items, self._data_file_path)
+            self.log.info("on_edit: save_clients done; file=%s", self._data_file_path)
             self.populate()
             self._update_suggestions()
-            # Log the saved relations
-            self.log.info(f"[EDIT] After save - relations count: {len(self.items[idx].get('relations', []))}")
-            self.log.info(f"[EDIT] After save - relations: {self.items[idx].get('relations', [])}")
+            self.log.info("on_edit: after save relations count=%s", len(self.items[idx].get("relations", [])))
             
             if self._current_page[0] != "main":
                 # Handle both old format (int) and new format ((int, tab_name))
@@ -2201,7 +2187,6 @@ class App(ttk.Frame):
                     page_data, restore_tab = page_data
                 # Rebuild the detail page to show updated relations
                 if self._current_page[0] == "detail":
-                    self.log.info(f"[EDIT] Rebuilding detail page with updated data, restore_tab={restore_tab}")
                     self._build_detail_page(page_data, restore_tab=restore_tab)
                 else:
                     self.navigate(self._current_page[0], page_data, replace=True)
@@ -2622,7 +2607,7 @@ class App(ttk.Frame):
             changed |= self._sync_bidirectional_link(this_client_idx, new_idx, add=True)
 
         if changed:
-            save_clients(self.items)
+            save_clients(self.items, self._data_file_path)
             self.populate()
             self._update_suggestions()
 
@@ -2752,7 +2737,7 @@ class App(ttk.Frame):
                     changed |= self._sync_bidirectional_link(client_idx, target_idx2, add=True)
 
                 if changed:
-                    save_clients(self.items)
+                    save_clients(self.items, self._data_file_path)
                     self.populate()
                     self._update_suggestions()
 
@@ -3271,9 +3256,7 @@ class App(ttk.Frame):
     def save_clients_data(self):
         """Persist current self.items, then refresh UI so data and screen stay in sync."""
         try:
-            print(f"[client_manager][LINK] save_clients_data: Saving {len(self.items)} clients")
-            save_clients(self.items)
-            print(f"[client_manager][LINK] save_clients_data: Successfully saved")
+            save_clients(self.items, self._data_file_path)
             self.populate()
             self._update_suggestions()
             if getattr(self, "_detail_profile_frame", None) and hasattr(self._detail_profile_frame, "_refresh_people_tree"):
@@ -3282,7 +3265,7 @@ class App(ttk.Frame):
                 except Exception:
                     pass
         except Exception as e:
-            print(f"[client_manager][LINK] save_clients_data: Error saving: {e}")
+            self.log.exception("save_clients_data failed: %s", e)
             import traceback
             traceback.print_exc()
 
@@ -3426,7 +3409,6 @@ class App(ttk.Frame):
         """
         from vertex.utils.helpers import find_client_by_uid, ensure_relation_link, _build_full_relation_from_client
         
-        print(f"[client_manager][LINK] _update_relations_for_client: client_id='{client_id}'")
         if not client_id:
             return
         
@@ -3459,7 +3441,6 @@ class App(ttk.Frame):
                     new_rel = _build_full_relation_from_client(updated_client, client_id, role)
                     relations[i] = new_rel
                     updated = True
-                    print(f"[client_manager][LINK] _update_relations_for_client: Updated relation in client '{current_id}'")
                     
                     # Add the current client to queue to update its relations too
                     if current_id not in visited and current_id != client_id:
@@ -3467,7 +3448,6 @@ class App(ttk.Frame):
             
             if updated:
                 current_client["relations"] = relations
-                print(f"[client_manager][LINK] _update_relations_for_client: Saved updated relations for client '{current_id}'")
 
     def link_clients(self, a_id: str, b_id: str, link: bool, role: str = ""):
         """
@@ -3670,7 +3650,7 @@ class App(ttk.Frame):
             _remove_link(b_rels, a_key)
 
         # Persist + refresh UI
-        save_clients(self.items)
+        save_clients(self.items, self._data_file_path)
         self.populate()
         self._update_suggestions()
 
