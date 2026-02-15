@@ -253,9 +253,18 @@ class App(ttk.Frame):
         # Pass self.log so sync debug lines go to app log (works in .exe when "sync" logger may be missing)
         sync_updated = sync_inverse_relations(self.items, log=self.log)
         self.log.info("sync_inverse_relations on load: updated_count=%s", sync_updated)
-        if sync_updated > 0:
+        # Remove stale back-links (e.g. user removed Loyal CMB from Chris Lim but Loyal CMB still had Chris Lim)
+        try:
+            from vertex.utils.helpers import remove_stale_back_links
+        except Exception:
+            from utils.helpers import remove_stale_back_links
+        stale_updated = remove_stale_back_links(self.items, log=self.log)
+        if stale_updated > 0:
+            self.log.info("remove_stale_back_links on load: updated_count=%s", stale_updated)
+        if sync_updated > 0 or stale_updated > 0:
             save_clients(self.items)
-            self.log.info("sync_inverse_relations: saved clients after adding %s back-link(s)", sync_updated)
+            if sync_updated > 0:
+                self.log.info("sync_inverse_relations: saved clients after adding %s back-link(s)", sync_updated)
         # Run migration automatically on load if needed
         self._run_auto_migration()
 
@@ -2129,15 +2138,29 @@ class App(ttk.Frame):
             print(f"[client_manager][LINK] on_edit: dlg.result relations count: {len(dlg.result.get('relations', []))}")
             print(f"[client_manager][LINK] on_edit: dlg.result relations: {dlg.result.get('relations', [])}")
             
-            # Store old client data for comparison
+            # Store old client data for comparison and logging
             old_client = self.items[idx]
             old_id = old_client.get("id", "")
+            old_name = (old_client.get("name") or "").strip()
             old_relations_count = len(old_client.get("relations", []))
+            old_rel_ids = {str(ensure_relation_link(r).get("id") or "").strip() for r in (old_client.get("relations") or []) if ensure_relation_link(r).get("id")}
             print(f"[client_manager][LINK] on_edit: Old client relations count: {old_relations_count}")
             
             self.items[idx] = dlg.result
             new_id = dlg.result.get("id", "")
+            new_name = (dlg.result.get("name") or "").strip()
             new_relations_count = len(self.items[idx].get("relations", []))
+            new_rel_ids = {str(ensure_relation_link(r).get("id") or "").strip() for r in (dlg.result.get("relations") or []) if ensure_relation_link(r).get("id")}
+            
+            # Log edit: name and relations (for app log file / .exe debugging)
+            self.log.info("edit client: idx=%s id=%s name_before=%s name_after=%s", idx, new_id or old_id, old_name or "(empty)", new_name or "(empty)")
+            self.log.info("edit client: relations before=%s after=%s", old_relations_count, new_relations_count)
+            added_ids = new_rel_ids - old_rel_ids
+            removed_ids = old_rel_ids - new_rel_ids
+            if added_ids:
+                self.log.info("edit client: relation added: %s", list(added_ids))
+            if removed_ids:
+                self.log.info("edit client: relation removed: %s", list(removed_ids))
             
             print(f"[client_manager][LINK] on_edit: After setting items[idx], relations count: {new_relations_count}")
             print(f"[client_manager][LINK] on_edit: After setting items[idx], relations: {self.items[idx].get('relations', [])}")
@@ -3240,11 +3263,18 @@ class App(ttk.Frame):
         self._update_nav_buttons()
 
     def save_clients_data(self):
-        """Persist current self.items using the existing save_clients() helper."""
+        """Persist current self.items, then refresh UI so data and screen stay in sync."""
         try:
             print(f"[client_manager][LINK] save_clients_data: Saving {len(self.items)} clients")
             save_clients(self.items)
             print(f"[client_manager][LINK] save_clients_data: Successfully saved")
+            self.populate()
+            self._update_suggestions()
+            if getattr(self, "_detail_profile_frame", None) and hasattr(self._detail_profile_frame, "_refresh_people_tree"):
+                try:
+                    self._detail_profile_frame._refresh_people_tree()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[client_manager][LINK] save_clients_data: Error saving: {e}")
             import traceback

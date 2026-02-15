@@ -25,6 +25,7 @@ try:
         tokenize,
         _account_manager_key,
         _account_manager_id_from_key,
+        remove_stale_back_links,
     )
 except ModuleNotFoundError:
     from utils.app_logging import get_logger
@@ -38,6 +39,7 @@ except ModuleNotFoundError:
         tokenize,
         _account_manager_key,
         _account_manager_id_from_key,
+        remove_stale_back_links,
     )
 
 try:
@@ -269,8 +271,9 @@ def _normalize_clients_for_io(items: List[Dict[str, Any]]) -> List[Dict[str, Any
 def save_clients(items: List[Dict[str, Any]]) -> None:
     """
     Save current in-memory clients to the program's internal clients.json.
-    This is what 'Save Data' uses.
+    Runs remove_stale_back_links so relation changes are reflected in data every time.
     """
+    remove_stale_back_links(items, log=LOG)
     to_save = _normalize_clients_for_io(items)
     try:
         DATA_FILE.write_text(json.dumps(to_save, indent=2, ensure_ascii=False), encoding="utf-8")

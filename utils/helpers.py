@@ -643,16 +643,78 @@ def sync_inverse_relations(clients: List[Dict[str, Any]], log=None) -> int:
     return updated
 
 
+def remove_stale_back_links(clients: List[Dict[str, Any]], log=None) -> int:
+    """
+    Remove back-links when the forward link no longer exists (e.g. user removed B from A's
+    relations but A was still in B's relations). So if D has C in its relations but C does
+    not have D, remove C from D's relations. Mutates clients in place. Returns number of
+    clients that were updated.
+    """
+    _log = log
+    if not clients:
+        return 0
+
+    def _rel_points_to_client(rel_id: str, target: Dict[str, Any]) -> bool:
+        if not rel_id or not target:
+            return False
+        found = find_client_by_uid(clients, rel_id)
+        return found is target
+
+    def _c_has_relation_to(c_rels: list, other: Dict[str, Any]) -> bool:
+        for r in c_rels or []:
+            rid = (ensure_relation_link(r).get("id") or "").strip()
+            if _rel_points_to_client(rid, other):
+                return True
+        return False
+
+    updated = 0
+    for c in clients:
+        c_id = get_client_uid(c)
+        if not c_id:
+            continue
+        c_rels = c.get("relations", []) or []
+        c_name = (c.get("name") or "").strip() or c_id
+        new_rels = []
+        for rel in c_rels:
+            rr = ensure_relation_link(rel)
+            rel_id = (rr.get("id") or "").strip()
+            other = find_client_by_uid(clients, rel_id) if rel_id else None
+            if not other or other is c:
+                new_rels.append(rr)
+                continue
+            # other exists; does other have a relation back to c?
+            if _c_has_relation_to(other.get("relations", []) or [], c):
+                new_rels.append(rr)
+            else:
+                updated += 1
+                other_name = (other.get("name") or "").strip() or rel_id
+                if _log:
+                    _log.info(
+                        "relation stale back-link removed: %s had %s in relations but %s did not have %s",
+                        c_name, other_name, other_name, c_name,
+                    )
+        if len(new_rels) != len(c_rels):
+            c["relations"] = new_rels
+
+    if _log and updated:
+        _log.info("remove_stale_back_links: done, updated_count=%s", updated)
+    return updated
+
+
 def link_clients_relations(app, this_id: str, other_id: str, link: bool = True, role: str = "", other_label: str = "", this_label: str = ""):
     """
     Symmetric link/unlink using client['relations'] (NOT officers).
     Expects app.items to be a list[dict] of clients and app.save_clients_data() exists (optional).
     Creates full relation records with all client data fields.
+    If app has a .log (e.g. client_manager), relation add/remove is logged to the app log file.
     """
+    _log = getattr(app, "log", None)
     print(f"[helpers][LINK] link_clients_relations: this_id='{this_id}', other_id='{other_id}', link={link}, role='{role}'")
     this_id = (this_id or "").strip()
     other_id = (other_id or "").strip()
     if not this_id or not other_id:
+        if _log:
+            _log.info("relation: skip (missing id) this_id=%s other_id=%s", this_id or "(empty)", other_id or "(empty)")
         print(f"[helpers][LINK] link_clients_relations: Missing IDs - this_id='{this_id}', other_id='{other_id}'")
         return
 
@@ -662,6 +724,8 @@ def link_clients_relations(app, this_id: str, other_id: str, link: bool = True, 
     b = find_client_by_uid(items, other_id)
     print(f"[helpers][LINK] link_clients_relations: Client A: {a is not None}, Client B: {b is not None}")
     if not isinstance(a, dict) or not isinstance(b, dict):
+        if _log:
+            _log.info("relation: skip (client not found) this_id=%s other_id=%s", this_id, other_id)
         print(f"[helpers][LINK] link_clients_relations: One or both clients not found or invalid")
         return
 
@@ -729,6 +793,11 @@ def link_clients_relations(app, this_id: str, other_id: str, link: bool = True, 
         print(f"[helpers][LINK] link_clients_relations: b_new: {b_new}")
         a["relations"] = merge_relations(a_rels, a_new)
         b["relations"] = merge_relations(b_rels, b_new)
+        if _log:
+            _log.info(
+                "relation added: %s (%s) <-> %s (%s), role=%s",
+                this_label, this_id, other_label, other_id, role_lower or "(default)",
+            )
         print(f"[helpers][LINK] link_clients_relations: After merge - a relations: {len(a.get('relations', []))}, b relations: {len(b.get('relations', []))}")
         print(f"[helpers][LINK] link_clients_relations: a relations data: {a.get('relations', [])}")
         print(f"[helpers][LINK] link_clients_relations: b relations data: {b.get('relations', [])}")
@@ -766,6 +835,11 @@ def link_clients_relations(app, this_id: str, other_id: str, link: bool = True, 
         b["relations"] = _drop(b_rels, this_id)
         a_relations_after = len(a.get("relations", []))
         b_relations_after = len(b.get("relations", []))
+        if _log:
+            _log.info(
+                "relation removed: %s (%s) <-> %s (%s)",
+                this_label, this_id, other_label, other_id,
+            )
         print(f"[helpers][LINK] link_clients_relations: After unlink - a relations: {a_relations_before} -> {a_relations_after}, b relations: {b_relations_before} -> {b_relations_after}")
 
     # Persist if available
