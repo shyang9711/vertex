@@ -1459,6 +1459,8 @@ class ClientDialog(tk.Toplevel):
             "officers": [],  # Deprecated - all data moved to relations
             "employees": self._initial.get("employees", []),
 
+            "memo": memo,
+
             # IMPORTANT: id is the canonical resolver id used for linking
             "id": this_id,
         }
