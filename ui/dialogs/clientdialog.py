@@ -1421,7 +1421,12 @@ class ClientDialog(tk.Toplevel):
         officers, new_relations = self._split_officers_and_relations(rows)
         print(f"[ClientDialog][LINK] _save: After _split_officers_and_relations: {len(new_relations)} relations")
         print(f"[ClientDialog][LINK] _save: new_relations data: {new_relations}")
-        memo     = self.memo_txt.get("1.0", "end").strip()
+        # Ensure widget has flushed its content (fixes memo appearing empty on save on some platforms)
+        self.update_idletasks()
+        memo = self.memo_txt.get("1.0", "end").strip()
+        # If widget returned empty but we had memo when opening (edit), keep original to avoid losing data
+        if not memo and (self._initial.get("memo") or "").strip():
+            memo = (self._initial.get("memo") or "").strip()
 
 
         this_id = self._compute_required_client_id()
