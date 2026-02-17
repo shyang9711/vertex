@@ -1533,4 +1533,17 @@ def init_profile_tab(
     memo_txt.bind("<FocusOut>", lambda _: _save_memo())
     memo_txt.bind("<KeyRelease>", _debounced_save_memo)
 
+    def refresh_memo():
+        """Refresh memo text from current client (e.g. after saving from Edit Client dialog)."""
+        try:
+            i = _resolve_client_idx_from_client()
+            if i is not None and getattr(app, "items", None) and 0 <= i < len(app.items):
+                c = app.items[i]
+                memo_txt.delete("1.0", tk.END)
+                memo_txt.insert("1.0", c.get("memo", ""))
+        except Exception:
+            pass
+
+    prof.refresh_memo = refresh_memo
+
     return prof

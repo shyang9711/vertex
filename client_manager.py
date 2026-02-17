@@ -2150,6 +2150,12 @@ class App(ttk.Frame):
             print(f"[client_manager][LINK] on_edit: Old client relations count: {old_relations_count}")
             
             self.items[idx] = dlg.result
+            # Refresh Profile tab memo immediately so it reflects the saved data
+            if self._current_page[0] == "detail" and getattr(self, "_detail_profile_frame", None) and hasattr(self._detail_profile_frame, "refresh_memo"):
+                try:
+                    self._detail_profile_frame.refresh_memo()
+                except Exception:
+                    pass
             new_id = dlg.result.get("id", "")
             new_name = (dlg.result.get("name") or "").strip()
             new_relations_count = len(self.items[idx].get("relations", []))
