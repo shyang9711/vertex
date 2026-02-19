@@ -836,9 +836,10 @@ class App(ttk.Frame):
         return stats
 
     def _upload_vendor_list_dialog(self):
-        """Upload a CSV file to the vendor_lists folder (CSV only)."""
+        """Upload or update a vendor list CSV into the data/vendor_lists folder."""
+        self.VENDOR_LISTS_DIR.mkdir(parents=True, exist_ok=True)
         path = filedialog.askopenfilename(
-            title="Select Vendor List (CSV only)",
+            title="Select Vendor List CSV to upload or update",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
             initialdir=str(self.VENDOR_LISTS_DIR) if self.VENDOR_LISTS_DIR.exists() else None,
         )
@@ -847,11 +848,25 @@ class App(ttk.Frame):
         if not path.lower().endswith(".csv"):
             messagebox.showwarning("Upload Vendor List", "Only CSV files are allowed.")
             return
-        self.VENDOR_LISTS_DIR.mkdir(parents=True, exist_ok=True)
-        dest = self.VENDOR_LISTS_DIR / os.path.basename(path)
+        default_name = os.path.basename(path)
+        dest_path = filedialog.asksaveasfilename(
+            title="Save to data folder (same name = update existing)",
+            initialdir=str(self.VENDOR_LISTS_DIR),
+            initialfile=default_name,
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not dest_path:
+            return
+        if not dest_path.lower().endswith(".csv"):
+            dest_path = dest_path.rstrip(". ") + ".csv"
         try:
-            shutil.copy2(path, dest)
-            messagebox.showinfo("Upload Vendor List", f"Saved to:\n{dest}")
+            shutil.copy2(path, dest_path)
+            messagebox.showinfo(
+                "Upload Vendor List",
+                f"Vendor list saved to the data folder:\n{dest_path}\n\n"
+                "Use the same filename next time to update an existing list.",
+            )
         except Exception as e:
             messagebox.showerror("Upload Vendor List", f"Failed to save file:\n{e}")
 

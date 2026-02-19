@@ -83,7 +83,7 @@ class TaskbarModel:
         m_file.add_command(label="Import Data...", command=self._do_import_data)
         m_file.add_command(label="Export Data...", command=self._do_export_data)
         m_file.add_command(label="Update Data...", command=self._do_update_data)
-        m_file.add_command(label="Upload Vendor List...", command=self._do_upload_vendor_list)
+        m_file.add_command(label="Upload/Update Vendor List...", command=self._do_upload_vendor_list)
         m_file.add_separator()
         m_file.add_command(
             label="Exit",
