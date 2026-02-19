@@ -614,11 +614,50 @@ def parse_citi_text(text: str, transaction_filter: str = "both") -> pd.DataFrame
     return _bofa_rows_to_dataframe(rows)
 
 
+def _get_fremont_parser():
+    try:
+        from fremont.parse_fremont_checking import parse_fremont_checking_text
+    except ImportError:
+        try:
+            from vertex.features.vendor_match.fremont.parse_fremont_checking import parse_fremont_checking_text
+        except ImportError:
+            return None
+    return parse_fremont_checking_text
+
+
+def parse_fremont_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse Fremont Bank checking/business statement PDF. transaction_filter: debits, credits, or both."""
+    text = extract_text_from_pdf(pdf_path)
+    parser = _get_fremont_parser()
+    if parser is None:
+        raise ValueError("Fremont Bank parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_fremont_text(text: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse Fremont Bank checking/business statement pasted text. transaction_filter: debits, credits, or both."""
+    parser = _get_fremont_parser()
+    if parser is None:
+        raise ValueError("Fremont Bank parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
 # Bank parser registry for PDF files
 BANK_PARSERS_PDF = {
     "Bank of America (Bank)": parse_bank_of_america_bank_pdf,
     "Bank of America (Credit Card)": parse_bank_of_america_cc_pdf,
     "Citi": parse_citi_pdf,
+    "Fremont Bank": parse_fremont_pdf,
 }
 
 # Bank parser registry for pasted text
@@ -626,6 +665,7 @@ BANK_PARSERS_TEXT = {
     "Bank of America (Bank)": parse_bank_of_america_bank_text,
     "Bank of America (Credit Card)": parse_bank_of_america_cc_text,
     "Citi": parse_citi_text,
+    "Fremont Bank": parse_fremont_text,
 }
 
 # Combined registry for UI (shows same banks for both PDF and text)
@@ -638,7 +678,7 @@ def load_table(path: str = None, bank_parser: str = None, pasted_text: str = Non
     transaction_filter: "debits", "credits", or "both" (used for Bank of America parsers only).
     """
     boa_parsers = ("Bank of America (Bank)", "Bank of America (Credit Card)")
-    parsers_with_filter = ("Bank of America (Bank)", "Bank of America (Credit Card)", "Citi")
+    parsers_with_filter = ("Bank of America (Bank)", "Bank of America (Credit Card)", "Citi", "Fremont Bank")
     if pasted_text:
         if not bank_parser or bank_parser not in BANK_PARSERS_TEXT:
             raise ValueError(f"Bank parser required for pasted text. Available: {', '.join(BANK_PARSERS_TEXT.keys())}")
