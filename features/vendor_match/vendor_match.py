@@ -614,7 +614,28 @@ def parse_citi_text(text: str, transaction_filter: str = "both") -> pd.DataFrame
     return _bofa_rows_to_dataframe(rows)
 
 
+def _vendor_match_dir():
+    """Directory containing this script (vendor_match folder). Prefer __file__, else sys.argv[0]."""
+    try:
+        return os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+    except NameError:
+        pass
+    if sys.argv and sys.argv[0]:
+        return os.path.normpath(os.path.dirname(os.path.abspath(sys.argv[0])))
+    return os.path.normpath(os.getcwd())
+
+
 def _get_fremont_parser():
+    _vm_dir = _vendor_match_dir()
+    # Ensure vendor_match dir is first on path so "fremont" subpackage is findable
+    if _vm_dir not in sys.path:
+        sys.path.insert(0, _vm_dir)
+    elif sys.path[0] != _vm_dir:
+        try:
+            sys.path.remove(_vm_dir)
+        except ValueError:
+            pass
+        sys.path.insert(0, _vm_dir)
     try:
         from fremont.parse_fremont_checking import parse_fremont_checking_text
         return parse_fremont_checking_text
@@ -625,15 +646,25 @@ def _get_fremont_parser():
         return parse_fremont_checking_text
     except ImportError:
         pass
-    # Fallback: load by path relative to this file (works when run as script with different cwd)
-    _vm_dir = os.path.dirname(os.path.abspath(__file__))
-    _path = os.path.join(_vm_dir, "fremont", "parse_fremont_checking.py")
-    if os.path.isfile(_path):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("parse_fremont_checking", _path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return getattr(mod, "parse_fremont_checking_text", None)
+    # Fallback: try vendor_match package from features dir
+    try:
+        _features_dir = os.path.dirname(_vm_dir)
+        if _features_dir not in sys.path:
+            sys.path.insert(0, _features_dir)
+        from vendor_match.fremont.parse_fremont_checking import parse_fremont_checking_text
+        return parse_fremont_checking_text
+    except ImportError:
+        pass
+    # Fallback: load by path (works when cwd or sys.path differ)
+    try:
+        _path = os.path.normpath(os.path.join(_vm_dir, "fremont", "parse_fremont_checking.py"))
+        if os.path.isfile(_path):
+            spec = importlib.util.spec_from_file_location("parse_fremont_checking", _path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return getattr(mod, "parse_fremont_checking_text", None)
+    except Exception:
+        pass
     return None
 
 
@@ -675,14 +706,33 @@ def _get_comerica_parser():
         return parse_comerica_checking_text
     except ImportError:
         pass
-    _vm_dir = os.path.dirname(os.path.abspath(__file__))
-    _path = os.path.join(_vm_dir, "comerica", "parse_comerica_checking.py")
-    if os.path.isfile(_path):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("parse_comerica_checking", _path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return getattr(mod, "parse_comerica_checking_text", None)
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        if _vm_dir not in sys.path:
+            sys.path.insert(0, _vm_dir)
+        from comerica.parse_comerica_checking import parse_comerica_checking_text
+        return parse_comerica_checking_text
+    except ImportError:
+        pass
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        _features_dir = os.path.dirname(_vm_dir)
+        if _features_dir not in sys.path:
+            sys.path.insert(0, _features_dir)
+        from vendor_match.comerica.parse_comerica_checking import parse_comerica_checking_text
+        return parse_comerica_checking_text
+    except ImportError:
+        pass
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        _path = os.path.normpath(os.path.join(_vm_dir, "comerica", "parse_comerica_checking.py"))
+        if os.path.isfile(_path):
+            spec = importlib.util.spec_from_file_location("parse_comerica_checking", _path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return getattr(mod, "parse_comerica_checking_text", None)
+    except Exception:
+        pass
     return None
 
 
