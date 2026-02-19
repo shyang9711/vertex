@@ -617,12 +617,24 @@ def parse_citi_text(text: str, transaction_filter: str = "both") -> pd.DataFrame
 def _get_fremont_parser():
     try:
         from fremont.parse_fremont_checking import parse_fremont_checking_text
+        return parse_fremont_checking_text
     except ImportError:
-        try:
-            from vertex.features.vendor_match.fremont.parse_fremont_checking import parse_fremont_checking_text
-        except ImportError:
-            return None
-    return parse_fremont_checking_text
+        pass
+    try:
+        from vertex.features.vendor_match.fremont.parse_fremont_checking import parse_fremont_checking_text
+        return parse_fremont_checking_text
+    except ImportError:
+        pass
+    # Fallback: load by path relative to this file (works when run as script with different cwd)
+    _vm_dir = os.path.dirname(os.path.abspath(__file__))
+    _path = os.path.join(_vm_dir, "fremont", "parse_fremont_checking.py")
+    if os.path.isfile(_path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("parse_fremont_checking", _path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return getattr(mod, "parse_fremont_checking_text", None)
+    return None
 
 
 def parse_fremont_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
@@ -655,12 +667,23 @@ def parse_fremont_text(text: str, transaction_filter: str = "both") -> pd.DataFr
 def _get_comerica_parser():
     try:
         from comerica.parse_comerica_checking import parse_comerica_checking_text
+        return parse_comerica_checking_text
     except ImportError:
-        try:
-            from vertex.features.vendor_match.comerica.parse_comerica_checking import parse_comerica_checking_text
-        except ImportError:
-            return None
-    return parse_comerica_checking_text
+        pass
+    try:
+        from vertex.features.vendor_match.comerica.parse_comerica_checking import parse_comerica_checking_text
+        return parse_comerica_checking_text
+    except ImportError:
+        pass
+    _vm_dir = os.path.dirname(os.path.abspath(__file__))
+    _path = os.path.join(_vm_dir, "comerica", "parse_comerica_checking.py")
+    if os.path.isfile(_path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("parse_comerica_checking", _path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return getattr(mod, "parse_comerica_checking_text", None)
+    return None
 
 
 def parse_comerica_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
