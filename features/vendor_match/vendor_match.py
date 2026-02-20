@@ -951,7 +951,7 @@ class App:
         self.root.title("Vendor Matcher")
 
         # --- state & StringVars ---
-        self.tx_path = None
+        self.tx_paths = []  # one or more transaction files (empty if pasted text)
         self.vendor_path = None
         self.vendor_entries = None
         self.vendor_names = []
@@ -967,6 +967,7 @@ class App:
         self.vendor_label_var = StringVar(value="No vendor file selected")
         self.status_var = StringVar(value="")
         self.rules_label_var = StringVar(value="Manual rules: (none)")
+        self.account_label_var = StringVar(value="Accounts: 0")
         self.company_label_var = StringVar(value="Company: (none)")
         self.rules_file_hint = StringVar(value="Rules file: (select company)")
 
@@ -1003,15 +1004,13 @@ class App:
 
         Button(root, text="Manage Rules…", command=self.manage_rules_dialog).grid(row=9, column=0, padx=10, pady=(2,0), sticky="w")
         Button(root, text="Manage Accounts…", command=self.manage_accounts_dialog).grid(row=9, column=1, padx=10, pady=(2,0), sticky="w")
-        _label_in_frame(_text_frame(root, 10, 0, 1, padx=12, pady=(2,10)), self.rules_label_var, fg="#555")
+        _label_in_frame(_text_frame(root, 10, 0, 1, padx=12, pady=(2,4)), self.rules_label_var, fg="#555")
+        _label_in_frame(_text_frame(root, 10, 1, 1, padx=12, pady=(2,4)), self.account_label_var, fg="#555")
 
         self.run_btn = Button(root, text="Run and Save", command=self.run_and_save, state=DISABLED)
-        self.run_btn.grid(row=11, column=0, padx=10, pady=(6,6), sticky="w")
-        Button(root, text="Select Multiple Documents…", command=self.pick_multiple_transactions).grid(
-            row=12, column=0, padx=10, pady=(0,12), sticky="w"
-        )
+        self.run_btn.grid(row=11, column=0, padx=10, pady=(6,12), sticky="w")
 
-        _label_in_frame(_text_frame(root, 13, 0, 1, padx=12, pady=(0,12)), self.status_var, fg="#006400")
+        _label_in_frame(_text_frame(root, 12, 0, 1, padx=12, pady=(0,12)), self.status_var, fg="#006400")
 
         root.columnconfigure(0, weight=0)
         root.columnconfigure(1, weight=0)
@@ -1073,7 +1072,7 @@ class App:
                         self.vendor_names = []
     
                     self.vendor_path = auto_v
-                    self.vendor_label_var.set(auto_v)
+                    self.vendor_label_var.set(os.path.basename(auto_v))
                     self.maybe_enable_run()
                 else:
                     # Clear previous vendor info so user knows to pick one
@@ -1143,9 +1142,11 @@ class App:
             if self.current_company == name:
                 self.current_company = None
                 self.manual_rules = []
+                self.account_map = {}
                 self.company_label_var.set("Company: (none)")
                 self.rules_file_hint.set("Rules file: (select company)")
                 self._refresh_rules_label()
+                self._refresh_account_label()
 
         Button(dlg, text="Use", command=do_use).grid(row=1, column=0, padx=10, pady=(4,10), sticky="w")
         Button(dlg, text="Add", command=do_add).grid(row=1, column=1, padx=6, pady=(4,10), sticky="w")
@@ -1178,12 +1179,13 @@ class App:
         self.manual_rules = load_rules_from_disk(rp)
         self.account_map  = load_accounts_from_disk(ap)
         self._refresh_rules_label()
+        self._refresh_account_label()
         self.maybe_enable_run()
 
     # ===== File pickers =====
     def pick_transactions(self):
-        path = filedialog.askopenfilename(
-            title="Select Transactions file (Excel, CSV, or PDF)",
+        paths = filedialog.askopenfilenames(
+            title="Select transaction file(s) (Excel, CSV, or PDF)",
             filetypes=[
                 ("All Supported", "*.xlsx *.xls *.csv *.txt *.pdf"),
                 ("Excel/CSV", "*.xlsx *.xls *.csv *.txt"),
@@ -1191,24 +1193,30 @@ class App:
                 ("All files", "*.*")
             ]
         )
-        if path:
-            ext = os.path.splitext(path)[1].lower()
-            if ext == ".pdf":
-                # Detect bank from document and show bank selection (user can reselect)
-                default_bank = detect_bank_from_document(path)
-                bank = self.select_bank_dialog(default_bank=default_bank)
-                if not bank:
-                    return  # User cancelled
-                self.selected_bank = bank
-                self.tx_path = path
-                self.pasted_text = None  # Clear pasted text when selecting file
-                self.tx_label_var.set(f"{path} [{bank}]")
+        if not paths:
+            return
+        paths = list(paths)
+        self.pasted_text = None
+        any_pdf = any(os.path.splitext(p)[1].lower() == ".pdf" for p in paths)
+        if any_pdf:
+            first_pdf = next((p for p in paths if os.path.splitext(p)[1].lower() == ".pdf"), paths[0])
+            default_bank = detect_bank_from_document(first_pdf)
+            bank = self.select_bank_dialog(default_bank=default_bank)
+            if not bank:
+                return
+            self.selected_bank = bank
+        else:
+            self.selected_bank = None
+        self.tx_paths = paths
+        if len(paths) == 1:
+            p = paths[0]
+            if os.path.splitext(p)[1].lower() == ".pdf":
+                self.tx_label_var.set(f"{os.path.basename(p)} [{self.selected_bank}]")
             else:
-                self.selected_bank = None
-                self.tx_path = path
-                self.pasted_text = None  # Clear pasted text when selecting file
-                self.tx_label_var.set(path)
-            self.maybe_enable_run()
+                self.tx_label_var.set(os.path.basename(p))
+        else:
+            self.tx_label_var.set(f"{len(paths)} file(s) selected")
+        self.maybe_enable_run()
     
     def select_bank_dialog(self, default_bank: str | None = None):
         """Show dialog to select bank for PDF parsing. default_bank: pre-selected bank (e.g. from detection); if None or not in list, first bank is used."""
@@ -1333,105 +1341,13 @@ class App:
         if bank and text:
             self.selected_bank = bank
             self.pasted_text = text
-            self.tx_path = None  # Clear file path when using pasted text
-            line_count = len([l for l in text.split("\n") if l.strip()])
-            self.tx_label_var.set(f"Pasted transactions [{bank}] ({line_count} lines)")
-            self.maybe_enable_run()
-
-    def pick_multiple_transactions(self):
-        """Select multiple documents, one bank (for PDFs), output one Excel per document to a folder."""
-        if not self.current_company or not self.vendor_path:
-            messagebox.showerror("Missing", "Please select company and vendor list first.")
-            return
-        paths = filedialog.askopenfilenames(
-            title="Select transaction files (Excel, CSV, or PDF)",
-            filetypes=[
-                ("All Supported", "*.xlsx *.xls *.csv *.txt *.pdf"),
-                ("Excel/CSV", "*.xlsx *.xls *.csv *.txt"),
-                ("PDF", "*.pdf"),
-                ("All files", "*.*"),
-            ],
-        )
-        if not paths:
-            return
-        paths = list(paths)
-        any_pdf = any(os.path.splitext(p)[1].lower() == ".pdf" for p in paths)
-        bank_for_pdf = None
-        if any_pdf:
-            default_bank = detect_bank_from_document(paths[0])
-            bank_for_pdf = self.select_bank_dialog(default_bank=default_bank)
-            if not bank_for_pdf:
-                return
-        out_dir = filedialog.askdirectory(title="Select folder to save Excel files")
-        if not out_dir:
-            return
-        transaction_filter = self.transaction_filter.get() if hasattr(self.transaction_filter, "get") else "debits"
-        try:
-            vendors_df = load_table(self.vendor_path)
-            vendor_entries = parse_vendor_list(vendors_df)
-            if not vendor_entries:
-                messagebox.showerror("Vendor List", "No usable vendor names found.")
-                return
-        except Exception as e:
-            messagebox.showerror("Error", f"Loading vendor list: {e}")
-            return
-        used_names = {}
-        saved = []
-        for i, path in enumerate(paths):
-            self.status_var.set(f"Processing {i+1}/{len(paths)}: {os.path.basename(path)}")
-            self.root.update_idletasks()
-            ext = os.path.splitext(path)[1].lower()
-            try:
-                if ext == ".pdf":
-                    tx_df = load_table(path, bank_parser=bank_for_pdf, transaction_filter=transaction_filter)
-                else:
-                    tx_df = load_table(path)
-            except Exception as e:
-                messagebox.showwarning("Skip", f"Skipped {os.path.basename(path)}:\n{e}")
-                continue
-            desc_col = detect_description_column(tx_df)
-            amount_col = detect_amount_column(tx_df)
-            vendors_out = []
-            for raw_desc in tx_df[desc_col].fillna("").astype(str):
-                manual = self._apply_manual_rules(raw_desc)
-                if manual:
-                    vendors_out.append(manual)
-                else:
-                    norm = normalize_text(raw_desc)
-                    vendors_out.append(find_best_vendor(norm, vendor_entries))
-            accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-            date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
-            check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
-            amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
-            out_data = {
-                "Date": [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]],
-                "Check Number": tx_df[check_col].astype(str) if check_col else [""] * len(tx_df),
-                "Vendor": vendors_out,
-                "Account": accounts,
-                "Amount": amt_series.abs(),
-            }
-            out_df = pd.DataFrame(out_data)
-            last_month, last_year = get_last_transaction_month_year(tx_df)
-            base_name = default_output_filename(self.current_company, month=last_month, year=last_year)
-            # Disambiguate if same name already used in this batch
-            if base_name in used_names:
-                used_names[base_name] += 1
-                stem, ext = os.path.splitext(base_name)
-                base_name = f"{stem} ({used_names[base_name]}){ext}"
+            self.tx_paths = []
+            row_count = len([l for l in text.split("\n") if l.strip()])
+            if row_count:
+                self.tx_label_var.set(f"Pasted transactions [{bank}] ({row_count} rows detected)")
             else:
-                used_names[base_name] = 1
-            out_path = os.path.join(out_dir, base_name)
-            # If file exists on disk, append (2), (3), etc.
-            stem, ext = os.path.splitext(base_name)
-            n = 2
-            while os.path.exists(out_path):
-                base_name = f"{stem} ({n}){ext}"
-                out_path = os.path.join(out_dir, base_name)
-                n += 1
-            out_df.to_excel(out_path, index=False, engine="openpyxl")
-            saved.append(out_path)
-        self.status_var.set(f"Saved {len(saved)} file(s) to {out_dir}")
-        messagebox.showinfo("Done", f"Saved {len(saved)} Excel file(s) to:\n{out_dir}")
+                self.tx_label_var.set(f"Pasted transactions [{bank}]")
+            self.maybe_enable_run()
 
     def pick_vendor(self):
         # Default start directory
@@ -1445,7 +1361,7 @@ class App:
         )
         if path:
             self.vendor_path = path
-            self.vendor_label_var.set(path)
+            self.vendor_label_var.set(os.path.basename(path))
             self.maybe_enable_run()
             try:
                 vendors_df = load_table(self.vendor_path)
@@ -1474,7 +1390,7 @@ class App:
     def maybe_enable_run(self):
         if not hasattr(self, "run_btn"):
             return
-        has_transactions = (self.tx_path is not None) or (self.pasted_text is not None)
+        has_transactions = (self.tx_paths and len(self.tx_paths) > 0) or (self.pasted_text is not None)
         if has_transactions and self.vendor_path and self.current_company:
             self.run_btn.config(state=NORMAL)
         else:
@@ -1482,13 +1398,20 @@ class App:
 
     # ===== Manual rules =====
     def _refresh_rules_label(self):
-        if not self.manual_rules:
+        n = len(self.manual_rules) if self.manual_rules else 0
+        if n == 0:
             self.rules_label_var.set("Manual rules: (none)")
             return
         preview = "; ".join([f"'{r['phrase']}'→{r['vendor']}" for r in self.manual_rules[:5]])
-        if len(self.manual_rules) > 5:
-            preview += f"; (+{len(self.manual_rules)-5} more)"
-        self.rules_label_var.set(f"Manual rules: {preview}")
+        if n > 5:
+            preview += f"; (+{n - 5} more)"
+        self.rules_label_var.set(f"Manual rules: {n} — {preview}")
+
+    def _refresh_account_label(self):
+        if not hasattr(self, "account_label_var"):
+            return
+        n = len(self.account_map) if self.account_map else 0
+        self.account_label_var.set(f"Accounts: {n}")
 
     def _apply_manual_rules(self, raw_desc: str) -> str:
         txt = "" if raw_desc is None else str(raw_desc).upper()
@@ -1702,6 +1625,7 @@ class App:
                     
                 self.account_map[vendor] = account
                 save_accounts_to_disk(ap, self.account_map)
+                self._refresh_account_label()
                 refresh_lb()
                 sub.destroy()
 
@@ -1738,6 +1662,7 @@ class App:
                     del self.account_map[vendor_sel]
                 self.account_map[new_vendor] = new_account
                 save_accounts_to_disk(ap, self.account_map)
+                self._refresh_account_label()
                 refresh_lb()
                 sub.destroy()
 
@@ -1757,6 +1682,7 @@ class App:
                 if vendor_sel in self.account_map:
                     del self.account_map[vendor_sel]
                     save_accounts_to_disk(ap, self.account_map)
+                    self._refresh_account_label()
                     refresh_lb()
 
         Button(win, text="Add", command=do_add).grid(row=1, column=0, padx=10, pady=(4,10), sticky="w")
@@ -1772,40 +1698,104 @@ class App:
             self.status_var.set("Loading files...")
             self.root.update_idletasks()
 
-            has_transactions = (self.tx_path is not None) or (self.pasted_text is not None)
+            has_transactions = (self.tx_paths and len(self.tx_paths) > 0) or (self.pasted_text is not None)
             if not (has_transactions and self.vendor_path and self.current_company):
                 messagebox.showerror("Missing", "Select company, transactions (file or paste), and vendor list.")
                 return
 
             transaction_filter = self.transaction_filter.get() if hasattr(self.transaction_filter, "get") else "debits"
+            try:
+                vendors_df = load_table(self.vendor_path)
+                vendor_entries = parse_vendor_list(vendors_df)
+                if not vendor_entries:
+                    messagebox.showerror("Vendor List", "No usable vendor names found.")
+                    return
+            except Exception as e:
+                messagebox.showerror("Error", f"Loading vendor list: {e}")
+                return
 
-            # Load transactions (PDF or pasted text requires bank parser)
+            # Multiple files: ask output folder, process each, save with default names
+            if self.tx_paths and len(self.tx_paths) > 1:
+                out_dir = filedialog.askdirectory(title="Select folder to save Excel files")
+                if not out_dir:
+                    return
+                used_names = {}
+                saved = []
+                for i, path in enumerate(self.tx_paths):
+                    self.status_var.set(f"Processing {i+1}/{len(self.tx_paths)}: {os.path.basename(path)}")
+                    self.root.update_idletasks()
+                    ext = os.path.splitext(path)[1].lower()
+                    try:
+                        if ext == ".pdf":
+                            tx_df = load_table(path, bank_parser=self.selected_bank, transaction_filter=transaction_filter)
+                        else:
+                            tx_df = load_table(path)
+                    except Exception as e:
+                        messagebox.showwarning("Skip", f"Skipped {os.path.basename(path)}:\n{e}")
+                        continue
+                    desc_col = detect_description_column(tx_df)
+                    amount_col = detect_amount_column(tx_df)
+                    vendors_out = []
+                    for raw_desc in tx_df[desc_col].fillna("").astype(str):
+                        manual = self._apply_manual_rules(raw_desc)
+                        if manual:
+                            vendors_out.append(manual)
+                        else:
+                            norm = normalize_text(raw_desc)
+                            vendors_out.append(find_best_vendor(norm, vendor_entries))
+                    accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
+                    date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
+                    check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
+                    amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
+                    out_data = {
+                        "Date": [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]],
+                        "Check Number": tx_df[check_col].astype(str) if check_col else [""] * len(tx_df),
+                        "Vendor": vendors_out,
+                        "Account": accounts,
+                        "Amount": amt_series.abs(),
+                    }
+                    out_df = pd.DataFrame(out_data)
+                    last_month, last_year = get_last_transaction_month_year(tx_df)
+                    base_name = default_output_filename(self.current_company, month=last_month, year=last_year)
+                    if base_name in used_names:
+                        used_names[base_name] += 1
+                        stem, ext = os.path.splitext(base_name)
+                        base_name = f"{stem} ({used_names[base_name]}){ext}"
+                    else:
+                        used_names[base_name] = 1
+                    out_path = os.path.join(out_dir, base_name)
+                    stem, ext = os.path.splitext(base_name)
+                    n = 2
+                    while os.path.exists(out_path):
+                        base_name = f"{stem} ({n}){ext}"
+                        out_path = os.path.join(out_dir, base_name)
+                        n += 1
+                    out_df.to_excel(out_path, index=False, engine="openpyxl")
+                    saved.append(out_path)
+                n_saved = len(saved)
+                self.status_var.set(f"Saved {n_saved} file(s).")
+                messagebox.showinfo("Done", f"Saved {n_saved} file(s).")
+                return
+
+            # Single: pasted text or one file
             if self.pasted_text:
                 if not self.selected_bank:
                     messagebox.showerror("Missing Bank", "Please select a bank format for pasted text.")
                     return
                 tx_df = load_table(pasted_text=self.pasted_text, bank_parser=self.selected_bank, transaction_filter=transaction_filter)
-            elif self.tx_path:
-                ext = os.path.splitext(self.tx_path)[1].lower()
+            else:
+                path = self.tx_paths[0]
+                ext = os.path.splitext(path)[1].lower()
                 if ext == ".pdf":
                     if not self.selected_bank:
                         messagebox.showerror("Missing Bank", "Please select a bank format for PDF parsing.")
                         return
-                    tx_df = load_table(self.tx_path, bank_parser=self.selected_bank, transaction_filter=transaction_filter)
+                    tx_df = load_table(path, bank_parser=self.selected_bank, transaction_filter=transaction_filter)
                 else:
-                    tx_df = load_table(self.tx_path)
-            else:
-                messagebox.showerror("Missing", "No transactions selected. Please select a file or paste text.")
-                return
-
-            vendors_df = load_table(self.vendor_path)
+                    tx_df = load_table(path)
 
             desc_col = detect_description_column(tx_df)
             amount_col = detect_amount_column(tx_df)
-            vendor_entries = parse_vendor_list(vendors_df)
-            if not vendor_entries:
-                messagebox.showerror("Vendor List", "No usable vendor names found.")
-                return
             if not amount_col:
                 messagebox.showwarning("No Amount Column", "No amount column detected. Proceeding without amount flip.")
 
@@ -1822,9 +1812,6 @@ class App:
                     vendors_out.append(find_best_vendor(norm, vendor_entries))
 
             accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-
-            # Build output with columns: Date, Check Number, Vendor, Account, Amount (absolute value)
-            # Date always in dd/mm/yyyy
             date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
             check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
             amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
@@ -1836,14 +1823,6 @@ class App:
                 "Amount": amt_series.abs(),
             }
             out_df = pd.DataFrame(out_data)
-
-            matched_vendor = sum(1 for v in vendors_out if isinstance(v, str) and v.strip())
-            matched_vendor_account = sum(
-                1
-                for v, a in zip(vendors_out, accounts)
-                if isinstance(v, str) and v.strip() and isinstance(a, str) and a.strip()
-            )
-            total = len(vendors_out)
 
             last_month, last_year = get_last_transaction_month_year(tx_df)
             base_name = default_output_filename(self.current_company, month=last_month, year=last_year)
@@ -1857,19 +1836,8 @@ class App:
                 return
 
             out_df.to_excel(out_path, index=False, engine="openpyxl")
-
-            self.status_var.set(
-                f"Saved: {out_path}  |  Matched vendor: {matched_vendor}/{total}  |  "
-                f"Matched vendor+account: {matched_vendor_account}/{total}"
-            )
-            messagebox.showinfo(
-                "Done",
-                f"Saved:\n"
-                f"{out_path}\n"
-                f"Rows: {total}\n"
-                f"Matched vendor: {matched_vendor}\n"
-                f"Matched vendor + account: {matched_vendor_account}"
-            )
+            self.status_var.set("Saved 1 file(s).")
+            messagebox.showinfo("Done", "Saved 1 file(s).")
 
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -1879,6 +1847,7 @@ class App:
 def main():
     root = Tk()
     root.geometry("780x460")
+    root.resizable(False, False)
     App(root)
     root.mainloop()
 
