@@ -98,19 +98,41 @@ def _safe_initial_filename(company_name: str | None) -> str:
     base = re.sub(r'[\\/:*?"<>|]', "_", base)
     return f"{base}.csv"
 
-# Month names for default output filename
-_MONTH_NAMES = ("", "January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November", "December")
-
-def default_output_filename(company_name: str | None, month: int | None = None, year: int | None = None) -> str:
-    """Build default save name: [Company] [Month] [Year].xlsx; fallbacks if month/year missing."""
+def default_output_filename(
+    company_name: str | None,
+    month: int | None = None,
+    year: int | None = None,
+    transaction_filter: str = "debits",
+) -> str:
+    """Build default save name: [Company] [MM] [Year] Withdrawal|Deposit.xlsx"""
     base = (company_name or "Matched Vendors").strip()
     base = re.sub(r'[\\/:*?"<>|]', "_", base)
     if month is not None and 1 <= month <= 12:
-        base = f"{base} {_MONTH_NAMES[month]}"
+        base = f"{base} {month:02d}"
     if year is not None:
         base = f"{base} {year}"
-    return f"{base}.xlsx"
+    suffix = "Deposit" if transaction_filter == "credits" else "Withdrawal"
+    return f"{base} {suffix}.xlsx"
+
+def build_output_dataframe(
+    tx_df: pd.DataFrame,
+    vendors_out: list,
+    accounts: list,
+    amount_col: str | None,
+    check_col: str | None,
+) -> pd.DataFrame:
+    """Build output with columns: Date, Vendor, Account, Memo, Check Number, Amount (Memo blank)."""
+    date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
+    amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
+    n = len(vendors_out)
+    return pd.DataFrame({
+        "Date": [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]],
+        "Vendor": vendors_out,
+        "Account": accounts,
+        "Memo": [""] * n,
+        "Check Number": tx_df[check_col].astype(str) if check_col else [""] * n,
+        "Amount": amt_series.abs(),
+    })
 
 def get_last_transaction_month_year(tx_df: pd.DataFrame) -> tuple[int | None, int | None]:
     """Get month and year of the last transaction (by date). Returns (month, year) or (None, None)."""
@@ -944,11 +966,24 @@ def save_accounts_to_disk(accounts_path, mapping: dict):
     except Exception as e:
         messagebox.showerror("Accounts Save", f"Could not save accounts:\n{e}")
 
+# ========= UI theme =========
+BG_MAIN = "#f0f4f8"
+BG_CARD = "#ffffff"
+FG_PRIMARY = "#2d3748"
+FG_SECONDARY = "#718096"
+ACCENT = "#3182ce"
+ACCENT_HOVER = "#2c5282"
+SUCCESS = "#276749"
+BTN_BG = "#e2e8f0"
+FONT_UI = ("Segoe UI", 9)
+FONT_HEAD = ("Segoe UI", 10, "bold")
+
 # ========= Main Tkinter App =========
 class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Vendor Matcher")
+        self.root.configure(bg=BG_MAIN)
 
         # --- state & StringVars ---
         self.tx_paths = []  # one or more transaction files (empty if pasted text)
@@ -961,7 +996,7 @@ class App:
         self.account_map = {}
         self.selected_bank = None  # For PDF parsing
         self.pasted_text = None  # For pasted transactions
-        self.transaction_filter = StringVar(value="debits")  # debits | credits | both (for BoA)
+        self.transaction_filter = StringVar(value="debits")  # debits | credits
 
         self.tx_label_var = StringVar(value="No transactions file selected")
         self.vendor_label_var = StringVar(value="No vendor file selected")
@@ -971,46 +1006,52 @@ class App:
         self.company_label_var = StringVar(value="Company: (none)")
         self.rules_file_hint = StringVar(value="Rules file: (select company)")
 
-        # --- Build the main UI FIRST (fixed-width text area so buttons stay in place) ---
-        TEXT_WIDTH = 560  # fixed width for path/state labels so long paths don't push buttons
+        # --- Build the main UI ---
+        TEXT_WIDTH = 560
         def _text_frame(parent, row, col, colspan=1, **grid_opts):
-            f = Frame(parent, width=TEXT_WIDTH)
+            f = Frame(parent, width=TEXT_WIDTH, bg=BG_MAIN)
             f.grid(row=row, column=col, columnspan=colspan, sticky="w", **grid_opts)
             f.grid_propagate(False)
             return f
-        def _label_in_frame(frame, textvariable, wraplength=None, fg="#333"):
+        def _label_in_frame(frame, textvariable, wraplength=None, fg=FG_PRIMARY):
             w = wraplength or (TEXT_WIDTH - 20)
-            lb = Label(frame, textvariable=textvariable, wraplength=w, fg=fg, anchor="w", justify="left")
+            lb = Label(frame, textvariable=textvariable, wraplength=w, fg=fg, anchor="w", justify="left", font=FONT_UI, bg=BG_MAIN)
             lb.pack(fill="both", expand=True, anchor="w")
             return lb
 
-        Button(root, text="Select Transactions (Excel/CSV/PDF)", command=self.pick_transactions).grid(row=0, column=0, padx=10, pady=(12,6), sticky="w")
-        Button(root, text="Paste Transactions", command=self.paste_transactions).grid(row=0, column=1, padx=10, pady=(12,6), sticky="w")
-        _label_in_frame(_text_frame(root, 1, 0, 2, padx=12, pady=(0,4)), self.tx_label_var, fg="#333")
+        # Transactions section
+        Label(root, text="Transactions", font=FONT_HEAD, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=0, column=0, padx=10, pady=(14,4), sticky="w")
+        f_tx_btns = Frame(root, bg=BG_MAIN)
+        f_tx_btns.grid(row=0, column=1, padx=6, pady=(14,4), sticky="w")
+        Button(f_tx_btns, text="Select file(s)…", command=self.pick_transactions, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=4, cursor="hand2").pack(side="left", padx=(0,6))
+        Button(f_tx_btns, text="Paste", command=self.paste_transactions, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=4, cursor="hand2").pack(side="left")
+        _label_in_frame(_text_frame(root, 1, 0, 2, padx=12, pady=(0,6)), self.tx_label_var)
 
-        Label(root, text="Include transactions (Bank of America):", font=("Arial", 9)).grid(row=2, column=0, padx=10, pady=(4,2), sticky="w")
-        f_filter = Frame(root)
-        f_filter.grid(row=3, column=0, columnspan=2, padx=10, pady=(0,8), sticky="w")
-        Radiobutton(f_filter, text="Debits only (payments/withdrawals)", variable=self.transaction_filter, value="debits").pack(side="left", padx=(0,12))
-        Radiobutton(f_filter, text="Credits only (deposits)", variable=self.transaction_filter, value="credits").pack(side="left", padx=(0,12))
-        Radiobutton(f_filter, text="Both", variable=self.transaction_filter, value="both").pack(side="left")
+        Label(root, text="Transaction type:", font=FONT_UI, fg=FG_SECONDARY, bg=BG_MAIN).grid(row=2, column=0, padx=10, pady=(2,2), sticky="w")
+        f_filter = Frame(root, bg=BG_MAIN)
+        f_filter.grid(row=3, column=0, columnspan=2, padx=10, pady=(0,10), sticky="w")
+        Radiobutton(f_filter, text="Withdrawals", variable=self.transaction_filter, value="debits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left", padx=(0,16))
+        Radiobutton(f_filter, text="Deposits", variable=self.transaction_filter, value="credits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left")
 
-        Button(root, text="Select Vendor List", command=self.pick_vendor).grid(row=4, column=0, padx=10, pady=(6,6), sticky="w")
-        _label_in_frame(_text_frame(root, 5, 0, 1, padx=12, pady=(0,8)), self.vendor_label_var, fg="#333")
+        # Vendor & company section
+        Label(root, text="Vendor list", font=FONT_HEAD, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=4, column=0, padx=10, pady=(8,4), sticky="w")
+        Button(root, text="Select…", command=self.pick_vendor, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=4, cursor="hand2").grid(row=4, column=1, padx=6, pady=(8,4), sticky="w")
+        _label_in_frame(_text_frame(root, 5, 0, 2, padx=12, pady=(0,6)), self.vendor_label_var)
 
-        Button(root, text="Company…", command=self.select_company_dialog).grid(row=6, column=0, padx=10, pady=(6,0), sticky="w")
-        _label_in_frame(_text_frame(root, 7, 0, 1, padx=12, pady=(2,2)), self.company_label_var, fg="#333")
-        _label_in_frame(_text_frame(root, 8, 0, 1, padx=12, pady=(0,8)), self.rules_file_hint, fg="#888")
+        Label(root, text="Company", font=FONT_HEAD, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=6, column=0, padx=10, pady=(8,4), sticky="w")
+        Button(root, text="Select…", command=self.select_company_dialog, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=4, cursor="hand2").grid(row=6, column=1, padx=6, pady=(8,4), sticky="w")
+        _label_in_frame(_text_frame(root, 7, 0, 2, padx=12, pady=(0,2)), self.company_label_var)
+        _label_in_frame(_text_frame(root, 8, 0, 2, padx=12, pady=(0,8)), self.rules_file_hint, fg=FG_SECONDARY)
 
-        Button(root, text="Manage Rules…", command=self.manage_rules_dialog).grid(row=9, column=0, padx=10, pady=(2,0), sticky="w")
-        Button(root, text="Manage Accounts…", command=self.manage_accounts_dialog).grid(row=9, column=1, padx=10, pady=(2,0), sticky="w")
-        _label_in_frame(_text_frame(root, 10, 0, 1, padx=12, pady=(2,4)), self.rules_label_var, fg="#555")
-        _label_in_frame(_text_frame(root, 10, 1, 1, padx=12, pady=(2,4)), self.account_label_var, fg="#555")
+        Button(root, text="Manage Rules…", command=self.manage_rules_dialog, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=4, cursor="hand2").grid(row=9, column=0, padx=10, pady=(4,2), sticky="w")
+        Button(root, text="Manage Accounts…", command=self.manage_accounts_dialog, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=4, cursor="hand2").grid(row=9, column=1, padx=6, pady=(4,2), sticky="w")
+        _label_in_frame(_text_frame(root, 10, 0, 1, padx=12, pady=(2,4)), self.rules_label_var, fg=FG_SECONDARY)
+        _label_in_frame(_text_frame(root, 10, 1, 1, padx=12, pady=(2,4)), self.account_label_var, fg=FG_SECONDARY)
 
-        self.run_btn = Button(root, text="Run and Save", command=self.run_and_save, state=DISABLED)
-        self.run_btn.grid(row=11, column=0, padx=10, pady=(6,12), sticky="w")
+        self.run_btn = Button(root, text="Run and Save", command=self.run_and_save, state=DISABLED, font=("Segoe UI", 10, "bold"), bg=ACCENT, fg="white", activebackground=ACCENT_HOVER, activeforeground="white", relief="flat", padx=20, pady=8, cursor="hand2")
+        self.run_btn.grid(row=11, column=0, padx=10, pady=(10,14), sticky="w")
 
-        _label_in_frame(_text_frame(root, 12, 0, 1, padx=12, pady=(0,12)), self.status_var, fg="#006400")
+        _label_in_frame(_text_frame(root, 12, 0, 1, padx=12, pady=(0,14)), self.status_var, fg=SUCCESS)
 
         root.columnconfigure(0, weight=0)
         root.columnconfigure(1, weight=0)
@@ -1392,20 +1433,17 @@ class App:
             return
         has_transactions = (self.tx_paths and len(self.tx_paths) > 0) or (self.pasted_text is not None)
         if has_transactions and self.vendor_path and self.current_company:
-            self.run_btn.config(state=NORMAL)
+            self.run_btn.config(state=NORMAL, bg=ACCENT, fg="white")
         else:
-            self.run_btn.config(state=DISABLED)
+            self.run_btn.config(state=DISABLED, bg="#a0aec0", fg="#e2e8f0")
 
     # ===== Manual rules =====
     def _refresh_rules_label(self):
         n = len(self.manual_rules) if self.manual_rules else 0
         if n == 0:
             self.rules_label_var.set("Manual rules: (none)")
-            return
-        preview = "; ".join([f"'{r['phrase']}'→{r['vendor']}" for r in self.manual_rules[:5]])
-        if n > 5:
-            preview += f"; (+{n - 5} more)"
-        self.rules_label_var.set(f"Manual rules: {n} — {preview}")
+        else:
+            self.rules_label_var.set(f"Manual rules: {n}")
 
     def _refresh_account_label(self):
         if not hasattr(self, "account_label_var"):
@@ -1744,19 +1782,12 @@ class App:
                             norm = normalize_text(raw_desc)
                             vendors_out.append(find_best_vendor(norm, vendor_entries))
                     accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-                    date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
                     check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
-                    amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
-                    out_data = {
-                        "Date": [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]],
-                        "Check Number": tx_df[check_col].astype(str) if check_col else [""] * len(tx_df),
-                        "Vendor": vendors_out,
-                        "Account": accounts,
-                        "Amount": amt_series.abs(),
-                    }
-                    out_df = pd.DataFrame(out_data)
+                    out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col)
                     last_month, last_year = get_last_transaction_month_year(tx_df)
-                    base_name = default_output_filename(self.current_company, month=last_month, year=last_year)
+                    base_name = default_output_filename(
+                        self.current_company, month=last_month, year=last_year, transaction_filter=transaction_filter
+                    )
                     if base_name in used_names:
                         used_names[base_name] += 1
                         stem, ext = os.path.splitext(base_name)
@@ -1812,20 +1843,13 @@ class App:
                     vendors_out.append(find_best_vendor(norm, vendor_entries))
 
             accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-            date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
             check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
-            amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
-            out_data = {
-                "Date": [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]],
-                "Check Number": tx_df[check_col].astype(str) if check_col else [""] * len(tx_df),
-                "Vendor": vendors_out,
-                "Account": accounts,
-                "Amount": amt_series.abs(),
-            }
-            out_df = pd.DataFrame(out_data)
+            out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col)
 
             last_month, last_year = get_last_transaction_month_year(tx_df)
-            base_name = default_output_filename(self.current_company, month=last_month, year=last_year)
+            base_name = default_output_filename(
+                self.current_company, month=last_month, year=last_year, transaction_filter=transaction_filter
+            )
             out_path = filedialog.asksaveasfilename(
                 title="Save Excel as",
                 defaultextension=".xlsx",
