@@ -38,6 +38,11 @@ COMERICA_AMOUNT_LINE = re.compile(
     r"^(-?[\d,]+\.\d{2})\s*$"
 )
 
+# Checks paid section: check number line (#612, @614, #10147). Must have #/@/* prefix so we don't match bank ref digits.
+COMERICA_CHECK_NUM_LINE = re.compile(
+    r"^[#@*](\d+)\s*$"
+)
+
 # Statement period: "January 1, 2026 to January 31, 2026" or "January 1, 2025 to January 31, 2025"
 RE_STATEMENT_PERIOD = re.compile(
     r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(\d{4})\s+to\s+",
@@ -124,6 +129,70 @@ def _is_skip_line(line: str) -> bool:
     return False
 
 
+def _parse_comerica_checks_section(lines: list, start_i: int, year: int) -> tuple[list[dict], int]:
+    """
+    Parse 'Checks paid this statement period' section.
+    Block format: Check number (#612) -> Amount (-749.20) -> Date (Jan 03) -> Bank reference (digits).
+    Returns (list of {date, description, amount, reference_number}, index after section).
+    """
+    rows = []
+    i = start_i
+    # Skip to first check number line (past section title and column headers)
+    while i < len(lines):
+        if COMERICA_CHECK_NUM_LINE.match(lines[i].strip()):
+            break
+        if "Total checks paid" in lines[i] or "Total number of checks" in lines[i]:
+            return rows, i
+        i += 1
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        if "Total checks paid" in line or "Total number of checks" in line:
+            break
+        check_m = COMERICA_CHECK_NUM_LINE.match(line)
+        if check_m:
+            check_num = check_m.group(1)
+            i += 1
+            amount_str = None
+            date_str = None
+            while i < len(lines):
+                cur = lines[i].strip()
+                if not cur:
+                    i += 1
+                    continue
+                if COMERICA_CHECK_NUM_LINE.match(cur):
+                    break
+                if COMERICA_AMOUNT_LINE.match(cur) and amount_str is None:
+                    amount_str = cur.replace(",", "").strip()
+                    i += 1
+                    continue
+                date_m = COMERICA_DATE_LINE.match(cur)
+                if date_m and date_str is None:
+                    date_str = _normalize_date(date_m.group(1), date_m.group(2), year)
+                    i += 1
+                    continue
+                if re.match(r"^\d{7,}\s*$", cur):
+                    i += 1
+                    break
+                i += 1
+            if amount_str and date_str:
+                try:
+                    amount = float(amount_str)
+                    rows.append({
+                        "date": date_str,
+                        "description": f"Check {check_num}",
+                        "amount": amount,
+                        "reference_number": check_num,
+                    })
+                except ValueError:
+                    pass
+            continue
+        i += 1
+    return rows, i
+
+
 def parse_comerica_pasted_text(text: str) -> list[dict]:
     """
     Parse pasted Comerica text: one line per transaction.
@@ -154,7 +223,8 @@ def parse_comerica_pasted_text(text: str) -> list[dict]:
 def parse_comerica_pdf_text(text: str) -> list[dict]:
     """
     Parse Comerica PDF-extracted text. Multi-line blocks: Date, Amount, Activity.
-    Returns list of {date, description, amount}.
+    Also parses 'Checks paid' section (check number -> amount -> date -> reference).
+    Returns list of {date, description, amount} with optional reference_number for checks.
     """
     lines = text.split("\n")
     year = _extract_statement_year(text)
@@ -184,6 +254,8 @@ def parse_comerica_pdf_text(text: str) -> list[dict]:
                     continue
                 if COMERICA_DATE_LINE.match(cur):
                     break
+                if COMERICA_CHECK_NUM_LINE.match(cur):
+                    break
                 if _is_skip_line(cur):
                     i += 1
                     continue
@@ -192,7 +264,6 @@ def parse_comerica_pdf_text(text: str) -> list[dict]:
                     amount_str = amt_m.group(1).replace(",", "").strip()
                     i += 1
                     continue
-                # Activity line(s) or reference (all digits)
                 if re.match(r"^\d{7,}\s*$", cur):
                     i += 1
                     continue
@@ -212,6 +283,12 @@ def parse_comerica_pdf_text(text: str) -> list[dict]:
                     pass
             continue
         i += 1
+    # Parse Checks paid section and append (with reference_number for Check Number)
+    for j, ln in enumerate(lines):
+        if "Checks paid this statement period" in ln:
+            check_rows, _ = _parse_comerica_checks_section(lines, j, year)
+            rows.extend(check_rows)
+            break
     return rows
 
 
