@@ -974,26 +974,64 @@ def _format_date_mm_dd_yyyy(value) -> str:
     return s
 
 
-# ===== Accounts (Vendor -> Account) persistence =====
+# ===== Accounts (Vendor + Withdrawal/Deposit -> Account) persistence =====
+# account_map key: (vendor_str, "debits"|"credits"), value: account_str
+# Persisted as JSON with keys "vendor|debits" and "vendor|credits"
+ACCOUNT_KEY_SEP = "|"
+
 def company_accounts_path(company_name: str) -> str:
     slug = slugify(company_name)
     return os.path.join(_rules_dir(), f"accounts_{slug}.json")
 
+def _account_key_to_str(vendor: str, tx_type: str) -> str:
+    return f"{vendor}{ACCOUNT_KEY_SEP}{tx_type}"
+
+def _account_str_to_key(s: str) -> tuple[str, str] | None:
+    if ACCOUNT_KEY_SEP not in s:
+        return None
+    i = s.rfind(ACCOUNT_KEY_SEP)  # in case vendor contains |
+    vendor = s[:i].strip()
+    tx = s[i + 1:].strip()
+    if tx not in ("debits", "credits"):
+        return None
+    return (vendor, tx)
+
 def load_accounts_from_disk(accounts_path):
-    if os.path.exists(accounts_path):
-        try:
-            with open(accounts_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return {str(k): str(v) for k, v in data.items()}
-        except Exception as e:
-            messagebox.showwarning("Accounts Load", f"Could not load accounts:\n{e}")
-    return {}
+    """Load account map. Returns dict[(vendor, "debits"|"credits"), account_str]. Migrates old vendor-only keys to both types."""
+    if not os.path.exists(accounts_path):
+        return {}
+    try:
+        with open(accounts_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        out = {}
+        for k, v in data.items():
+            k, v = str(k).strip(), str(v).strip()
+            if not k:
+                continue
+            key = _account_str_to_key(k)
+            if key:
+                out[key] = v
+            else:
+                # Legacy: single key = vendor, apply to both types
+                out[(k, "debits")] = v
+                out[(k, "credits")] = v
+        return out
+    except Exception as e:
+        messagebox.showwarning("Accounts Load", f"Could not load accounts:\n{e}")
+        return {}
 
 def save_accounts_to_disk(accounts_path, mapping: dict):
+    """Save account map. mapping keys are (vendor, "debits"|"credits") or legacy vendor-only (we normalize to tuple keys)."""
     try:
+        serialized = {}
+        for k, v in mapping.items():
+            if isinstance(k, tuple) and len(k) == 2:
+                serialized[_account_key_to_str(k[0], k[1])] = v
+            else:
+                serialized[str(k)] = str(v)
         os.makedirs(os.path.dirname(accounts_path) or APP_DIR, exist_ok=True)
         with open(accounts_path, "w", encoding="utf-8") as f:
-            json.dump(mapping, f, ensure_ascii=False, indent=2)
+            json.dump(serialized, f, ensure_ascii=False, indent=2)
     except Exception as e:
         messagebox.showerror("Accounts Save", f"Could not save accounts:\n{e}")
 
@@ -1621,6 +1659,10 @@ class App:
         Button(win, text="Delete", command=do_delete, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=1, column=2, padx=6, pady=(8,12), sticky="w")
         win.grab_set()
 
+    def _accounts_in_use_for_type(self, tx_type: str):
+        """Accounts that have at least one vendor mapped for this type (for reuse list)."""
+        return sorted({acc for (v, t), acc in self.account_map.items() if t == tx_type and acc})
+
     def manage_accounts_dialog(self):
         if not self.current_company:
             messagebox.showinfo("Manage Accounts", "Please select a company first.")
@@ -1631,13 +1673,28 @@ class App:
         self._style_dialog(win, f"Manage Accounts — {self.current_company}")
         win.configure(bg=BG_MAIN)
 
-        lb = Listbox(win, selectmode=SINGLE, width=64, height=12, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+        lb = Listbox(win, selectmode=SINGLE, width=72, height=12, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
         lb.grid(row=0, column=0, columnspan=3, padx=12, pady=(12,8), sticky="w")
+
+        def _type_label(tx_type):
+            return "Withdrawal" if tx_type == "debits" else "Deposit"
 
         def refresh_lb():
             lb.delete(0, END)
-            for vendor in sorted(self.account_map.keys(), key=lambda x: x.lower()):
-                lb.insert(END, f"{vendor}  →  {self.account_map[vendor]}")
+            for (vendor, tx_type), account in sorted(self.account_map.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
+                lb.insert(END, f"{vendor} — {_type_label(tx_type)}  →  {account}")
+
+        def _parse_listbox_line(line):
+            if "  →  " not in line:
+                return None, None, None
+            left, account = (x.strip() for x in line.split("  →  ", 1))
+            if left.endswith(" — Withdrawal"):
+                vendor = left[:-len(" — Withdrawal")].strip()
+                return vendor, "debits", account
+            if left.endswith(" — Deposit"):
+                vendor = left[:-len(" — Deposit")].strip()
+                return vendor, "credits", account
+            return None, None, None
 
         refresh_lb()
 
@@ -1645,17 +1702,41 @@ class App:
             sub = Toplevel(win)
             self._style_dialog(sub, "Add Vendor → Account")
             sub.configure(bg=BG_MAIN)
-            Label(sub, text="Search vendor:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=0, column=0, padx=12, pady=(12,2), sticky="w")
+            row = 0
+            Label(sub, text="Transaction type:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=row, column=0, padx=12, pady=(12,4), sticky="w")
+            row += 1
+            add_type_var = StringVar(value="debits")
+            f_type = Frame(sub, bg=BG_MAIN)
+            f_type.grid(row=row, column=0, padx=12, pady=(0,8), sticky="w")
+            Radiobutton(f_type, text="Withdrawal", variable=add_type_var, value="debits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left", padx=(0,12))
+            Radiobutton(f_type, text="Deposit", variable=add_type_var, value="credits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left")
+            row += 1
+            Label(sub, text="Search vendor:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=row, column=0, padx=12, pady=(8,2), sticky="w")
+            row += 1
             search_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
-            search_e.grid(row=1, column=0, padx=12, pady=(0,6), sticky="w")
-            vendor_lb = Listbox(sub, selectmode=SINGLE, width=48, height=8, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
-            vendor_lb.grid(row=2, column=0, padx=12, pady=(0,6), sticky="w")
-            Label(sub, text="Chosen vendor (or type):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=3, column=0, padx=12, pady=(2,2), sticky="w")
+            search_e.grid(row=row, column=0, padx=12, pady=(0,6), sticky="w")
+            row += 1
+            vendor_lb = Listbox(sub, selectmode=SINGLE, width=48, height=6, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            vendor_lb.grid(row=row, column=0, padx=12, pady=(0,6), sticky="w")
+            row += 1
+            Label(sub, text="Chosen vendor (or type):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=row, column=0, padx=12, pady=(2,2), sticky="w")
+            row += 1
             vendor_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
-            vendor_e.grid(row=4, column=0, padx=12, pady=(0,8), sticky="w")
-            Label(sub, text="Account:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=5, column=0, padx=12, pady=(2,2), sticky="w")
+            vendor_e.grid(row=row, column=0, padx=12, pady=(0,6), sticky="w")
+            row += 1
+            Label(sub, text="Account (search existing or type new):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=row, column=0, padx=12, pady=(6,2), sticky="w")
+            row += 1
+            account_search_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            account_search_e.grid(row=row, column=0, padx=12, pady=(0,4), sticky="w")
+            row += 1
+            account_lb = Listbox(sub, selectmode=SINGLE, width=48, height=4, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            account_lb.grid(row=row, column=0, padx=12, pady=(0,4), sticky="w")
+            row += 1
+            Label(sub, text="Chosen account (or type below):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=row, column=0, padx=12, pady=(2,2), sticky="w")
+            row += 1
             account_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
-            account_e.grid(row=6, column=0, padx=12, pady=(0,8), sticky="w")
+            account_e.grid(row=row, column=0, padx=12, pady=(0,8), sticky="w")
+            row += 1
 
             def update_vendor_list(*_):
                 q = search_e.get().strip().lower()
@@ -1664,15 +1745,36 @@ class App:
                     if q in name.lower():
                         vendor_lb.insert(END, name)
 
-            def use_selected(_=None):
+            def update_account_list(*_):
+                tx_type = add_type_var.get()
+                existing = self._accounts_in_use_for_type(tx_type)
+                account_lb.delete(0, END)
+                q = account_search_e.get().strip().lower()
+                for acc in existing:
+                    if not q or q in acc.lower():
+                        account_lb.insert(END, acc)
+
+            def use_vendor_selected(_=None):
                 sel = vendor_lb.curselection()
-                if not sel: return
+                if not sel:
+                    return
                 vendor_e.delete(0, END)
                 vendor_e.insert(0, vendor_lb.get(sel[0]))
 
+            def use_account_selected(_=None):
+                sel = account_lb.curselection()
+                if not sel:
+                    return
+                account_e.delete(0, END)
+                account_e.insert(0, account_lb.get(sel[0]))
+
+            add_type_var.trace_add("write", lambda *a: update_account_list())
             search_e.bind("<KeyRelease>", update_vendor_list)
-            vendor_lb.bind("<Double-Button-1>", use_selected)
+            vendor_lb.bind("<Double-Button-1>", use_vendor_selected)
+            account_search_e.bind("<KeyRelease>", update_account_list)
+            account_lb.bind("<Double-Button-1>", use_account_selected)
             update_vendor_list()
+            update_account_list()
 
             def add_and_close():
                 vendor = vendor_e.get().strip()
@@ -1680,15 +1782,22 @@ class App:
                 if not vendor:
                     messagebox.showerror("Invalid", "Vendor is required.")
                     return
-                    
-                self.account_map[vendor] = account
+                if not account:
+                    messagebox.showerror("Invalid", "Account is required.")
+                    return
+                tx_type = add_type_var.get()
+                self.account_map[(vendor, tx_type)] = account
                 save_accounts_to_disk(ap, self.account_map)
                 self._refresh_account_label()
                 refresh_lb()
                 sub.destroy()
 
-            Button(sub, text="Use Selected", command=use_selected, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=10, pady=4, cursor="hand2").grid(row=7, column=0, padx=12, pady=(0,6), sticky="w")
-            Button(sub, text="Add", command=add_and_close, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=8, column=0, padx=12, pady=(0,12), sticky="w")
+            f_btns = Frame(sub, bg=BG_MAIN)
+            f_btns.grid(row=row, column=0, padx=12, pady=(6,4), sticky="w")
+            Button(f_btns, text="Use selected vendor", command=use_vendor_selected, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left", padx=(0,8))
+            Button(f_btns, text="Use selected account", command=use_account_selected, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left")
+            row += 1
+            Button(sub, text="Add", command=add_and_close, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=row, column=0, padx=12, pady=(4,12), sticky="w")
             sub.grab_set(); search_e.focus_set()
 
         def do_edit():
@@ -1697,9 +1806,9 @@ class App:
                 messagebox.showinfo("Edit", "Select a mapping to edit.")
                 return
             line = lb.get(idxs[0])
-            if "  →  " not in line:
+            vendor_sel, type_sel, account_sel = _parse_listbox_line(line)
+            if vendor_sel is None:
                 return
-            vendor_sel, account_sel = [x.strip() for x in line.split("  →  ", 1)]
             sub = Toplevel(win)
             self._style_dialog(sub, "Edit Vendor → Account")
             sub.configure(bg=BG_MAIN)
@@ -1707,26 +1816,64 @@ class App:
             vendor_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
             vendor_e.insert(0, vendor_sel)
             vendor_e.grid(row=1, column=0, padx=12, pady=(0,8), sticky="w")
-            Label(sub, text="Account:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=2, column=0, padx=12, pady=(2,2), sticky="w")
+            Label(sub, text="Transaction type:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=2, column=0, padx=12, pady=(6,2), sticky="w")
+            edit_type_var = StringVar(value=type_sel)
+            f_type = Frame(sub, bg=BG_MAIN)
+            f_type.grid(row=3, column=0, padx=12, pady=(0,6), sticky="w")
+            Radiobutton(f_type, text="Withdrawal", variable=edit_type_var, value="debits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left", padx=(0,12))
+            Radiobutton(f_type, text="Deposit", variable=edit_type_var, value="credits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left")
+            Label(sub, text="Account (search existing or type new):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=4, column=0, padx=12, pady=(6,2), sticky="w")
+            account_search_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            account_search_e.grid(row=5, column=0, padx=12, pady=(0,4), sticky="w")
+            account_lb = Listbox(sub, selectmode=SINGLE, width=48, height=4, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            account_lb.grid(row=6, column=0, padx=12, pady=(0,4), sticky="w")
+            Label(sub, text="Chosen account (or type below):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=7, column=0, padx=12, pady=(2,2), sticky="w")
             account_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
             account_e.insert(0, account_sel)
-            account_e.grid(row=3, column=0, padx=12, pady=(0,8), sticky="w")
+            account_e.grid(row=8, column=0, padx=12, pady=(0,8), sticky="w")
+
+            def update_account_list(*_):
+                tx_type = edit_type_var.get()
+                existing = self._accounts_in_use_for_type(tx_type)
+                account_lb.delete(0, END)
+                q = account_search_e.get().strip().lower()
+                for acc in existing:
+                    if not q or q in acc.lower():
+                        account_lb.insert(END, acc)
+
+            def use_account_selected(_=None):
+                sel = account_lb.curselection()
+                if not sel:
+                    return
+                account_e.delete(0, END)
+                account_e.insert(0, account_lb.get(sel[0]))
+
+            edit_type_var.trace_add("write", lambda *a: update_account_list())
+            account_search_e.bind("<KeyRelease>", update_account_list)
+            account_lb.bind("<Double-Button-1>", use_account_selected)
+            update_account_list()
 
             def save_and_close():
                 new_vendor = vendor_e.get().strip()
                 new_account = account_e.get().strip()
+                new_type = edit_type_var.get()
                 if not new_vendor:
                     messagebox.showerror("Invalid", "Vendor is required.")
                     return
-                if new_vendor != vendor_sel and vendor_sel in self.account_map:
-                    del self.account_map[vendor_sel]
-                self.account_map[new_vendor] = new_account
+                if not new_account:
+                    messagebox.showerror("Invalid", "Account is required.")
+                    return
+                old_key = (vendor_sel, type_sel)
+                if old_key in self.account_map:
+                    del self.account_map[old_key]
+                self.account_map[(new_vendor, new_type)] = new_account
                 save_accounts_to_disk(ap, self.account_map)
                 self._refresh_account_label()
                 refresh_lb()
                 sub.destroy()
 
-            Button(sub, text="Save", command=save_and_close, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=4, column=0, padx=12, pady=(0,12), sticky="w")
+            Button(sub, text="Use selected account", command=use_account_selected, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=10, pady=4, cursor="hand2").grid(row=9, column=0, padx=12, pady=(6,4), sticky="w")
+            Button(sub, text="Save", command=save_and_close, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=10, column=0, padx=12, pady=(4,12), sticky="w")
             sub.grab_set(); account_e.focus_set()
 
         def do_delete():
@@ -1735,12 +1882,13 @@ class App:
                 messagebox.showinfo("Delete", "Select a mapping to delete.")
                 return
             line = lb.get(idxs[0])
-            if "  →  " not in line:
+            vendor_sel, type_sel, account_sel = _parse_listbox_line(line)
+            if vendor_sel is None:
                 return
-            vendor_sel = line.split("  →  ", 1)[0].strip()
-            if messagebox.askyesno("Delete", f"Delete mapping for '{vendor_sel}'?"):
-                if vendor_sel in self.account_map:
-                    del self.account_map[vendor_sel]
+            if messagebox.askyesno("Delete", f"Delete mapping for '{vendor_sel}' ({_type_label(type_sel)})?"):
+                key = (vendor_sel, type_sel)
+                if key in self.account_map:
+                    del self.account_map[key]
                     save_accounts_to_disk(ap, self.account_map)
                     self._refresh_account_label()
                     refresh_lb()
@@ -1802,7 +1950,7 @@ class App:
                         else:
                             norm = normalize_text(raw_desc)
                             vendors_out.append(find_best_vendor(norm, vendor_entries))
-                    accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
+                    accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
                     check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
                     out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
                     last_month, last_year = get_last_transaction_month_year(tx_df)
@@ -1863,7 +2011,7 @@ class App:
                     norm = normalize_text(raw_desc)
                     vendors_out.append(find_best_vendor(norm, vendor_entries))
 
-            accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
+            accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
             check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
             out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
 
