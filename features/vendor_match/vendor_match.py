@@ -98,6 +98,79 @@ def _safe_initial_filename(company_name: str | None) -> str:
     base = re.sub(r'[\\/:*?"<>|]', "_", base)
     return f"{base}.csv"
 
+# Month names for default output filename
+_MONTH_NAMES = ("", "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December")
+
+def default_output_filename(company_name: str | None, month: int | None = None, year: int | None = None) -> str:
+    """Build default save name: [Company] [Month] [Year].xlsx; fallbacks if month/year missing."""
+    base = (company_name or "Matched Vendors").strip()
+    base = re.sub(r'[\\/:*?"<>|]', "_", base)
+    if month is not None and 1 <= month <= 12:
+        base = f"{base} {_MONTH_NAMES[month]}"
+    if year is not None:
+        base = f"{base} {year}"
+    return f"{base}.xlsx"
+
+def get_last_transaction_month_year(tx_df: pd.DataFrame) -> tuple[int | None, int | None]:
+    """Get month and year of the last transaction (by date). Returns (month, year) or (None, None)."""
+    date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else (tx_df.columns[0] if len(tx_df.columns) else None))
+    if not date_col or tx_df.empty:
+        return None, None
+    try:
+        series = pd.to_datetime(tx_df[date_col], errors="coerce")
+        valid = series.dropna()
+        if valid.empty:
+            return None, None
+        last = valid.max()
+        return int(last.month), int(last.year)
+    except Exception:
+        return None, None
+
+def detect_bank_from_document(path: str) -> str | None:
+    """
+    Try to detect bank name from document content (PDF, Excel, CSV).
+    Returns a key from BANK_PARSERS if detected, else None.
+    """
+    bank_keys = list(BANK_PARSERS.keys()) if BANK_PARSERS else []
+    if not bank_keys:
+        return None
+    ext = os.path.splitext(path)[1].lower()
+    text_sample = ""
+    if ext == ".pdf":
+        try:
+            full_text = extract_text_from_pdf(path)
+            # First few pages usually have bank name; use first 8000 chars
+            text_sample = (full_text[:8000] + " " + full_text[-2000:]).lower()
+        except Exception:
+            return None
+    elif ext in (".xlsx", ".xls", ".csv", ".txt"):
+        try:
+            if ext in (".csv", ".txt"):
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    text_sample = f.read(10000).lower()
+            else:
+                df = pd.read_excel(path, nrows=5, header=None)
+                text_sample = " ".join(df.astype(str).values.flatten()).lower()
+        except Exception:
+            return None
+    else:
+        return None
+    if not text_sample:
+        return None
+    # Match by specificity first (longer names first)
+    if "fremont bank" in text_sample:
+        return "Fremont Bank" if "Fremont Bank" in bank_keys else None
+    if "comerica" in text_sample:
+        return "Comerica" if "Comerica" in bank_keys else None
+    if "citibank" in text_sample or " citi " in text_sample:
+        return "Citi" if "Citi" in bank_keys else None
+    if "bank of america" in text_sample or "bofa" in text_sample:
+        if "purchases and other charges" in text_sample or "credit card" in text_sample:
+            return "Bank of America (Credit Card)" if "Bank of America (Credit Card)" in bank_keys else ("Bank of America (Bank)" if "Bank of America (Bank)" in bank_keys else None)
+        return "Bank of America (Bank)" if "Bank of America (Bank)" in bank_keys else None
+    return None
+
 def load_rules_from_disk(rules_path):
     if os.path.exists(rules_path):
         try:
@@ -121,11 +194,6 @@ def save_rules_to_disk(rules_path, rules):
             json.dump(rules, f, ensure_ascii=False, indent=2)
     except Exception as e:
         messagebox.showerror("Rules Save", f"Could not save rules:\n{e}")
-
-def _safe_initial_filename(company_name: str | None) -> str:
-    base = (company_name or "Matched Vendors").strip()
-    base = re.sub(r'[\\/:*?"<>|]', "_", base)
-    return f"{base}.csv"
 
 def _compact(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
@@ -938,9 +1006,12 @@ class App:
         _label_in_frame(_text_frame(root, 10, 0, 1, padx=12, pady=(2,10)), self.rules_label_var, fg="#555")
 
         self.run_btn = Button(root, text="Run and Save", command=self.run_and_save, state=DISABLED)
-        self.run_btn.grid(row=11, column=0, padx=10, pady=(6,12), sticky="w")
+        self.run_btn.grid(row=11, column=0, padx=10, pady=(6,6), sticky="w")
+        Button(root, text="Select Multiple Documents…", command=self.pick_multiple_transactions).grid(
+            row=12, column=0, padx=10, pady=(0,12), sticky="w"
+        )
 
-        _label_in_frame(_text_frame(root, 12, 0, 1, padx=12, pady=(0,12)), self.status_var, fg="#006400")
+        _label_in_frame(_text_frame(root, 13, 0, 1, padx=12, pady=(0,12)), self.status_var, fg="#006400")
 
         root.columnconfigure(0, weight=0)
         root.columnconfigure(1, weight=0)
@@ -1123,8 +1194,9 @@ class App:
         if path:
             ext = os.path.splitext(path)[1].lower()
             if ext == ".pdf":
-                # Show bank selection dialog for PDF
-                bank = self.select_bank_dialog()
+                # Detect bank from document and show bank selection (user can reselect)
+                default_bank = detect_bank_from_document(path)
+                bank = self.select_bank_dialog(default_bank=default_bank)
                 if not bank:
                     return  # User cancelled
                 self.selected_bank = bank
@@ -1138,8 +1210,10 @@ class App:
                 self.tx_label_var.set(path)
             self.maybe_enable_run()
     
-    def select_bank_dialog(self):
-        """Show dialog to select bank for PDF parsing."""
+    def select_bank_dialog(self, default_bank: str | None = None):
+        """Show dialog to select bank for PDF parsing. default_bank: pre-selected bank (e.g. from detection); if None or not in list, first bank is used."""
+        bank_list = list(BANK_PARSERS.keys()) if BANK_PARSERS else []
+        initial = (default_bank if default_bank and default_bank in bank_list else None) or (bank_list[0] if bank_list else "")
         dlg = Toplevel(self.root)
         dlg.title("Select Bank")
         dlg.transient(self.root)
@@ -1149,7 +1223,7 @@ class App:
         dlg.attributes("-topmost", True)
         dlg.after(100, lambda: dlg.attributes("-topmost", False))
         
-        selected = StringVar(value=list(BANK_PARSERS.keys())[0] if BANK_PARSERS else "")
+        selected = StringVar(value=initial)
         
         Label(dlg, text="Select bank format for PDF parsing:", font=("Arial", 10, "bold")).grid(
             row=0, column=0, columnspan=2, padx=15, pady=(15, 10), sticky="w"
@@ -1263,6 +1337,101 @@ class App:
             line_count = len([l for l in text.split("\n") if l.strip()])
             self.tx_label_var.set(f"Pasted transactions [{bank}] ({line_count} lines)")
             self.maybe_enable_run()
+
+    def pick_multiple_transactions(self):
+        """Select multiple documents, one bank (for PDFs), output one Excel per document to a folder."""
+        if not self.current_company or not self.vendor_path:
+            messagebox.showerror("Missing", "Please select company and vendor list first.")
+            return
+        paths = filedialog.askopenfilenames(
+            title="Select transaction files (Excel, CSV, or PDF)",
+            filetypes=[
+                ("All Supported", "*.xlsx *.xls *.csv *.txt *.pdf"),
+                ("Excel/CSV", "*.xlsx *.xls *.csv *.txt"),
+                ("PDF", "*.pdf"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not paths:
+            return
+        paths = list(paths)
+        any_pdf = any(os.path.splitext(p)[1].lower() == ".pdf" for p in paths)
+        bank_for_pdf = None
+        if any_pdf:
+            default_bank = detect_bank_from_document(paths[0])
+            bank_for_pdf = self.select_bank_dialog(default_bank=default_bank)
+            if not bank_for_pdf:
+                return
+        out_dir = filedialog.askdirectory(title="Select folder to save Excel files")
+        if not out_dir:
+            return
+        transaction_filter = self.transaction_filter.get() if hasattr(self.transaction_filter, "get") else "debits"
+        try:
+            vendors_df = load_table(self.vendor_path)
+            vendor_entries = parse_vendor_list(vendors_df)
+            if not vendor_entries:
+                messagebox.showerror("Vendor List", "No usable vendor names found.")
+                return
+        except Exception as e:
+            messagebox.showerror("Error", f"Loading vendor list: {e}")
+            return
+        used_names = {}
+        saved = []
+        for i, path in enumerate(paths):
+            self.status_var.set(f"Processing {i+1}/{len(paths)}: {os.path.basename(path)}")
+            self.root.update_idletasks()
+            ext = os.path.splitext(path)[1].lower()
+            try:
+                if ext == ".pdf":
+                    tx_df = load_table(path, bank_parser=bank_for_pdf, transaction_filter=transaction_filter)
+                else:
+                    tx_df = load_table(path)
+            except Exception as e:
+                messagebox.showwarning("Skip", f"Skipped {os.path.basename(path)}:\n{e}")
+                continue
+            desc_col = detect_description_column(tx_df)
+            amount_col = detect_amount_column(tx_df)
+            vendors_out = []
+            for raw_desc in tx_df[desc_col].fillna("").astype(str):
+                manual = self._apply_manual_rules(raw_desc)
+                if manual:
+                    vendors_out.append(manual)
+                else:
+                    norm = normalize_text(raw_desc)
+                    vendors_out.append(find_best_vendor(norm, vendor_entries))
+            accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
+            date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
+            check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
+            amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
+            out_data = {
+                "Date": [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]],
+                "Check Number": tx_df[check_col].astype(str) if check_col else [""] * len(tx_df),
+                "Vendor": vendors_out,
+                "Account": accounts,
+                "Amount": amt_series.abs(),
+            }
+            out_df = pd.DataFrame(out_data)
+            last_month, last_year = get_last_transaction_month_year(tx_df)
+            base_name = default_output_filename(self.current_company, month=last_month, year=last_year)
+            # Disambiguate if same name already used in this batch
+            if base_name in used_names:
+                used_names[base_name] += 1
+                stem, ext = os.path.splitext(base_name)
+                base_name = f"{stem} ({used_names[base_name]}){ext}"
+            else:
+                used_names[base_name] = 1
+            out_path = os.path.join(out_dir, base_name)
+            # If file exists on disk, append (2), (3), etc.
+            stem, ext = os.path.splitext(base_name)
+            n = 2
+            while os.path.exists(out_path):
+                base_name = f"{stem} ({n}){ext}"
+                out_path = os.path.join(out_dir, base_name)
+                n += 1
+            out_df.to_excel(out_path, index=False, engine="openpyxl")
+            saved.append(out_path)
+        self.status_var.set(f"Saved {len(saved)} file(s) to {out_dir}")
+        messagebox.showinfo("Done", f"Saved {len(saved)} Excel file(s) to:\n{out_dir}")
 
     def pick_vendor(self):
         # Default start directory
@@ -1676,9 +1845,8 @@ class App:
             )
             total = len(vendors_out)
 
-            base_name = _safe_initial_filename(self.current_company)
-            if base_name.lower().endswith(".csv"):
-                base_name = base_name[:-4] + ".xlsx"
+            last_month, last_year = get_last_transaction_month_year(tx_df)
+            base_name = default_output_filename(self.current_company, month=last_month, year=last_year)
             out_path = filedialog.asksaveasfilename(
                 title="Save Excel as",
                 defaultextension=".xlsx",
