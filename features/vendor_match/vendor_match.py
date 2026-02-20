@@ -48,6 +48,23 @@ def _app_dir():
 
 APP_DIR = _app_dir()
 
+def _vertex_icon_path() -> str | None:
+    """Return path to Vertex logo.ico if found (for window icon)."""
+    for base in (APP_DIR, _script_dir(), os.path.dirname(_script_dir())):
+        p = os.path.join(base, "logo.ico")
+        if os.path.isfile(p):
+            return p
+    return None
+
+def _set_vertex_icon(win):
+    """Set Vertex icon on a Tk or Toplevel window if logo.ico is available."""
+    try:
+        ico = _vertex_icon_path()
+        if ico:
+            win.iconbitmap(default=ico)
+    except Exception:
+        pass
+
 def _rules_dir() -> str:
     p = os.path.join(APP_DIR, "data", "match_rules")
     os.makedirs(p, exist_ok=True)  # ensure folder exists
@@ -120,19 +137,33 @@ def build_output_dataframe(
     accounts: list,
     amount_col: str | None,
     check_col: str | None,
+    transaction_filter: str = "debits",
 ) -> pd.DataFrame:
-    """Build output with columns: Date, Vendor, Account, Memo, Check Number, Amount (Memo blank)."""
+    """Build output DataFrame. Deposit: Date, Vendor, Account, Memo, Check Number, Amount. Withdrawal: Date, Check Number, Vendor, Account, Amount, Memo. Memo is always blank."""
     date_col = "Date" if "Date" in tx_df.columns else ("Transaction Date" if "Transaction Date" in tx_df.columns else tx_df.columns[0])
     amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce") if amount_col else pd.Series([0.0] * len(tx_df))
     n = len(vendors_out)
-    return pd.DataFrame({
-        "Date": [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]],
-        "Vendor": vendors_out,
-        "Account": accounts,
-        "Memo": [""] * n,
-        "Check Number": tx_df[check_col].astype(str) if check_col else [""] * n,
-        "Amount": amt_series.abs(),
-    })
+    check_vals = tx_df[check_col].astype(str) if check_col else [""] * n
+    memo_vals = [""] * n
+    dates = [_format_date_mm_dd_yyyy(v) for v in tx_df[date_col]]
+    if transaction_filter == "credits":
+        return pd.DataFrame({
+            "Date": dates,
+            "Vendor": vendors_out,
+            "Account": accounts,
+            "Memo": memo_vals,
+            "Check Number": check_vals,
+            "Amount": amt_series.abs(),
+        })
+    else:
+        return pd.DataFrame({
+            "Date": dates,
+            "Check Number": check_vals,
+            "Vendor": vendors_out,
+            "Account": accounts,
+            "Amount": amt_series.abs(),
+            "Memo": memo_vals,
+        })
 
 def get_last_transaction_month_year(tx_df: pd.DataFrame) -> tuple[int | None, int | None]:
     """Get month and year of the last transaction (by date). Returns (month, year) or (None, None)."""
@@ -984,6 +1015,7 @@ class App:
         self.root = root
         self.root.title("Vendor Matcher")
         self.root.configure(bg=BG_MAIN)
+        _set_vertex_icon(self.root)
 
         # --- state & StringVars ---
         self.tx_paths = []  # one or more transaction files (empty if pasted text)
@@ -1061,10 +1093,16 @@ class App:
         self.select_company_dialog(initial=True)
 
 
+    def _style_dialog(self, win, title: str):
+        """Apply Vertex theme and icon to a Toplevel."""
+        win.title(title)
+        win.configure(bg=BG_MAIN)
+        _set_vertex_icon(win)
+
     # ===== Company selection & management =====
     def select_company_dialog(self, initial=False):
         dlg = Toplevel(self.root)
-        dlg.title("Select Company")
+        self._style_dialog(dlg, "Select Company")
 
         dlg.transient(self.root)
         dlg.grab_set()
@@ -1074,8 +1112,8 @@ class App:
         dlg.after(100, lambda: dlg.attributes("-topmost", False))
 
         # ---- Lists and controls ----
-        lb = Listbox(dlg, selectmode=SINGLE, width=50, height=10)
-        lb.grid(row=0, column=0, columnspan=3, padx=10, pady=(10,6), sticky="w")
+        lb = Listbox(dlg, selectmode=SINGLE, width=50, height=10, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+        lb.grid(row=0, column=0, columnspan=3, padx=12, pady=(12,8), sticky="w")
 
         def refresh_lb():
             lb.delete(0, END)
@@ -1136,9 +1174,11 @@ class App:
 
         def do_add():
             sub = Toplevel(dlg)
-            sub.title("Add Company")
-            Label(sub, text="Company name:").grid(row=0, column=0, padx=10, pady=(10,4), sticky="w")
-            name_e = Entry(sub, width=40); name_e.grid(row=1, column=0, padx=10, pady=(0,8), sticky="w")
+            self._style_dialog(sub, "Add Company")
+            sub.configure(bg=BG_MAIN)
+            Label(sub, text="Company name:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=0, column=0, padx=12, pady=(12,4), sticky="w")
+            name_e = Entry(sub, width=40, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            name_e.grid(row=1, column=0, padx=12, pady=(0,8), sticky="w")
 
             def add_and_close():
                 name = name_e.get().strip()
@@ -1151,12 +1191,11 @@ class App:
                 self.company_list.append(name)
                 self.company_list = sorted(set(self.company_list))
                 save_company_list(self.company_list)
-                
                 save_rules_to_disk(company_rules_path(name), [])
                 refresh_lb()
                 sub.destroy()
 
-            Button(sub, text="Add", command=add_and_close).grid(row=2, column=0, padx=10, pady=(2,10), sticky="w")
+            Button(sub, text="Add", command=add_and_close, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=4, cursor="hand2").grid(row=2, column=0, padx=12, pady=(8,12), sticky="w")
             sub.grab_set()
             name_e.focus_set()
 
@@ -1189,9 +1228,9 @@ class App:
                 self._refresh_rules_label()
                 self._refresh_account_label()
 
-        Button(dlg, text="Use", command=do_use).grid(row=1, column=0, padx=10, pady=(4,10), sticky="w")
-        Button(dlg, text="Add", command=do_add).grid(row=1, column=1, padx=6, pady=(4,10), sticky="w")
-        Button(dlg, text="Delete", command=do_delete).grid(row=1, column=2, padx=6, pady=(4,10), sticky="w")
+        Button(dlg, text="Use", command=do_use, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=14, pady=5, cursor="hand2").grid(row=1, column=0, padx=12, pady=(8,12), sticky="w")
+        Button(dlg, text="Add", command=do_add, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=14, pady=5, cursor="hand2").grid(row=1, column=1, padx=6, pady=(8,12), sticky="w")
+        Button(dlg, text="Delete", command=do_delete, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=14, pady=5, cursor="hand2").grid(row=1, column=2, padx=6, pady=(8,12), sticky="w")
 
         if initial and len(self.company_list) == 1:
             set_company_and_close(self.company_list[0])
@@ -1264,7 +1303,7 @@ class App:
         bank_list = list(BANK_PARSERS.keys()) if BANK_PARSERS else []
         initial = (default_bank if default_bank and default_bank in bank_list else None) or (bank_list[0] if bank_list else "")
         dlg = Toplevel(self.root)
-        dlg.title("Select Bank")
+        self._style_dialog(dlg, "Select Bank")
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.lift()
@@ -1274,33 +1313,26 @@ class App:
         
         selected = StringVar(value=initial)
         
-        Label(dlg, text="Select bank format for PDF parsing:", font=("Arial", 10, "bold")).grid(
+        dlg.configure(bg=BG_MAIN)
+        Label(dlg, text="Select bank format for PDF parsing:", font=FONT_HEAD, fg=FG_PRIMARY, bg=BG_MAIN).grid(
             row=0, column=0, columnspan=2, padx=15, pady=(15, 10), sticky="w"
         )
-        
         row = 1
         for bank_name in BANK_PARSERS.keys():
-            Radiobutton(
-                dlg, text=bank_name, variable=selected, value=bank_name
-            ).grid(row=row, column=0, padx=20, pady=5, sticky="w")
+            Radiobutton(dlg, text=bank_name, variable=selected, value=bank_name, font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).grid(row=row, column=0, padx=20, pady=5, sticky="w")
             row += 1
-        
         result = [None]
-        
+
         def confirm():
             result[0] = selected.get()
             dlg.destroy()
-        
+
         def cancel():
             result[0] = None
             dlg.destroy()
-        
-        Button(dlg, text="OK", command=confirm, width=10).grid(
-            row=row, column=0, padx=10, pady=(15, 15), sticky="w"
-        )
-        Button(dlg, text="Cancel", command=cancel, width=10).grid(
-            row=row, column=1, padx=10, pady=(15, 15), sticky="w"
-        )
+
+        Button(dlg, text="OK", command=confirm, width=10, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=row, column=0, padx=10, pady=(15, 15), sticky="w")
+        Button(dlg, text="Cancel", command=cancel, width=10, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=row, column=1, padx=10, pady=(15, 15), sticky="w")
         
         dlg.wait_window(dlg)
         return result[0]
@@ -1308,35 +1340,25 @@ class App:
     def paste_transactions(self):
         """Show dialog to paste transaction text."""
         dlg = Toplevel(self.root)
-        dlg.title("Paste Transactions")
+        self._style_dialog(dlg, "Paste Transactions")
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.lift()
         dlg.focus_force()
         dlg.geometry("800x500")
+        dlg.configure(bg=BG_MAIN)
         dlg.attributes("-topmost", True)
         dlg.after(100, lambda: dlg.attributes("-topmost", False))
-        
-        # Bank selection
-        Label(dlg, text="Select bank format:", font=("Arial", 10, "bold")).grid(
-            row=0, column=0, padx=15, pady=(15, 5), sticky="w"
-        )
-        
+
+        Label(dlg, text="Select bank format:", font=FONT_HEAD, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
         selected_bank = StringVar(value=list(BANK_PARSERS.keys())[0] if BANK_PARSERS else "")
         bank_row = 1
         for bank_name in BANK_PARSERS.keys():
-            Radiobutton(
-                dlg, text=bank_name, variable=selected_bank, value=bank_name
-            ).grid(row=bank_row, column=0, padx=30, pady=2, sticky="w")
+            Radiobutton(dlg, text=bank_name, variable=selected_bank, value=bank_name, font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).grid(row=bank_row, column=0, padx=30, pady=2, sticky="w")
             bank_row += 1
-        
-        # Text area for pasting
-        Label(dlg, text="Paste transaction text below:", font=("Arial", 10, "bold")).grid(
-            row=bank_row, column=0, padx=15, pady=(15, 5), sticky="w"
-        )
-        
-        # Text widget with scrollbar
-        text_area = Text(dlg, width=90, height=20, wrap="none", font=("Consolas", 9))
+
+        Label(dlg, text="Paste transaction text below:", font=FONT_HEAD, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=bank_row, column=0, padx=15, pady=(15, 5), sticky="w")
+        text_area = Text(dlg, width=90, height=20, wrap="none", font=("Consolas", 9), bg=BG_CARD, fg=FG_PRIMARY)
         scrollbar_v = Scrollbar(dlg, orient="vertical", command=text_area.yview)
         scrollbar_h = Scrollbar(dlg, orient="horizontal", command=text_area.xview)
         text_area.configure(yscrollcommand=scrollbar_v.set, xscrollcommand=scrollbar_h.set)
@@ -1368,13 +1390,8 @@ class App:
             result[1] = None
             dlg.destroy()
         
-        Button(dlg, text="OK", command=confirm, width=12).grid(
-            row=bank_row + 3, column=0, padx=15, pady=(10, 15), sticky="w"
-        )
-        Button(dlg, text="Cancel", command=cancel, width=12).grid(
-            row=bank_row + 3, column=0, padx=15, pady=(10, 15), sticky="e"
-        )
-        
+        Button(dlg, text="OK", command=confirm, width=12, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=bank_row + 3, column=0, padx=15, pady=(10, 15), sticky="w")
+        Button(dlg, text="Cancel", command=cancel, width=12, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=bank_row + 3, column=0, padx=15, pady=(10, 15), sticky="e")
         text_area.focus_set()
         dlg.wait_window(dlg)
         
@@ -1465,10 +1482,11 @@ class App:
         rp = company_rules_path(self.current_company)
 
         win = Toplevel(self.root)
-        win.title(f"Manage Rules — {self.current_company}")
+        self._style_dialog(win, f"Manage Rules — {self.current_company}")
+        win.configure(bg=BG_MAIN)
 
-        lb = Listbox(win, selectmode=SINGLE, width=64, height=10)
-        lb.grid(row=0, column=0, columnspan=3, padx=10, pady=(10,6), sticky="w")
+        lb = Listbox(win, selectmode=SINGLE, width=64, height=10, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+        lb.grid(row=0, column=0, columnspan=3, padx=12, pady=(12,8), sticky="w")
 
         def refresh_lb():
             lb.delete(0, END)
@@ -1479,19 +1497,19 @@ class App:
         # ---- Add
         def do_add():
             sub = Toplevel(win)
-            sub.title("Add Rule")
-
-            Label(sub, text="If description contains (word/phrase):").grid(row=0, column=0, padx=10, pady=(10,4), sticky="w")
-            phrase_e = Entry(sub, width=48); phrase_e.grid(row=1, column=0, padx=10, pady=(0,10), sticky="w")
-
-            Label(sub, text="Search vendor:").grid(row=2, column=0, padx=10, pady=(0,2), sticky="w")
-            search_e = Entry(sub, width=48); search_e.grid(row=3, column=0, padx=10, pady=(0,6), sticky="w")
-
-            vendor_lb = Listbox(sub, selectmode=SINGLE, width=48, height=8)
-            vendor_lb.grid(row=4, column=0, padx=10, pady=(0,6), sticky="w")
-
-            Label(sub, text="Chosen vendor (or type):").grid(row=5, column=0, padx=10, pady=(2,2), sticky="w")
-            vendor_e = Entry(sub, width=48); vendor_e.grid(row=6, column=0, padx=10, pady=(0,8), sticky="w")
+            self._style_dialog(sub, "Add Rule")
+            sub.configure(bg=BG_MAIN)
+            Label(sub, text="If description contains (word/phrase):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=0, column=0, padx=12, pady=(12,4), sticky="w")
+            phrase_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            phrase_e.grid(row=1, column=0, padx=12, pady=(0,8), sticky="w")
+            Label(sub, text="Search vendor:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=2, column=0, padx=12, pady=(0,2), sticky="w")
+            search_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            search_e.grid(row=3, column=0, padx=12, pady=(0,6), sticky="w")
+            vendor_lb = Listbox(sub, selectmode=SINGLE, width=48, height=8, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            vendor_lb.grid(row=4, column=0, padx=12, pady=(0,6), sticky="w")
+            Label(sub, text="Chosen vendor (or type):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=5, column=0, padx=12, pady=(2,2), sticky="w")
+            vendor_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            vendor_e.grid(row=6, column=0, padx=12, pady=(0,8), sticky="w")
 
             def update_vendor_list(*_):
                 q = search_e.get().strip().lower()
@@ -1523,8 +1541,8 @@ class App:
                 refresh_lb()
                 sub.destroy()
 
-            Button(sub, text="Use Selected", command=use_selected).grid(row=7, column=0, padx=10, pady=(0,6), sticky="w")
-            Button(sub, text="Add", command=add_and_close).grid(row=8, column=0, padx=10, pady=(0,10), sticky="w")
+            Button(sub, text="Use Selected", command=use_selected, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=10, pady=4, cursor="hand2").grid(row=7, column=0, padx=12, pady=(0,6), sticky="w")
+            Button(sub, text="Add", command=add_and_close, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=8, column=0, padx=12, pady=(0,12), sticky="w")
             sub.grab_set(); phrase_e.focus_set()
 
         def do_edit():
@@ -1534,21 +1552,22 @@ class App:
                 return
             i = idxs[0]
             rule = self.manual_rules[i]
-
             sub = Toplevel(win)
-            sub.title("Edit Rule")
-
-            Label(sub, text="If description contains (word/phrase):").grid(row=0, column=0, padx=10, pady=(10,4), sticky="w")
-            phrase_e = Entry(sub, width=48); phrase_e.insert(0, rule["phrase"]); phrase_e.grid(row=1, column=0, padx=10, pady=(0,10), sticky="w")
-
-            Label(sub, text="Search vendor:").grid(row=2, column=0, padx=10, pady=(0,2), sticky="w")
-            search_e = Entry(sub, width=48); search_e.grid(row=3, column=0, padx=10, pady=(0,6), sticky="w")
-
-            vendor_lb = Listbox(sub, selectmode=SINGLE, width=48, height=8)
-            vendor_lb.grid(row=4, column=0, padx=10, pady=(0,6), sticky="w")
-
-            Label(sub, text="Chosen vendor (or type):").grid(row=5, column=0, padx=10, pady=(2,2), sticky="w")
-            vendor_e = Entry(sub, width=48); vendor_e.insert(0, rule["vendor"]); vendor_e.grid(row=6, column=0, padx=10, pady=(0,8), sticky="w")
+            self._style_dialog(sub, "Edit Rule")
+            sub.configure(bg=BG_MAIN)
+            Label(sub, text="If description contains (word/phrase):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=0, column=0, padx=12, pady=(12,4), sticky="w")
+            phrase_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            phrase_e.insert(0, rule["phrase"])
+            phrase_e.grid(row=1, column=0, padx=12, pady=(0,8), sticky="w")
+            Label(sub, text="Search vendor:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=2, column=0, padx=12, pady=(0,2), sticky="w")
+            search_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            search_e.grid(row=3, column=0, padx=12, pady=(0,6), sticky="w")
+            vendor_lb = Listbox(sub, selectmode=SINGLE, width=48, height=8, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            vendor_lb.grid(row=4, column=0, padx=12, pady=(0,6), sticky="w")
+            Label(sub, text="Chosen vendor (or type):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=5, column=0, padx=12, pady=(2,2), sticky="w")
+            vendor_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            vendor_e.insert(0, rule["vendor"])
+            vendor_e.grid(row=6, column=0, padx=12, pady=(0,8), sticky="w")
 
             def update_vendor_list(*_):
                 q = search_e.get().strip().lower()
@@ -1580,8 +1599,8 @@ class App:
                 refresh_lb()
                 sub.destroy()
 
-            Button(sub, text="Use Selected", command=use_selected).grid(row=7, column=0, padx=10, pady=(0,6), sticky="w")
-            Button(sub, text="Save", command=save_and_close).grid(row=8, column=0, padx=10, pady=(0,10), sticky="w")
+            Button(sub, text="Use Selected", command=use_selected, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=10, pady=4, cursor="hand2").grid(row=7, column=0, padx=12, pady=(0,6), sticky="w")
+            Button(sub, text="Save", command=save_and_close, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=8, column=0, padx=12, pady=(0,12), sticky="w")
             sub.grab_set(); phrase_e.focus_set()
 
         def do_delete():
@@ -1597,10 +1616,9 @@ class App:
                 self._refresh_rules_label()
                 refresh_lb()
 
-        Button(win, text="Add", command=do_add).grid(row=1, column=0, padx=10, pady=(4,10), sticky="w")
-        Button(win, text="Edit", command=do_edit).grid(row=1, column=1, padx=6, pady=(4,10), sticky="w")
-        Button(win, text="Delete", command=do_delete).grid(row=1, column=2, padx=6, pady=(4,10), sticky="w")
-
+        Button(win, text="Add", command=do_add, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=1, column=0, padx=12, pady=(8,12), sticky="w")
+        Button(win, text="Edit", command=do_edit, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=1, column=1, padx=6, pady=(8,12), sticky="w")
+        Button(win, text="Delete", command=do_delete, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=1, column=2, padx=6, pady=(8,12), sticky="w")
         win.grab_set()
 
     def manage_accounts_dialog(self):
@@ -1610,10 +1628,11 @@ class App:
         ap = company_accounts_path(self.current_company)
 
         win = Toplevel(self.root)
-        win.title(f"Manage Accounts — {self.current_company}")
+        self._style_dialog(win, f"Manage Accounts — {self.current_company}")
+        win.configure(bg=BG_MAIN)
 
-        lb = Listbox(win, selectmode=SINGLE, width=64, height=12)
-        lb.grid(row=0, column=0, columnspan=3, padx=10, pady=(10,6), sticky="w")
+        lb = Listbox(win, selectmode=SINGLE, width=64, height=12, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+        lb.grid(row=0, column=0, columnspan=3, padx=12, pady=(12,8), sticky="w")
 
         def refresh_lb():
             lb.delete(0, END)
@@ -1624,18 +1643,19 @@ class App:
 
         def do_add():
             sub = Toplevel(win)
-            sub.title("Add Vendor → Account")
-            Label(sub, text="Search vendor:").grid(row=0, column=0, padx=10, pady=(10,2), sticky="w")
-            search_e = Entry(sub, width=48); search_e.grid(row=1, column=0, padx=10, pady=(0,6), sticky="w")
-
-            vendor_lb = Listbox(sub, selectmode=SINGLE, width=48, height=8)
-            vendor_lb.grid(row=2, column=0, padx=10, pady=(0,6), sticky="w")
-
-            Label(sub, text="Chosen vendor (or type):").grid(row=3, column=0, padx=10, pady=(2,2), sticky="w")
-            vendor_e = Entry(sub, width=48); vendor_e.grid(row=4, column=0, padx=10, pady=(0,8), sticky="w")
-
-            Label(sub, text="Account:").grid(row=5, column=0, padx=10, pady=(2,2), sticky="w")
-            account_e = Entry(sub, width=48); account_e.grid(row=6, column=0, padx=10, pady=(0,8), sticky="w")
+            self._style_dialog(sub, "Add Vendor → Account")
+            sub.configure(bg=BG_MAIN)
+            Label(sub, text="Search vendor:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=0, column=0, padx=12, pady=(12,2), sticky="w")
+            search_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            search_e.grid(row=1, column=0, padx=12, pady=(0,6), sticky="w")
+            vendor_lb = Listbox(sub, selectmode=SINGLE, width=48, height=8, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            vendor_lb.grid(row=2, column=0, padx=12, pady=(0,6), sticky="w")
+            Label(sub, text="Chosen vendor (or type):", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=3, column=0, padx=12, pady=(2,2), sticky="w")
+            vendor_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            vendor_e.grid(row=4, column=0, padx=12, pady=(0,8), sticky="w")
+            Label(sub, text="Account:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=5, column=0, padx=12, pady=(2,2), sticky="w")
+            account_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            account_e.grid(row=6, column=0, padx=12, pady=(0,8), sticky="w")
 
             def update_vendor_list(*_):
                 q = search_e.get().strip().lower()
@@ -1667,8 +1687,8 @@ class App:
                 refresh_lb()
                 sub.destroy()
 
-            Button(sub, text="Use Selected", command=use_selected).grid(row=7, column=0, padx=10, pady=(0,6), sticky="w")
-            Button(sub, text="Add", command=add_and_close).grid(row=8, column=0, padx=10, pady=(0,10), sticky="w")
+            Button(sub, text="Use Selected", command=use_selected, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=10, pady=4, cursor="hand2").grid(row=7, column=0, padx=12, pady=(0,6), sticky="w")
+            Button(sub, text="Add", command=add_and_close, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=8, column=0, padx=12, pady=(0,12), sticky="w")
             sub.grab_set(); search_e.focus_set()
 
         def do_edit():
@@ -1676,19 +1696,21 @@ class App:
             if not idxs:
                 messagebox.showinfo("Edit", "Select a mapping to edit.")
                 return
-                
             line = lb.get(idxs[0])
             if "  →  " not in line:
                 return
             vendor_sel, account_sel = [x.strip() for x in line.split("  →  ", 1)]
-
             sub = Toplevel(win)
-            sub.title("Edit Vendor → Account")
-            Label(sub, text="Vendor:").grid(row=0, column=0, padx=10, pady=(10,2), sticky="w")
-            vendor_e = Entry(sub, width=48); vendor_e.insert(0, vendor_sel); vendor_e.grid(row=1, column=0, padx=10, pady=(0,8), sticky="w")
-
-            Label(sub, text="Account:").grid(row=2, column=0, padx=10, pady=(2,2), sticky="w")
-            account_e = Entry(sub, width=48); account_e.insert(0, account_sel); account_e.grid(row=3, column=0, padx=10, pady=(0,8), sticky="w")
+            self._style_dialog(sub, "Edit Vendor → Account")
+            sub.configure(bg=BG_MAIN)
+            Label(sub, text="Vendor:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=0, column=0, padx=12, pady=(12,2), sticky="w")
+            vendor_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            vendor_e.insert(0, vendor_sel)
+            vendor_e.grid(row=1, column=0, padx=12, pady=(0,8), sticky="w")
+            Label(sub, text="Account:", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=2, column=0, padx=12, pady=(2,2), sticky="w")
+            account_e = Entry(sub, width=48, font=FONT_UI, bg=BG_CARD, fg=FG_PRIMARY)
+            account_e.insert(0, account_sel)
+            account_e.grid(row=3, column=0, padx=12, pady=(0,8), sticky="w")
 
             def save_and_close():
                 new_vendor = vendor_e.get().strip()
@@ -1704,7 +1726,7 @@ class App:
                 refresh_lb()
                 sub.destroy()
 
-            Button(sub, text="Save", command=save_and_close).grid(row=4, column=0, padx=10, pady=(0,10), sticky="w")
+            Button(sub, text="Save", command=save_and_close, font=FONT_UI, bg=ACCENT, fg="white", relief="flat", padx=12, pady=5, cursor="hand2").grid(row=4, column=0, padx=12, pady=(0,12), sticky="w")
             sub.grab_set(); account_e.focus_set()
 
         def do_delete():
@@ -1723,10 +1745,9 @@ class App:
                     self._refresh_account_label()
                     refresh_lb()
 
-        Button(win, text="Add", command=do_add).grid(row=1, column=0, padx=10, pady=(4,10), sticky="w")
-        Button(win, text="Edit", command=do_edit).grid(row=1, column=1, padx=6, pady=(4,10), sticky="w")
-        Button(win, text="Delete", command=do_delete).grid(row=1, column=2, padx=6, pady=(4,10), sticky="w")
-
+        Button(win, text="Add", command=do_add, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=1, column=0, padx=12, pady=(8,12), sticky="w")
+        Button(win, text="Edit", command=do_edit, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=1, column=1, padx=6, pady=(8,12), sticky="w")
+        Button(win, text="Delete", command=do_delete, font=FONT_UI, bg=BTN_BG, fg=FG_PRIMARY, relief="flat", padx=12, pady=5, cursor="hand2").grid(row=1, column=2, padx=6, pady=(8,12), sticky="w")
         win.grab_set()
 
 
@@ -1783,7 +1804,7 @@ class App:
                             vendors_out.append(find_best_vendor(norm, vendor_entries))
                     accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
                     check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
-                    out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col)
+                    out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
                     last_month, last_year = get_last_transaction_month_year(tx_df)
                     base_name = default_output_filename(
                         self.current_company, month=last_month, year=last_year, transaction_filter=transaction_filter
@@ -1844,7 +1865,7 @@ class App:
 
             accounts = [self.account_map.get(v, "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
             check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
-            out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col)
+            out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
 
             last_month, last_year = get_last_transaction_month_year(tx_df)
             base_name = default_output_filename(
