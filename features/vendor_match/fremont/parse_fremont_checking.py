@@ -66,6 +66,12 @@ RE_MONTH_YEAR = re.compile(r"(?:January|February|March|April|May|June|July|Augus
 # Statement date pattern
 RE_STATEMENT_DATE = re.compile(r"STATEMENT DATE\s+(\d{1,2})/(\d{1,2})/(\d{4})", re.I)
 
+# Check number in description (e.g. "CHECK NO 1234", "Check # 1234", "CHK 1234", "# 1234")
+RE_CHECK_NO = re.compile(r"CHECK\s+NO\.?\s*:?\s*(\d+)", re.I)
+RE_CHECK_HASH = re.compile(r"Check\s*#\s*(\d+)", re.I)
+RE_CHK = re.compile(r"CHK\s*#?\s*(\d+)", re.I)
+RE_HASH_NUM = re.compile(r"\b#\s*(\d{3,8})\b")
+
 # Skip these lines (header, balance lines, footers)
 SKIP_PATTERNS = [
     "BALANCE LAST STATEMENT",
@@ -82,6 +88,17 @@ SKIP_PATTERNS = [
     "Website:",
     "SPLITHERE",
 ]
+
+
+def _extract_check_number(description: str) -> str:
+    """Extract check number from description. Returns empty string if not found."""
+    if not description or not description.strip():
+        return ""
+    for pat in (RE_CHECK_NO, RE_CHECK_HASH, RE_CHK, RE_HASH_NUM):
+        m = pat.search(description)
+        if m:
+            return m.group(1)
+    return ""
 
 
 def _is_skip_line(line: str) -> bool:
@@ -238,7 +255,8 @@ def parse_fremont_checking_text(text: str) -> list[dict]:
                 rows.append({
                     "date": normalized_date,
                     "description": desc_str,
-                    "amount": amount
+                    "amount": amount,
+                    "reference_number": _extract_check_number(desc_str),
                 })
             except ValueError:
                 pass
@@ -285,11 +303,11 @@ def parse_fremont_checking_text(text: str) -> list[dict]:
                     amount = float(amount_str)
                     full_desc = " ".join(desc_parts).strip()
                     normalized_date = _normalize_date_to_mm_dd_yyyy(date_str, year, period)
-                    
                     rows.append({
                         "date": normalized_date,
                         "description": full_desc,
-                        "amount": amount
+                        "amount": amount,
+                        "reference_number": _extract_check_number(full_desc),
                     })
                 except ValueError:
                     pass

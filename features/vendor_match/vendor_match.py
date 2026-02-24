@@ -193,8 +193,8 @@ def detect_bank_from_document(path: str) -> str | None:
     if ext == ".pdf":
         try:
             full_text = extract_text_from_pdf(path)
-            # First few pages usually have bank name; use first 8000 chars
-            text_sample = (full_text[:8000] + " " + full_text[-2000:]).lower()
+            # First few pages usually have bank name; use larger sample so Fremont etc. are detected
+            text_sample = (full_text[:12000] + " " + full_text[-3000:]).lower()
         except Exception:
             return None
     elif ext in (".xlsx", ".xls", ".csv", ".txt"):
@@ -212,7 +212,7 @@ def detect_bank_from_document(path: str) -> str | None:
     if not text_sample:
         return None
     # Match by specificity first (longer names first)
-    if "fremont bank" in text_sample:
+    if "fremont bank" in text_sample or "fremont" in text_sample:
         return "Fremont Bank" if "Fremont Bank" in bank_keys else None
     if "comerica" in text_sample:
         return "Comerica" if "Comerica" in bank_keys else None
