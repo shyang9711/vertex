@@ -39,6 +39,8 @@ def _is_bank_statement(text: str) -> bool:
 # Line 1: date (MM/DD/YY), Line 2+: description, Last: amount (-1,234.56)
 DATE_ONLY = re.compile(r"^(\d{1,2}/\d{1,2}/\d{2})$")
 AMOUNT_LINE = re.compile(r"^(-?\d{1,3}(?:,\d{3})*\.\d{2})$")
+# Checks section: Check # (digits + optional *)
+CHECK_NUMBER_LINE = re.compile(r"^(\d{4,})\*?$")
 
 # --- Credit Card: "Purchases and Other Charges" ---
 # 5 lines per transaction: post_date (MM/DD), trans_date (MM/DD), description, reference, amount (positive = charge)
@@ -185,6 +187,9 @@ def _parse_bank_withdrawals(text: str) -> list[dict]:
         if "continued on the next page" in line or ("Deposits and other credits" in line and "Withdrawals" not in line):
             in_section = False
             continue
+        if "Total withdrawals and other debits" in line:
+            in_section = False
+            continue
         amt_match = AMOUNT_LINE.match(line)
         if amt_match and past_header and cur_date is not None:
             amount = float(amt_match.group(1).replace(",", ""))
@@ -201,6 +206,8 @@ def _parse_bank_withdrawals(text: str) -> list[dict]:
             continue
         if cur_date is not None and not AMOUNT_LINE.match(line):
             cur_desc_lines.append(line)
+    rows.extend(_parse_bank_checks_section(text))
+    rows.extend(_parse_bank_service_fees_section(text))
     _apply_date_normalization(rows, text)
     return rows
 
@@ -248,6 +255,112 @@ def _parse_bank_deposits(text: str) -> list[dict]:
             continue
         if cur_date is not None and not AMOUNT_LINE.match(line):
             cur_desc_lines.append(line)
+    _apply_date_normalization(rows, text)
+    return rows
+
+
+def _parse_bank_checks_section(text: str) -> list[dict]:
+    """
+    Parse BoA bank eStatement "Checks" section (Date, Check #, Amount).
+    Returns list of {"date", "description", "amount", "reference_number"} (reference_number = check number).
+    """
+    lines = [ln.strip() for ln in text.split("\n")]
+    in_section = False
+    past_header = False
+    rows = []
+    cur_date = None
+    cur_check_no = None
+
+    for line in lines:
+        if not line:
+            continue
+        if re.match(r"^Checks\s*(-\s*continued)?\s*$", line):
+            in_section = True
+            past_header = False
+            continue
+        if not in_section:
+            continue
+        if line in ("Date", "Check #", "Amount"):
+            past_header = True
+            continue
+        if "Total checks" in line or "Total # of checks" in line or ("Service fees" in line and "Total" not in line):
+            in_section = False
+            continue
+        amt_match = AMOUNT_LINE.match(line)
+        if amt_match and past_header and cur_date is not None and cur_check_no is not None:
+            amount = float(amt_match.group(1).replace(",", ""))
+            if amount < 0:
+                rows.append({
+                    "date": cur_date,
+                    "description": f"Check {cur_check_no}",
+                    "amount": amount,
+                    "reference_number": cur_check_no,
+                })
+            cur_date = None
+            cur_check_no = None
+            continue
+        date_match = DATE_ONLY.match(line)
+        if date_match and past_header:
+            cur_date = date_match.group(1)
+            cur_check_no = None
+            continue
+        check_match = CHECK_NUMBER_LINE.match(line)
+        if check_match and past_header and cur_date is not None:
+            cur_check_no = check_match.group(1)
+            continue
+        cur_date = None
+        cur_check_no = None
+    _apply_date_normalization(rows, text)
+    return rows
+
+
+def _parse_bank_service_fees_section(text: str) -> list[dict]:
+    """
+    Parse BoA bank eStatement "Service fees" section (Date, Transaction description, Amount).
+    Returns list of {"date", "description", "amount"} (no reference_number).
+    """
+    lines = [ln.strip() for ln in text.split("\n")]
+    in_section = False
+    past_header = False
+    rows = []
+    cur_date = None
+    cur_desc = None
+
+    for line in lines:
+        if not line:
+            continue
+        if "Service fees" in line and "Total" not in line and "waived" not in line.lower():
+            in_section = True
+            past_header = False
+            continue
+        if not in_section:
+            continue
+        if line == "Date" or line == "Amount":
+            continue
+        if line == "Transaction description":
+            past_header = True
+            continue
+        if "Total service fees" in line or "Note your Ending Balance" in line:
+            in_section = False
+            continue
+        amt_match = AMOUNT_LINE.match(line)
+        if amt_match and past_header and cur_date is not None and cur_desc is not None:
+            amount = float(amt_match.group(1).replace(",", ""))
+            if amount < 0:
+                rows.append({"date": cur_date, "description": cur_desc, "amount": amount})
+            cur_date = None
+            cur_desc = None
+            continue
+        date_match = DATE_ONLY.match(line)
+        if date_match and past_header:
+            cur_date = date_match.group(1)
+            cur_desc = None
+            continue
+        if cur_date is not None and cur_desc is None and not AMOUNT_LINE.match(line):
+            cur_desc = line
+            continue
+        cur_date = None
+        cur_desc = None
     _apply_date_normalization(rows, text)
     return rows
 
