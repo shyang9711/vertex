@@ -219,6 +219,9 @@ def detect_bank_from_document(path: str) -> str | None:
     if "citibank" in text_sample or " citi " in text_sample:
         return "Citi" if "Citi" in bank_keys else None
     if "bank of america" in text_sample or "bofa" in text_sample:
+        # Prefer checking-statement marker first; bank statements can mention "credit card" in disclaimers
+        if "withdrawals and other debits" in text_sample:
+            return "Bank of America (Bank)" if "Bank of America (Bank)" in bank_keys else None
         if "purchases and other charges" in text_sample or "credit card" in text_sample:
             return "Bank of America (Credit Card)" if "Bank of America (Credit Card)" in bank_keys else ("Bank of America (Bank)" if "Bank of America (Bank)" in bank_keys else None)
         return "Bank of America (Bank)" if "Bank of America (Bank)" in bank_keys else None

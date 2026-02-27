@@ -265,8 +265,12 @@ def parse_comerica_pdf_text(text: str) -> list[dict]:
                     i += 1
                     continue
                 if re.match(r"^\d{7,}\s*$", cur):
+                    # Electronic deposits: this is bank reference after activity, skip and break.
+                    # Paper deposits: only line after amount is customer ref, use it as activity.
+                    if not activity_parts and amount_str:
+                        activity_parts.append(cur)
                     i += 1
-                    continue
+                    break
                 activity_parts.append(cur)
                 i += 1
             if amount_str and activity_parts:
