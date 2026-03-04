@@ -1510,11 +1510,18 @@ class App:
         self.account_label_var.set(f"Accounts: {n}")
 
     def _apply_manual_rules(self, raw_desc: str) -> str:
+        """Match description using trie-style: longest (most specific) matching phrase wins.
+        E.g. if rules are 'Transfer' -> A and 'Transfer to Checking XXXX' -> B,
+        a description containing 'Transfer to Checking 1234' matches B, not A."""
         txt = "" if raw_desc is None else str(raw_desc).upper()
+        best_vendor = ""
+        best_len = 0
         for r in self.manual_rules:
-            if r["phrase"].upper() in txt:
-                return r["vendor"]
-        return ""
+            phrase_upper = r["phrase"].upper()
+            if phrase_upper in txt and len(phrase_upper) > best_len:
+                best_vendor = r["vendor"]
+                best_len = len(phrase_upper)
+        return best_vendor
 
     def manage_rules_dialog(self):
         if not self.current_company:
