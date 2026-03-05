@@ -2,8 +2,9 @@
 Parse U.S. Bank Business Checking statement PDF and pasted text.
 Output: list of dicts with date, description, amount (negative = withdrawals, positive = deposits), reference_number.
 
-PDF format: Statement Period Jan 7, 2025 through Jan 31, 2025.
-Sections: Customer Deposits (Date, Ref Number, Amount, Date, Ending Balance), and withdrawal sections if present.
+Supports two layouts:
+1) Customer Deposits (simple): Date line, Ref line, Amount line (e.g. Jan 15, 8612700360, 100.00).
+2) Other Deposits / Card Withdrawals / Other Withdrawals: "Mon DD Description..." block, then amount ($X.XX or X.XX-).
 """
 import re
 import sys
@@ -27,18 +28,21 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     return text
 
 
-# Statement period: "Statement Period: Jan 7, 2025 through Jan 31, 2025" or "Jan 7, 2025 through Jan 31, 2025"
+# Statement period: "Statement Period: Jan 7, 2025 through Jan 31, 2025" or "Feb 3, 2025 through Feb 28, 2025"
 RE_STATEMENT_PERIOD = re.compile(
     r"(?:Statement\s+Period:\s*)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})\s+through\s+",
     re.I
 )
 RE_MONTH_DAY = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s*$", re.I)
-RE_AMOUNT = re.compile(r"^\s*\$?([\d,]+\.\d{2})\s*$")
+# Transaction line start: "Feb 14 Wire Credit..." or "Feb 18 Debit Purchase..."
+RE_TX_START = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(.+)$", re.I)
+RE_AMOUNT = re.compile(r"^\s*\$?([\d,]+)\.(\d{2})\s*(-)?\s*$")  # optional minus suffix for withdrawal
 RE_REF = re.compile(r"^\d{4,}\s*$")
+RE_REF_IN_DESC = re.compile(r"REF\s*#?\s*(\d+)", re.I)
 
 
 def _extract_statement_year(text: str) -> int | None:
-    """Get statement year from Statement Period."""
+    """Get statement year from Statement Period (use end date)."""
     m = RE_STATEMENT_PERIOD.search(text)
     if m:
         y = int(m.group(3))
@@ -65,11 +69,99 @@ def _normalize_date(month_abbrev: str, day: str, year: int) -> str:
     return ""
 
 
+def _parse_layout2_other_deposits_withdrawals(lines: list, year: int) -> list[dict]:
+    """
+    Parse "Other Deposits", "Card Withdrawals", "Other Withdrawals" layout.
+    Transaction: line starting with "Mon DD Description...", then continuation lines, then amount ($X.XX or X.XX-).
+    """
+    rows = []
+    i = 0
+    current_section = None  # "other_deposits" | "card_withdrawals" | "other_withdrawals"
+    while i < len(lines):
+        line = lines[i]
+        lower = (line or "").lower()
+        if "other deposits" in lower and "withdrawal" not in lower:
+            current_section = "other_deposits"
+            i += 1
+            continue
+        if "card withdrawals" in lower:
+            current_section = "card_withdrawals"
+            i += 1
+            continue
+        if "other withdrawals" in lower:
+            current_section = "other_withdrawals"
+            i += 1
+            continue
+        if not line.strip():
+            i += 1
+            continue
+
+        # Transaction start: "Feb 14 Wire Credit REF019296" or "Feb 18 Debit Purchase - VISA"
+        tx_start = RE_TX_START.match(line.strip())
+        if tx_start and current_section:
+            month_abbrev, day, rest = tx_start.groups()
+            desc_parts = [rest.strip()]
+            j = i + 1
+            amount_val = None
+            is_negative = False
+            while j < len(lines) and j < i + 25:
+                nxt = lines[j].strip()
+                if not nxt:
+                    j += 1
+                    continue
+                # Amount: "85,000.00" or "83.74-" or after a lone "$"
+                amt_m = RE_AMOUNT.match(nxt.replace(",", ""))
+                if nxt == "$":
+                    j += 1
+                    if j < len(lines):
+                        amt_m = RE_AMOUNT.match(lines[j].strip())
+                        if amt_m:
+                            amount_val = float(amt_m.group(1).replace(",", "") + "." + amt_m.group(2))
+                            is_negative = amt_m.group(3) == "-"
+                            j += 1
+                    break
+                if amt_m:
+                    amount_val = float(amt_m.group(1).replace(",", "") + "." + amt_m.group(2))
+                    is_negative = amt_m.group(3) == "-"
+                    j += 1
+                    break
+                # Next transaction start?
+                if RE_TX_START.match(nxt):
+                    break
+                if "Number of Days" in nxt or "To Contact" in nxt:
+                    break
+                desc_parts.append(nxt)
+                j += 1
+
+            if amount_val is not None and amount_val > 0:
+                date_str = _normalize_date(month_abbrev, day, year)
+                description = " ".join(desc_parts).strip()
+                ref_num = ""
+                ref_m = RE_REF_IN_DESC.search(description)
+                if ref_m:
+                    ref_num = ref_m.group(1)
+                # Infer sign from section or description (Wire Credit / Deposit = positive; Debit = negative)
+                desc_upper = description.upper()
+                if current_section == "other_deposits" or "WIRE CREDIT" in desc_upper or "ELECTRONIC DEPOSIT" in desc_upper or (desc_upper.startswith("DEPOSIT") and "DEBIT" not in desc_upper) or " RET " in desc_upper or " RETURN" in desc_upper or " REFUND" in desc_upper:
+                    amt_signed = amount_val
+                else:
+                    amt_signed = -amount_val
+                rows.append({
+                    "date": date_str,
+                    "description": description,
+                    "amount": amt_signed,
+                    "reference_number": ref_num
+                })
+            i = j
+            continue
+        i += 1
+    return rows
+
+
 def _parse_us_bank_checking_text(text: str) -> list[dict]:
     """
     Parse US Bank checking statement text.
-    Customer Deposits: rows like "Jan 15", "8612700360", "100.00", "Jan 15", "100.00" (Date, Ref Number, Amount, Date, Balance).
-    Withdrawals/checks sections may follow similar pattern with negative amounts or separate columns.
+    Tries layout 2 (Other Deposits / Card Withdrawals / Other Withdrawals) first, then layout 1 (Customer Deposits).
     """
     lines = [ln.strip() for ln in text.split("\n")]
     year = _extract_statement_year(text)
@@ -77,39 +169,34 @@ def _parse_us_bank_checking_text(text: str) -> list[dict]:
         year = datetime.now().year
 
     rows = []
-    in_deposits = False
-    in_withdrawals = False
-    i = 0
 
-    while i < len(lines):
-        line = lines[i]
-        lower = (line or "").lower()
-        if "customer deposits" in lower:
-            in_deposits = True
-            in_withdrawals = False
-            i += 1
-            continue
-        if "withdrawal" in lower and "total" not in lower or "checks paid" in lower or "debit" in lower:
-            in_withdrawals = True
-            in_deposits = False
-            i += 1
-            continue
-        if "account summary" in lower or "balance summary" in lower:
-            i += 1
-            continue
-        if not line:
-            i += 1
-            continue
+    # Layout 2: "Other Deposits", "Card Withdrawals", "Other Withdrawals" with "Mon DD Desc..." then amount
+    rows = _parse_layout2_other_deposits_withdrawals(lines, year)
 
-        # Customer Deposits: after "# Items" and "Ending Balance" and "Number of Days", we get rows: Mon DD, ref, amount, date, balance
-        if in_deposits:
+    # Layout 1: "Customer Deposits" with Date line, Ref line, Amount line
+    if not rows:
+        in_deposits = False
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            lower = (line or "").lower()
+            if "customer deposits" in lower:
+                in_deposits = True
+                i += 1
+                continue
+            if "withdrawal" in lower and "total" not in lower:
+                in_deposits = False
+                i += 1
+                continue
+            if not line or not in_deposits:
+                i += 1
+                continue
             date_m = RE_MONTH_DAY.match(line)
             if date_m:
                 month_abbrev, day = date_m.groups()
-                # Look ahead for ref number and amount
                 j = i + 1
                 ref_num = ""
-                amount_str = None
+                amount_val = None
                 while j < len(lines) and j < i + 6:
                     nxt = lines[j].strip()
                     if not nxt:
@@ -120,10 +207,10 @@ def _parse_us_bank_checking_text(text: str) -> list[dict]:
                         j += 1
                         continue
                     amt = RE_AMOUNT.match(nxt.replace(",", ""))
-                    if amt and amount_str is None and ref_num:  # require ref to avoid adding balance row
+                    if amt and not amount_val and ref_num:
                         try:
-                            amount_val = float(amt.group(1).replace(",", ""))
-                            if amount_val > 0 and amount_val < 1e9:  # plausible deposit
+                            amount_val = float(amt.group(1) + "." + amt.group(2))
+                            if amount_val > 0 and amount_val < 1e9:
                                 date_str = _normalize_date(month_abbrev, day, year)
                                 rows.append({
                                     "date": date_str,
@@ -138,16 +225,15 @@ def _parse_us_bank_checking_text(text: str) -> list[dict]:
                     if RE_MONTH_DAY.match(nxt) and nxt != line:
                         break
                     j += 1
-        i += 1
+            i += 1
 
-    # Also try alternate layout: "Jan 15" then "8612700360" then "100.00" on consecutive lines (no header row in between)
+    # Alternate: "Jan 15" then ref then amount on consecutive lines (no Customer Deposits header)
     if not rows:
         i = 0
         while i < len(lines):
             date_m = RE_MONTH_DAY.match(lines[i].strip())
             if date_m:
                 month_abbrev, day = date_m.groups()
-                # Next non-empty: ref or amount
                 j = i + 1
                 ref_num = ""
                 amount_val = None
@@ -163,7 +249,7 @@ def _parse_us_bank_checking_text(text: str) -> list[dict]:
                             amt = RE_AMOUNT.match(lines[j].strip().replace(",", ""))
                             if amt:
                                 try:
-                                    amount_val = float(amt.group(1).replace(",", ""))
+                                    amount_val = float(amt.group(1) + "." + amt.group(2))
                                 except ValueError:
                                     pass
                                 j += 1
@@ -171,7 +257,7 @@ def _parse_us_bank_checking_text(text: str) -> list[dict]:
                     amt = RE_AMOUNT.match(nxt.replace(",", ""))
                     if amt:
                         try:
-                            amount_val = float(amt.group(1).replace(",", ""))
+                            amount_val = float(amt.group(1) + "." + amt.group(2))
                         except ValueError:
                             pass
                         j += 1

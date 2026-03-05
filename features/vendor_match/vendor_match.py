@@ -180,6 +180,21 @@ def get_last_transaction_month_year(tx_df: pd.DataFrame) -> tuple[int | None, in
     except Exception:
         return None, None
 
+
+def get_statement_month_year_from_path(path: str) -> tuple[int | None, int | None]:
+    """When tx_df is empty, try to get month and year from filename (e.g. 2025-02-28 Statement... -> (2, 2025))."""
+    if not path:
+        return None, None
+    base = os.path.basename(path)
+    # Match YYYY-MM-DD at start of filename
+    m = re.match(r"(\d{4})-(\d{2})-\d{2}", base)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        if 1990 <= y <= 2030 and 1 <= mo <= 12:
+            return mo, y
+    return None, None
+
+
 def detect_bank_from_document(path: str) -> str | None:
     """
     Try to detect bank name from document content (PDF, Excel, CSV).
@@ -2084,9 +2099,12 @@ class App:
                             norm = normalize_text(raw_desc)
                             vendors_out.append(find_best_vendor(norm, vendor_entries))
                     accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-                    check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
+                    # For US Bank Credit Card, Ref # is not a check number — leave Check Number column blank
+                    check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
                     out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
                     last_month, last_year = get_last_transaction_month_year(tx_df)
+                    if last_month is None or last_year is None:
+                        last_month, last_year = get_statement_month_year_from_path(path)
                     base_name = default_output_filename(
                         self.current_company, month=last_month, year=last_year, transaction_filter=transaction_filter
                     )
@@ -2145,10 +2163,13 @@ class App:
                     vendors_out.append(find_best_vendor(norm, vendor_entries))
 
             accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-            check_col = "Reference Number" if "Reference Number" in tx_df.columns else None
+            check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
             out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
 
             last_month, last_year = get_last_transaction_month_year(tx_df)
+            if last_month is None or last_year is None:
+                path = self.tx_paths[0] if self.tx_paths else ""
+                last_month, last_year = get_statement_month_year_from_path(path)
             base_name = default_output_filename(
                 self.current_company, month=last_month, year=last_year, transaction_filter=transaction_filter
             )

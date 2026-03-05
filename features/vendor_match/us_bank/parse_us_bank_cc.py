@@ -23,10 +23,10 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     return text
 
 
-# Statement period: "09/19/2025 - 10/17/2025" or "Open Date: 09/19/2025 Closing Date: 10/17/2025"
+# Statement period: "Open Date: 12/17/2025 Closing Date: 01/16/2026" or "09/19/2025 - 10/17/2025"
 RE_OPEN_CLOSING = re.compile(
-    r"(?:Open\s+Date:\s*)?(\d{1,2})/(\d{1,2})/(\d{4}).*?(?:Closing\s+Date:\s*)?(\d{1,2})/(\d{1,2})/(\d{4})",
-    re.I
+    r"Open\s+Date:\s*(\d{1,2})/(\d{1,2})/(\d{4}).*?Closing\s+Date:\s*(\d{1,2})/(\d{1,2})/(\d{4})",
+    re.I | re.DOTALL
 )
 RE_PERIOD_DASH = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})")
 
@@ -40,14 +40,28 @@ RE_MM_DD = re.compile(r"^(\d{1,2})/(\d{1,2})\s*$")
 RE_REF = re.compile(r"^\d{4,}\s*$")
 
 
+def _extract_statement_period(text: str) -> tuple[int, int, int, int] | None:
+    """Get (start_month, start_year, end_month, end_year) from Open/Closing or dash range. For Dec-Jan statements, end_year may be next year."""
+    m = RE_OPEN_CLOSING.search(text)
+    if m:
+        sm, sd, sy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        em, ed, ey = int(m.group(4)), int(m.group(5)), int(m.group(6))
+        if 1990 <= sy <= 2030 and 1990 <= ey <= 2030 and 1 <= sm <= 12 and 1 <= em <= 12:
+            return (sm, sy, em, ey)
+    m = RE_PERIOD_DASH.search(text)
+    if m:
+        sm, sy = int(m.group(1)), int(m.group(3))
+        em, ey = int(m.group(4)), int(m.group(6))
+        if 1990 <= sy <= 2030 and 1990 <= ey <= 2030 and 1 <= sm <= 12 and 1 <= em <= 12:
+            return (sm, sy, em, ey)
+    return None
+
+
 def _extract_statement_year(text: str) -> int | None:
-    """Get statement year from Open/Closing date or period range."""
-    for pat in (RE_OPEN_CLOSING, RE_PERIOD_DASH):
-        m = pat.search(text)
-        if m:
-            y = int(m.group(3)) if pat.groups >= 3 else int(m.group(6))
-            if 1990 <= y <= 2030:
-                return y
+    """Get statement year from Open/Closing date or period range (prefer end year)."""
+    period = _extract_statement_period(text)
+    if period:
+        return period[3]  # end_year
     for m in re.finditer(r"\b(20\d{2})\b", text[:3000]):
         y = int(m.group(1))
         if 1990 <= y <= 2030:
@@ -55,15 +69,31 @@ def _extract_statement_year(text: str) -> int | None:
     return None
 
 
-def _normalize_date(mm_dd: str, year: int | None) -> str:
-    """Convert MM/DD to MM/DD/YYYY."""
-    if not year or not mm_dd or not mm_dd.strip():
+def _year_for_tx_month(tx_month: int, start_m: int, start_y: int, end_m: int, end_y: int) -> int:
+    """Return the year for a transaction month given statement period. Handles Dec-Jan straddle (e.g. 12/2025-1/2026 -> Jan=2026)."""
+    if end_m < start_m or (end_m != start_m and end_y > start_y):
+        # Period spans two years (e.g. Dec to Jan)
+        if tx_month <= end_m:
+            return end_y
+        return start_y
+    return end_y
+
+
+def _normalize_date(mm_dd: str, year: int | None, period: tuple[int, int, int, int] | None = None) -> str:
+    """Convert MM/DD to MM/DD/YYYY. If period is given (start_m, start_y, end_m, end_y), use it for straddling statements (e.g. Jan in Dec-Jan -> end_year)."""
+    if not mm_dd or not mm_dd.strip():
         return ""
     m = RE_MM_DD.match(mm_dd.strip())
     if not m:
         return ""
     mo, d = int(m.group(1)), int(m.group(2))
-    if 1 <= mo <= 12 and 1 <= d <= 31:
+    if not (1 <= mo <= 12 and 1 <= d <= 31):
+        return ""
+    if period:
+        start_m, start_y, end_m, end_y = period
+        y = _year_for_tx_month(mo, start_m, start_y, end_m, end_y)
+        return f"{mo:02d}/{d:02d}/{y}"
+    if year:
         return f"{mo:02d}/{d:02d}/{year}"
     return ""
 
@@ -75,6 +105,7 @@ def _parse_us_bank_cc_text(text: str) -> list[dict]:
     Transaction block: Post Date (MM/DD), Trans Date (MM/DD), Ref #, Description lines..., Amount ($X.XX).
     """
     lines = [ln.strip() for ln in text.split("\n")]
+    period = _extract_statement_period(text)
     year = _extract_statement_year(text)
     if not year:
         year = 2025  # fallback
@@ -159,7 +190,7 @@ def _parse_us_bank_cc_text(text: str) -> list[dict]:
                 desc_parts.insert(0, prev)
                 j -= 1
 
-            date_str = _normalize_date(trans_date or post_date, year)
+            date_str = _normalize_date(trans_date or post_date, year, period)
             description = " ".join(desc_parts).strip() if desc_parts else "Unknown"
             # Sign: credits section or refund/return description = positive
             description_lower = description.lower()
