@@ -225,6 +225,17 @@ def detect_bank_from_document(path: str) -> str | None:
         if "purchases and other charges" in text_sample or "credit card" in text_sample:
             return "Bank of America (Credit Card)" if "Bank of America (Credit Card)" in bank_keys else ("Bank of America (Bank)" if "Bank of America (Bank)" in bank_keys else None)
         return "Bank of America (Bank)" if "Bank of America (Bank)" in bank_keys else None
+    # US Bank: distinguish checking vs credit card by content
+    if "u.s. bank" in text_sample or "us bank" in text_sample or "usbank" in text_sample:
+        if "credit card" in text_sample or "purchases and other debits" in text_sample or "business altitude" in text_sample or "cardmember" in text_sample:
+            return "US Bank (Credit Card)" if "US Bank (Credit Card)" in bank_keys else None
+        if "checking" in text_sample or "business statement" in text_sample or "customer deposits" in text_sample:
+            return "US Bank (Bank)" if "US Bank (Bank)" in bank_keys else None
+        # Fallback: filename hints (e.g. "USB Business Credit Card" vs "USB Checking")
+        path_lower = path.lower()
+        if "credit card" in path_lower or " cc " in path_lower:
+            return "US Bank (Credit Card)" if "US Bank (Credit Card)" in bank_keys else None
+        return "US Bank (Bank)" if "US Bank (Bank)" in bank_keys else None
     return None
 
 def load_rules_from_disk(rules_path):
@@ -887,6 +898,114 @@ def parse_comerica_text(text: str, transaction_filter: str = "both") -> pd.DataF
     return _bofa_rows_to_dataframe(rows)
 
 
+def _get_us_bank_checking_parser():
+    try:
+        from vertex.features.vendor_match.us_bank.parse_us_bank_checking import parse_us_bank_checking_text
+        return parse_us_bank_checking_text
+    except ImportError:
+        pass
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        if _vm_dir not in sys.path:
+            sys.path.insert(0, _vm_dir)
+        from us_bank.parse_us_bank_checking import parse_us_bank_checking_text
+        return parse_us_bank_checking_text
+    except ImportError:
+        pass
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        _path = os.path.normpath(os.path.join(_vm_dir, "us_bank", "parse_us_bank_checking.py"))
+        if os.path.isfile(_path):
+            spec = importlib.util.spec_from_file_location("parse_us_bank_checking", _path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return getattr(mod, "parse_us_bank_checking_text", None)
+    except Exception:
+        pass
+    return None
+
+
+def _get_us_bank_cc_parser():
+    try:
+        from vertex.features.vendor_match.us_bank.parse_us_bank_cc import parse_us_bank_cc_text
+        return parse_us_bank_cc_text
+    except ImportError:
+        pass
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        if _vm_dir not in sys.path:
+            sys.path.insert(0, _vm_dir)
+        from us_bank.parse_us_bank_cc import parse_us_bank_cc_text
+        return parse_us_bank_cc_text
+    except ImportError:
+        pass
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        _path = os.path.normpath(os.path.join(_vm_dir, "us_bank", "parse_us_bank_cc.py"))
+        if os.path.isfile(_path):
+            spec = importlib.util.spec_from_file_location("parse_us_bank_cc", _path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return getattr(mod, "parse_us_bank_cc_text", None)
+    except Exception:
+        pass
+    return None
+
+
+def parse_us_bank_checking_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse US Bank checking/business statement PDF. transaction_filter: debits, credits, or both."""
+    text = extract_text_from_pdf(pdf_path)
+    parser = _get_us_bank_checking_parser()
+    if parser is None:
+        raise ValueError("US Bank (Bank) parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_us_bank_checking_text(text: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse US Bank checking/business statement pasted text. transaction_filter: debits, credits, or both."""
+    parser = _get_us_bank_checking_parser()
+    if parser is None:
+        raise ValueError("US Bank (Bank) parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_us_bank_cc_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse US Bank credit card statement PDF. transaction_filter: debits, credits, or both."""
+    text = extract_text_from_pdf(pdf_path)
+    parser = _get_us_bank_cc_parser()
+    if parser is None:
+        raise ValueError("US Bank (Credit Card) parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_us_bank_cc_text(text: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse US Bank credit card statement pasted text. transaction_filter: debits, credits, or both."""
+    parser = _get_us_bank_cc_parser()
+    if parser is None:
+        raise ValueError("US Bank (Credit Card) parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
 # Bank parser registry for PDF files
 BANK_PARSERS_PDF = {
     "Bank of America (Bank)": parse_bank_of_america_bank_pdf,
@@ -894,6 +1013,8 @@ BANK_PARSERS_PDF = {
     "Citi": parse_citi_pdf,
     "Fremont Bank": parse_fremont_pdf,
     "Comerica": parse_comerica_pdf,
+    "US Bank (Bank)": parse_us_bank_checking_pdf,
+    "US Bank (Credit Card)": parse_us_bank_cc_pdf,
 }
 
 # Bank parser registry for pasted text
@@ -903,6 +1024,8 @@ BANK_PARSERS_TEXT = {
     "Citi": parse_citi_text,
     "Fremont Bank": parse_fremont_text,
     "Comerica": parse_comerica_text,
+    "US Bank (Bank)": parse_us_bank_checking_text,
+    "US Bank (Credit Card)": parse_us_bank_cc_text,
 }
 
 # Combined registry for UI (shows same banks for both PDF and text)
@@ -915,7 +1038,7 @@ def load_table(path: str = None, bank_parser: str = None, pasted_text: str = Non
     transaction_filter: "debits", "credits", or "both" (used for Bank of America parsers only).
     """
     boa_parsers = ("Bank of America (Bank)", "Bank of America (Credit Card)")
-    parsers_with_filter = ("Bank of America (Bank)", "Bank of America (Credit Card)", "Citi", "Fremont Bank", "Comerica")
+    parsers_with_filter = ("Bank of America (Bank)", "Bank of America (Credit Card)", "Citi", "Fremont Bank", "Comerica", "US Bank (Bank)", "US Bank (Credit Card)")
     if pasted_text:
         if not bank_parser or bank_parser not in BANK_PARSERS_TEXT:
             raise ValueError(f"Bank parser required for pasted text. Available: {', '.join(BANK_PARSERS_TEXT.keys())}")

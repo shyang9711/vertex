@@ -56,6 +56,9 @@ jobs:
           --add-data "features/vendor_match/fremont/__init__.py;features/vendor_match/fremont"
           --add-data "features/vendor_match/comerica/parse_comerica_checking.py;features/vendor_match/comerica"
           --add-data "features/vendor_match/comerica/__init__.py;features/vendor_match/comerica"
+          --add-data "features/vendor_match/us_bank/parse_us_bank_checking.py;features/vendor_match/us_bank"
+          --add-data "features/vendor_match/us_bank/parse_us_bank_cc.py;features/vendor_match/us_bank"
+          --add-data "features/vendor_match/us_bank/__init__.py;features/vendor_match/us_bank"
           --add-data "features/vendor_match/__init__.py;features/vendor_match"
           --name vertex
           client_manager.py
