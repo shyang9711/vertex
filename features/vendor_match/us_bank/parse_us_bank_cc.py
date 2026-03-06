@@ -146,8 +146,13 @@ def _parse_us_bank_cc_text(text: str) -> list[dict]:
         if prev_non_empty and "total fees this period" in prev_non_empty.lower():
             i += 1
             continue
-        amt_m = RE_AMOUNT_LINE.match(line.replace("$", "").replace(",", ""))
+        # Amount line may end with " CR" (credit) — strip for matching
+        line_clean = line.replace("$", "").replace(",", "").strip()
+        if line_clean.upper().endswith(" CR"):
+            line_clean = line_clean[:-3].strip()
+        amt_m = RE_AMOUNT_LINE.match(line_clean) if line_clean else None
         current_section = _section_at(i)
+        amount_line_has_cr = " CR" in line.upper() or line.strip().upper().endswith("CR")
         if amt_m and current_section:
             try:
                 amount = float(amt_m.group(1).replace(",", ""))
@@ -192,12 +197,19 @@ def _parse_us_bank_cc_text(text: str) -> list[dict]:
 
             date_str = _normalize_date(trans_date or post_date, year, period)
             description = " ".join(desc_parts).strip() if desc_parts else "Unknown"
-            # Sign: credits section or refund/return description = positive
+            # Sign: deposit (positive) = Payments and Other Credits section, or description has CR / return / refund / payment thank you
             description_lower = description.lower()
-            if current_section == "credits" or "return" in description_lower or "refund" in description_lower:
-                amount_signed = abs(amount)
-            else:
-                amount_signed = -abs(amount)
+            is_credit = (
+                current_section == "credits"
+                or amount_line_has_cr
+                or "return" in description_lower
+                or "refund" in description_lower
+                or " cr " in description_lower
+                or description_lower.endswith(" cr")
+                or ("payment" in description_lower and "thank you" in description_lower)
+                or "mobile payment" in description_lower
+            )
+            amount_signed = abs(amount) if is_credit else -abs(amount)
             # Skip junk: need valid date; skip totals and interest table lines
             if not date_str:
                 i += 1

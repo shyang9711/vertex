@@ -2099,8 +2099,8 @@ class App:
                             norm = normalize_text(raw_desc)
                             vendors_out.append(find_best_vendor(norm, vendor_entries))
                     accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-                    # For US Bank Credit Card, Ref # is not a check number — leave Check Number column blank
-                    check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+                    # For US Bank (Bank and Credit Card), Ref # is not a check number — leave Check Number column blank
+                    check_col = None if self.selected_bank in ("US Bank (Bank)", "US Bank (Credit Card)") else ("Reference Number" if "Reference Number" in tx_df.columns else None)
                     out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
                     last_month, last_year = get_last_transaction_month_year(tx_df)
                     if last_month is None or last_year is None:
@@ -2163,7 +2163,7 @@ class App:
                     vendors_out.append(find_best_vendor(norm, vendor_entries))
 
             accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-            check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+            check_col = None if self.selected_bank in ("US Bank (Bank)", "US Bank (Credit Card)") else ("Reference Number" if "Reference Number" in tx_df.columns else None)
             out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
 
             last_month, last_year = get_last_transaction_month_year(tx_df)
