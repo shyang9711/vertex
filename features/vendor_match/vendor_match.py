@@ -1207,7 +1207,7 @@ class App:
         self.account_map = {}
         self.selected_bank = None  # For PDF parsing
         self.pasted_text = None  # For pasted transactions
-        self.transaction_filter = StringVar(value="debits")  # debits | credits
+        self.transaction_filter = StringVar(value="debits")  # debits | credits | both
 
         self.tx_label_var = StringVar(value="No transactions file selected")
         self.vendor_label_var = StringVar(value="No vendor file selected")
@@ -1242,7 +1242,8 @@ class App:
         f_filter = Frame(root, bg=BG_MAIN)
         f_filter.grid(row=3, column=0, columnspan=2, padx=10, pady=(0,10), sticky="w")
         Radiobutton(f_filter, text="Withdrawals", variable=self.transaction_filter, value="debits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left", padx=(0,16))
-        Radiobutton(f_filter, text="Deposits", variable=self.transaction_filter, value="credits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left")
+        Radiobutton(f_filter, text="Deposits", variable=self.transaction_filter, value="credits", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left", padx=(0,16))
+        Radiobutton(f_filter, text="Both", variable=self.transaction_filter, value="both", font=FONT_UI, fg=FG_PRIMARY, bg=BG_MAIN, selectcolor=BG_CARD, activebackground=BG_MAIN).pack(side="left")
 
         # Vendor & company section
         Label(root, text="Vendor list", font=FONT_HEAD, fg=FG_PRIMARY, bg=BG_MAIN).grid(row=4, column=0, padx=10, pady=(8,4), sticky="w")
@@ -2067,6 +2068,85 @@ class App:
                     return
             except Exception as e:
                 messagebox.showerror("Error", f"Loading vendor list: {e}")
+                return
+
+            # "Both": run withdrawals first, then deposits; save two files (withdrawals then deposits) separately
+            if transaction_filter == "both":
+                out_dir = filedialog.askdirectory(title="Select folder to save Withdrawal and Deposit files")
+                if not out_dir:
+                    return
+                saved = []
+                load_filter = "both"
+
+                def _run_both_for_one(tx_df, path_for_name: str):
+                    nonlocal saved
+                    amount_col = detect_amount_column(tx_df)
+                    desc_col = detect_description_column(tx_df)
+                    if not amount_col:
+                        return
+                    amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce")
+                    debits_df = tx_df.loc[amt_series < 0].copy()
+                    credits_df = tx_df.loc[amt_series > 0].copy()
+                    last_month, last_year = get_last_transaction_month_year(tx_df)
+                    if last_month is None or last_year is None:
+                        last_month, last_year = get_statement_month_year_from_path(path_for_name)
+                    check_col = None if self.selected_bank in ("US Bank (Bank)", "US Bank (Credit Card)") else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+                    for df, filt in [(debits_df, "debits"), (credits_df, "credits")]:
+                        if df.empty:
+                            continue
+                        vendors_out = []
+                        for raw_desc in df[desc_col].fillna("").astype(str):
+                            manual = self._apply_manual_rules(raw_desc)
+                            vendors_out.append(manual if manual else find_best_vendor(normalize_text(raw_desc), vendor_entries))
+                        accounts = [self.account_map.get((v, filt), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
+                        out_df = build_output_dataframe(df, vendors_out, accounts, amount_col, check_col, filt)
+                        base_name = default_output_filename(self.current_company, month=last_month, year=last_year, transaction_filter=filt)
+                        out_path = os.path.join(out_dir, base_name)
+                        stem, ext = os.path.splitext(base_name)
+                        n = 2
+                        while os.path.exists(out_path):
+                            out_path = os.path.join(out_dir, f"{stem} ({n}){ext}")
+                            n += 1
+                        out_df.to_excel(out_path, index=False, engine="openpyxl")
+                        saved.append(out_path)
+
+                if self.tx_paths and len(self.tx_paths) > 1:
+                    for i, path in enumerate(self.tx_paths):
+                        self.status_var.set(f"Processing {i+1}/{len(self.tx_paths)}: {os.path.basename(path)}")
+                        self.root.update_idletasks()
+                        ext = os.path.splitext(path)[1].lower()
+                        try:
+                            if ext == ".pdf":
+                                tx_df = load_table(path, bank_parser=self.selected_bank, transaction_filter=load_filter)
+                            else:
+                                tx_df = load_table(path)
+                            _run_both_for_one(tx_df, path)
+                        except Exception as e:
+                            messagebox.showwarning("Skip", f"Skipped {os.path.basename(path)}:\n{e}")
+                    n_saved = len(saved)
+                    self.status_var.set(f"Saved {n_saved} file(s).")
+                    messagebox.showinfo("Done", f"Saved {n_saved} file(s) (withdrawals first, then deposits).")
+                    return
+                # Single file or paste
+                if self.pasted_text:
+                    if not self.selected_bank:
+                        messagebox.showerror("Missing Bank", "Please select a bank format for pasted text.")
+                        return
+                    tx_df = load_table(pasted_text=self.pasted_text, bank_parser=self.selected_bank, transaction_filter=load_filter)
+                else:
+                    path = self.tx_paths[0]
+                    ext = os.path.splitext(path)[1].lower()
+                    if ext == ".pdf":
+                        if not self.selected_bank:
+                            messagebox.showerror("Missing Bank", "Please select a bank format for PDF parsing.")
+                            return
+                        tx_df = load_table(path, bank_parser=self.selected_bank, transaction_filter=load_filter)
+                    else:
+                        tx_df = load_table(path)
+                _run_both_for_one(tx_df, self.tx_paths[0] if self.tx_paths else "")
+                n_saved = len(saved)
+                self.status_var.set(f"Saved {n_saved} file(s).")
+                messagebox.showinfo("Done", f"Saved {n_saved} file(s) (withdrawals first, then deposits).")
                 return
 
             # Multiple files: ask output folder, process each, save with default names
