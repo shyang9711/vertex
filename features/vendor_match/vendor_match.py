@@ -2083,8 +2083,14 @@ class App:
                     amount_col = detect_amount_column(tx_df)
                     desc_col = detect_description_column(tx_df)
                     if not amount_col:
+                        messagebox.showerror("Both", "No Amount column found. Cannot split withdrawals and deposits. Use a bank statement (e.g. PDF) that has an Amount column.")
                         return
-                    amt_series = pd.to_numeric(tx_df[amount_col], errors="coerce")
+                    # Robust numeric: handle string amounts like "$1,234.56" or "-1,234.56"
+                    amt_raw = tx_df[amount_col]
+                    if amt_raw.dtype == object or amt_raw.dtype.kind in ("s", "U"):
+                        amt_series = pd.to_numeric(amt_raw.astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False), errors="coerce")
+                    else:
+                        amt_series = pd.to_numeric(amt_raw, errors="coerce")
                     debits_df = tx_df.loc[amt_series < 0].copy()
                     credits_df = tx_df.loc[amt_series > 0].copy()
                     last_month, last_year = get_last_transaction_month_year(tx_df)
@@ -2109,6 +2115,8 @@ class App:
                             n += 1
                         out_df.to_excel(out_path, index=False, engine="openpyxl")
                         saved.append(out_path)
+                    if not saved:
+                        messagebox.showwarning("Both", "No transactions were saved. The file may have no Amount column, or all amounts may be zero or non-numeric. For PDFs, use the bank statement (not the withdrawal/deposit export).")
 
                 if self.tx_paths and len(self.tx_paths) > 1:
                     for i, path in enumerate(self.tx_paths):
