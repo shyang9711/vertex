@@ -30,351 +30,548 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 # Statement period: "Statement Period: Jan 7, 2025 through Jan 31, 2025" or "Feb 3, 2025 through Feb 28, 2025"
 RE_STATEMENT_PERIOD = re.compile(
-    r"(?:Statement\s+Period:\s*)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})\s+through\s+",
+    r"(?:Statement\s+Period:\s*)?"
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})\s+through\s+",
     re.I
 )
-RE_MONTH_DAY = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s*$", re.I)
-# Transaction line start: "Feb 14 Wire Credit..." or "Feb 18 Debit Purchase..."
-RE_TX_START = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(.+)$", re.I)
-RE_AMOUNT = re.compile(r"^\s*\$?([\d,]+)\.(\d{2})\s*(-)?\s*$")  # optional minus suffix for withdrawal
-RE_AMOUNT_LEADING_MINUS = re.compile(r"^\s*-\s*\$?([\d,]+)\.(\d{2})\s*$")  # leading minus e.g. -2,700.00
-RE_REF = re.compile(r"^\d{4,}\s*$")
-RE_REF_IN_DESC = re.compile(r"REF\s*#?\s*(\d+)", re.I)
+
+RE_MONTH_DAY = re.compile(
+    r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s*$",
+    re.I
+)
+
+RE_MONTH_DAY_WITH_REST = re.compile(
+    r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(.+)$",
+    re.I
+)
+
+RE_AMOUNT = re.compile(r"^\s*\$?\s*([\d,]+)\.(\d{2})\s*(-)?\s*$")
+RE_REF = re.compile(r"^\d{4,}\*?\s*$")
+RE_ALNUM_REF = re.compile(r"^[A-Z0-9]{8,}\*?\s*$", re.I)
+RE_REF_IN_DESC = re.compile(r"REF[=#]?\s*([A-Z0-9]+)", re.I)
 
 
 def _extract_statement_year(text: str) -> int | None:
-    """Get statement year from Statement Period (use end date)."""
     m = RE_STATEMENT_PERIOD.search(text)
     if m:
         y = int(m.group(3))
-        if 1990 <= y <= 2030:
+        if 1990 <= y <= 2035:
             return y
-    for m in re.finditer(r"\b(20\d{2})\b", text[:2000]):
+    for m in re.finditer(r"\b(20\d{2})\b", text[:3000]):
         y = int(m.group(1))
-        if 1990 <= y <= 2030:
+        if 1990 <= y <= 2035:
             return y
     return None
 
 
-def _normalize_date(month_abbrev: str, day: str, year: int) -> str:
-    """Return MM/DD/YYYY."""
+def _normalize_date(month_abbrev: str, day: str | int, year: int) -> str:
     mo = MONTH_NUM.get(month_abbrev.capitalize()[:3])
     if mo is None:
         return ""
     try:
         d = int(day)
-        if 1 <= d <= 31 and 1990 <= year <= 2030:
+        if 1 <= d <= 31 and 1990 <= year <= 2035:
             return f"{mo:02d}/{d:02d}/{year}"
     except ValueError:
         pass
     return ""
 
 
-def _parse_layout2_other_deposits_withdrawals(lines: list, year: int) -> list[dict]:
+def _parse_amount_line(line: str) -> float | None:
+    s = (line or "").strip()
+    if not s:
+        return None
+    m = RE_AMOUNT.match(s)
+    if not m:
+        return None
+    val = float(m.group(1).replace(",", "") + "." + m.group(2))
+    return -val if m.group(3) == "-" else val
+
+
+def _is_month_only(line: str) -> bool:
+    s = (line or "").strip().capitalize()[:3]
+    return s in MONTH_NUM
+
+
+def _get_date_start(lines: list[str], i: int):
     """
-    Parse "Other Deposits", "Card Withdrawals", "Other Withdrawals" layout.
-    Transaction: line starting with "Mon DD Description...", then continuation lines, then amount ($X.XX or X.XX-).
+    Returns (month_abbrev, day, rest, next_index) or None.
+    Supports:
+      - 'Sep 10 Real Time Payment Credit'
+      - 'Sep 10'
+      - 'Sep' / '10' / next line...
     """
-    rows = []
+    if i >= len(lines):
+        return None
+
+    s = (lines[i] or "").strip()
+    if not s:
+        return None
+
+    m = RE_MONTH_DAY_WITH_REST.match(s)
+    if m:
+        return m.group(1).capitalize()[:3], m.group(2), m.group(3).strip(), i + 1
+
+    m = RE_MONTH_DAY.match(s)
+    if m:
+        return m.group(1).capitalize()[:3], m.group(2), "", i + 1
+
+    if _is_month_only(s) and i + 1 < len(lines) and (lines[i + 1] or "").strip().isdigit():
+        return s.capitalize()[:3], lines[i + 1].strip(), "", i + 2
+
+    return None
+
+
+def _is_header_noise(line: str) -> bool:
+    low = (line or "").strip().lower()
+    if not low:
+        return True
+
+    header_starts = (
+        "business statement",
+        "gold business checking",
+        "(continued)",
+        "u.s. bank national association",
+        "account number",
+        "statement period",
+        "page ",
+        "flucco",
+        "dba ",
+        "15206 ",
+        "date",
+        "description of transaction",
+        "ref number",
+        "amount",
+        "check",
+        "payee",
+        "ending balance",
+        "to contact u.s. bank",
+        "reserve line",
+        "balance summary",
+        "analysis service charge detail",
+        "conventional checks paid",
+        "electronic checks paid",
+        "total checks paid",
+        "total other deposits",
+        "total other withdrawals",
+        "* gap in check sequence",
+    )
+    return any(low.startswith(x) for x in header_starts)
+
+
+def _parse_summary_counts(lines: list[str]) -> dict[str, int]:
+    """
+    Reads the opening summary block:
+      Customer Deposits / 1
+      Other Deposits / 65
+      Other Withdrawals / 18
+      Checks Paid / 89
+    """
+    counts = {
+        "customer_deposits": 0,
+        "other_deposits": 0,
+        "other_withdrawals": 0,
+        "checks_paid": 0,
+    }
+
+    mapping = {
+        "customer deposits": "customer_deposits",
+        "other deposits": "other_deposits",
+        "other withdrawals": "other_withdrawals",
+        "checks paid": "checks_paid",
+    }
+
+    for i, line in enumerate(lines[:60]):
+        low = (line or "").strip().lower()
+        if low in mapping:
+            for j in range(i + 1, min(i + 4, len(lines))):
+                nxt = (lines[j] or "").strip()
+                if nxt.isdigit():
+                    counts[mapping[low]] = int(nxt)
+                    break
+    return counts
+
+
+def _parse_customer_deposits(lines: list[str], year: int, expected_count: int) -> list[dict]:
+    """
+    Parse the detailed customer deposits at the start of the statement.
+    Example:
+      Sep 2
+      8316110051
+      5,727.00
+    """
+    out = []
     i = 0
-    current_section = None  # "other_deposits" | "card_withdrawals" | "other_withdrawals"
-    while i < len(lines):
-        line = lines[i]
-        lower = (line or "").lower()
-        if "other deposits" in lower and "withdrawal" not in lower:
-            current_section = "other_deposits"
-            i += 1
-            continue
-        if "card withdrawals" in lower:
-            current_section = "card_withdrawals"
-            i += 1
-            continue
-        if "other withdrawals" in lower:
-            current_section = "other_withdrawals"
-            i += 1
-            continue
-        if not line.strip():
+
+    while i < len(lines) and len(out) < expected_count:
+        ds = _get_date_start(lines, i)
+        if not ds:
             i += 1
             continue
 
-        # Transaction start: "Feb 14 Wire Credit REF019296" or "Feb 18 Debit Purchase - VISA"
-        tx_start = RE_TX_START.match(line.strip())
-        if tx_start and current_section:
-            month_abbrev, day, rest = tx_start.groups()
-            desc_parts = [rest.strip()]
-            j = i + 1
-            amount_val = None
-            is_negative = False
-            # Try amount at end of first line (e.g. "Sep 15 Wire Credit 3,880.23" or "Sep 15 Debit 2,700.00-")
-            rest_clean = rest.replace(",", "")
-            for amt_re in (RE_AMOUNT, RE_AMOUNT_LEADING_MINUS):
-                amt_m = amt_re.search(" " + rest_clean)
-                if amt_m:
-                    try:
-                        amount_val = float(amt_m.group(1).replace(",", "") + "." + amt_m.group(2))
-                        is_negative = amt_re is RE_AMOUNT_LEADING_MINUS or (amt_re is RE_AMOUNT and (amt_m.lastindex >= 3 and amt_m.group(3) == "-"))
-                        break
-                    except (ValueError, IndexError):
-                        pass
-            while j < len(lines) and j < i + 25:
-                nxt = lines[j].strip()
-                if not nxt:
-                    j += 1
-                    continue
-                # Amount: "85,000.00" or "83.74-" or "-2,700.00" or after a lone "$"
-                nxt_clean = nxt.replace(",", "")
-                amt_m = RE_AMOUNT.match(nxt_clean)
-                if not amt_m:
-                    amt_m = RE_AMOUNT_LEADING_MINUS.match(nxt_clean)
-                    if amt_m:
-                        amount_val = float(amt_m.group(1).replace(",", "") + "." + amt_m.group(2))
-                        is_negative = True
-                        j += 1
-                        break
-                if nxt == "$":
-                    j += 1
-                    if j < len(lines):
-                        amt_m = RE_AMOUNT.match(lines[j].strip())
-                        if amt_m:
-                            amount_val = float(amt_m.group(1).replace(",", "") + "." + amt_m.group(2))
-                            is_negative = amt_m.group(3) == "-"
-                            j += 1
-                    break
-                if amt_m:
-                    amount_val = float(amt_m.group(1).replace(",", "") + "." + amt_m.group(2))
-                    is_negative = amt_m.group(3) == "-"
-                    j += 1
-                    break
-                # Next transaction start?
-                if RE_TX_START.match(nxt):
-                    break
-                if "Number of Days" in nxt or "To Contact" in nxt:
-                    break
-                desc_parts.append(nxt)
+        month_abbrev, day, rest, j = ds
+        ref_num = ""
+        amount_val = None
+
+        if rest and RE_ALNUM_REF.match(rest):
+            ref_num = rest.rstrip("*")
+
+        while j < len(lines) and j < i + 6:
+            nxt = (lines[j] or "").strip()
+            if not nxt:
                 j += 1
+                continue
 
-            if amount_val is not None and amount_val != 0:
-                abs_val = abs(amount_val)
-                date_str = _normalize_date(month_abbrev, day, year)
-                description = " ".join(desc_parts).strip()
-                ref_num = ""
-                ref_m = RE_REF_IN_DESC.search(description)
-                if ref_m:
-                    ref_num = ref_m.group(1)
-                # Infer sign from section or description (Wire Credit / Deposit = positive; Debit = negative)
-                desc_upper = description.upper()
-                if amount_val < 0:
-                    amt_signed = -abs_val
-                elif current_section == "other_deposits" or "WIRE CREDIT" in desc_upper or "ELECTRONIC DEPOSIT" in desc_upper or (desc_upper.startswith("DEPOSIT") and "DEBIT" not in desc_upper) or " RET " in desc_upper or " RETURN" in desc_upper or " REFUND" in desc_upper:
-                    amt_signed = abs_val
-                else:
-                    amt_signed = -abs_val if is_negative else abs_val
-                rows.append({
-                    "date": date_str,
-                    "description": description,
-                    "amount": amt_signed,
-                    "reference_number": ref_num
-                })
+            amt = _parse_amount_line(nxt)
+            if amt is not None:
+                amount_val = abs(amt)
+                j += 1
+                break
+
+            if nxt == "$" and j + 1 < len(lines):
+                amt = _parse_amount_line(lines[j + 1])
+                if amt is not None:
+                    amount_val = abs(amt)
+                    j += 2
+                    break
+
+            if not ref_num and RE_ALNUM_REF.match(nxt):
+                ref_num = nxt.rstrip("*")
+                j += 1
+                continue
+
+            if _get_date_start(lines, j):
+                break
+
+            j += 1
+
+        if amount_val is not None:
+            out.append({
+                "date": _normalize_date(month_abbrev, day, year),
+                "description": f"Deposit {ref_num}" if ref_num else "Customer Deposit",
+                "amount": amount_val,
+                "reference_number": ref_num
+            })
             i = j
             continue
-        i += 1
-    return rows
 
-
-def _parse_customer_deposits(lines: list, year: int) -> list[dict]:
-    """Parse Customer Deposits section: Date line, optional Ref line, Amount line. Returns list of deposit dicts."""
-    out = []
-    in_deposits = False
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        lower = (line or "").lower()
-        if "customer deposits" in lower:
-            in_deposits = True
-            i += 1
-            continue
-        if "withdrawal" in lower and "total" not in lower:
-            in_deposits = False
-            i += 1
-            continue
-        if not line or not in_deposits:
-            i += 1
-            continue
-        date_m = RE_MONTH_DAY.match(line)
-        if date_m:
-            month_abbrev, day = date_m.groups()
-            j = i + 1
-            ref_num = ""
-            amount_val = None
-            while j < len(lines) and j < i + 6:
-                nxt = lines[j].strip()
-                if not nxt:
-                    j += 1
-                    continue
-                if RE_REF.match(nxt) and not ref_num:
-                    ref_num = nxt
-                    j += 1
-                    continue
-                amt = RE_AMOUNT.match(nxt.replace(",", ""))
-                if not amt:
-                    amt = RE_AMOUNT_LEADING_MINUS.match(nxt.replace(",", ""))
-                if amt and not amount_val:
-                    try:
-                        amount_val = float(amt.group(1).replace(",", "") + "." + amt.group(2))
-                        if amount_val > 0 and amount_val < 1e9:
-                            date_str = _normalize_date(month_abbrev, day, year)
-                            out.append({
-                                "date": date_str,
-                                "description": f"Deposit {ref_num}" if ref_num else "Customer Deposit",
-                                "amount": amount_val,
-                                "reference_number": ref_num
-                            })
-                            i = j
-                            break
-                    except (ValueError, IndexError):
-                        pass
-                if RE_MONTH_DAY.match(nxt) and nxt != line:
-                    break
-                j += 1
         i += 1
+
     return out
 
 
-def _parse_checks_sections(lines: list, year: int) -> list[dict]:
+def _parse_other_deposits(lines: list[str], year: int, expected_count: int) -> list[dict]:
+    out = []
+    i = 0
+
+    while i < len(lines) and len(out) < expected_count:
+        ds = _get_date_start(lines, i)
+        if not ds:
+            i += 1
+            continue
+
+        month_abbrev, day, rest, j = ds
+        desc_parts = [rest] if rest else []
+        amount_val = None
+
+        while j < len(lines) and j < i + 20:
+            nxt = (lines[j] or "").strip()
+            if not nxt:
+                j += 1
+                continue
+
+            if _get_date_start(lines, j):
+                break
+
+            if nxt == "$" and j + 1 < len(lines):
+                amt = _parse_amount_line(lines[j + 1])
+                if amt is not None:
+                    amount_val = abs(amt)
+                    j += 2
+                    break
+
+            amt = _parse_amount_line(nxt)
+            if amt is not None:
+                amount_val = abs(amt)
+                j += 1
+                break
+
+            if not _is_header_noise(nxt):
+                desc_parts.append(nxt)
+
+            j += 1
+
+        if amount_val is not None:
+            description = " ".join(x for x in desc_parts if x).strip()
+            ref_num = ""
+            m = RE_REF_IN_DESC.search(description)
+            if m:
+                ref_num = m.group(1)
+
+            out.append({
+                "date": _normalize_date(month_abbrev, day, year),
+                "description": description,
+                "amount": amount_val,
+                "reference_number": ref_num
+            })
+            i = j
+            continue
+
+        i += 1
+
+    return out
+
+
+def _parse_other_withdrawals(lines: list[str], year: int, expected_count: int) -> list[dict]:
+    out = []
+    i = 0
+
+    while i < len(lines) and len(out) < expected_count:
+        ds = _get_date_start(lines, i)
+        if not ds:
+            i += 1
+            continue
+
+        month_abbrev, day, rest, j = ds
+        desc_parts = [rest] if rest else []
+        amount_val = None
+
+        while j < len(lines) and j < i + 20:
+            nxt = (lines[j] or "").strip()
+            if not nxt:
+                j += 1
+                continue
+
+            if _get_date_start(lines, j):
+                break
+
+            if nxt == "$" and j + 1 < len(lines):
+                amt = _parse_amount_line(lines[j + 1])
+                if amt is not None:
+                    amount_val = -abs(amt)
+                    j += 2
+                    break
+
+            amt = _parse_amount_line(nxt)
+            if amt is not None:
+                amount_val = -abs(amt)
+                j += 1
+                break
+
+            if not _is_header_noise(nxt):
+                desc_parts.append(nxt)
+
+            j += 1
+
+        if amount_val is not None:
+            description = " ".join(x for x in desc_parts if x).strip()
+            ref_num = ""
+            m = RE_REF_IN_DESC.search(description)
+            if m:
+                ref_num = m.group(1)
+
+            out.append({
+                "date": _normalize_date(month_abbrev, day, year),
+                "description": description,
+                "amount": amount_val,
+                "reference_number": ref_num
+            })
+            i = j
+            continue
+
+        i += 1
+
+    return out
+
+
+def _parse_checks_sections(lines: list[str], year: int) -> list[dict]:
     """
-    Parse "Checks Presented Conventionally" and "Checks Presented Electronically" sections.
-    Each line typically has check info and payee then amount. Include payee in description for vendor matching.
+    Parses both:
+      1) Checks Presented Conventionally
+         12383
+         Sep 2
+         8316639870
+         1,715.55
+
+      2) Checks Presented Electronically
+         12418
+         Sep 10
+         500.78 CHECKPAYMT
+         AUDI FINCL, INC.
     """
     rows = []
-    current_section = None
     i = 0
+    mode = None
+
     while i < len(lines):
-        line = lines[i]
-        lower = (line or "").lower()
-        if "checks presented conventionally" in lower:
-            current_section = "conventional"
+        low = (lines[i] or "").strip().lower()
+
+        if "checks presented conventionally" in low:
+            mode = "conventional"
             i += 1
             continue
-        if "checks presented electronically" in lower:
-            current_section = "electronic"
+
+        if "checks presented electronically" in low:
+            mode = "electronic"
             i += 1
             continue
-        if "other deposits" in lower or "card withdrawals" in lower or "other withdrawals" in lower:
-            current_section = None
+
+        if "balance summary" in low:
+            mode = None
             i += 1
             continue
-        if not line.strip() or not current_section:
+
+        if not mode:
             i += 1
             continue
-        stripped = line.strip().replace(",", "")
-        amt_m = RE_AMOUNT.search(" " + stripped) or RE_AMOUNT_LEADING_MINUS.search(" " + stripped)
-        if amt_m:
-            try:
-                amount_val = float(amt_m.group(1).replace(",", "") + "." + amt_m.group(2))
-                if amount_val > 0 and amount_val < 1e9:
-                    line_strip = line.strip()
-                    tx_start = RE_TX_START.match(line_strip)
-                    if tx_start:
-                        month_abbrev, day, rest = tx_start.groups()
-                        date_str = _normalize_date(month_abbrev, day, year)
-                        rest_clean = rest.replace(",", "")
-                        am2 = RE_AMOUNT.search(" " + rest_clean) or RE_AMOUNT_LEADING_MINUS.search(" " + rest_clean)
-                        description = (rest_clean[:am2.start()].strip() if am2 else rest.strip()).replace("  ", " ")
-                    else:
-                        date_str = ""
-                        end_amt = re.search(r"[\d,]+\.\d{2}\s*-?\s*$", line_strip)
-                        description = line_strip[:end_amt.start()].strip() if end_amt else line_strip
-                    rows.append({
-                        "date": date_str,
-                        "description": description or f"Check {current_section}",
-                        "amount": -amount_val,
-                        "reference_number": ""
-                    })
-            except (ValueError, IndexError, AttributeError):
-                pass
+
+        s = (lines[i] or "").strip()
+        if not RE_REF.match(s):
+            i += 1
+            continue
+
+        check_no = s.rstrip("*")
+        ds = _get_date_start(lines, i + 1)
+        if not ds:
+            i += 1
+            continue
+
+        month_abbrev, day, rest, j = ds
+
+        if mode == "conventional":
+            ref_num = ""
+            amount_val = None
+
+            if rest and RE_ALNUM_REF.match(rest):
+                ref_num = rest.rstrip("*")
+
+            while j < len(lines) and j < i + 6:
+                nxt = (lines[j] or "").strip()
+                if not nxt:
+                    j += 1
+                    continue
+
+                amt = _parse_amount_line(nxt)
+                if amt is not None:
+                    amount_val = -abs(amt)
+                    j += 1
+                    break
+
+                if nxt == "$" and j + 1 < len(lines):
+                    amt = _parse_amount_line(lines[j + 1])
+                    if amt is not None:
+                        amount_val = -abs(amt)
+                        j += 2
+                        break
+
+                if not ref_num and RE_ALNUM_REF.match(nxt):
+                    ref_num = nxt.rstrip("*")
+                    j += 1
+                    continue
+
+                if RE_REF.match(nxt) or _get_date_start(lines, j):
+                    break
+
+                j += 1
+
+            if amount_val is not None:
+                rows.append({
+                    "date": _normalize_date(month_abbrev, day, year),
+                    "description": f"Check {check_no}",
+                    "amount": amount_val,
+                    "reference_number": ref_num or check_no
+                })
+                i = j
+                continue
+
+        elif mode == "electronic":
+            amount_val = None
+            desc_parts = []
+
+            while j < len(lines) and j < i + 6:
+                nxt = (lines[j] or "").strip()
+                if not nxt:
+                    j += 1
+                    continue
+
+                if RE_REF.match(nxt) or _get_date_start(lines, j) or "balance summary" in nxt.lower():
+                    break
+
+                m = re.match(r"^\s*([\d,]+\.\d{2})\s*(.*)$", nxt)
+                if m and amount_val is None:
+                    amount_val = -abs(float(m.group(1).replace(",", "")))
+                    if m.group(2).strip():
+                        desc_parts.append(m.group(2).strip())
+                    j += 1
+                    continue
+
+                amt = _parse_amount_line(nxt)
+                if amt is not None and amount_val is None:
+                    amount_val = -abs(amt)
+                    j += 1
+                    continue
+
+                desc_parts.append(nxt)
+                j += 1
+
+            if amount_val is not None:
+                rows.append({
+                    "date": _normalize_date(month_abbrev, day, year),
+                    "description": " ".join(desc_parts).strip() or f"Electronic Check {check_no}",
+                    "amount": amount_val,
+                    "reference_number": check_no
+                })
+                i = j
+                continue
+
         i += 1
+
     return rows
 
 
 def _parse_us_bank_checking_text(text: str) -> list[dict]:
-    """
-    Parse US Bank checking statement text.
-    Layout 2 (Other Deposits / Card Withdrawals / Other Withdrawals) first, then Layout 1 (Customer Deposits) always merged.
-    """
     lines = [ln.strip() for ln in text.split("\n")]
-    year = _extract_statement_year(text)
-    if not year:
-        year = datetime.now().year
+    year = _extract_statement_year(text) or datetime.now().year
+
+    # Start at the detailed transaction section, not the decorative/header block.
+    start_idx = 0
+    for idx, ln in enumerate(lines):
+        if (ln or "").strip().lower().startswith("beginning balance on"):
+            start_idx = idx
+            break
+    lines = lines[start_idx:]
+
+    counts = _parse_summary_counts(lines)
 
     rows = []
 
-    # Layout 2: "Other Deposits", "Card Withdrawals", "Other Withdrawals" with "Mon DD Desc..." then amount
-    rows = _parse_layout2_other_deposits_withdrawals(lines, year)
+    # Customer Deposits appear immediately after the opening summary block in this statement style.
+    rows.extend(_parse_customer_deposits(lines, year, counts["customer_deposits"]))
 
-    # Layout 1: "Customer Deposits" — always merge (so Customer Deposit 5,272.00 etc. are included)
-    rows.extend(_parse_customer_deposits(lines, year))
+    # Other Deposits / Other Withdrawals can span multiple pages and continued headers.
+    rows.extend(_parse_other_deposits(lines, year, counts["other_deposits"]))
+    rows.extend(_parse_other_withdrawals(lines, year, counts["other_withdrawals"]))
 
-    # Checks Presented Conventionally / Electronically (payee in description for vendor match)
+    # Checks Presented Conventionally / Electronically
     rows.extend(_parse_checks_sections(lines, year))
 
-    # Alternate: "Jan 15" then ref then amount on consecutive lines (no Customer Deposits header)
-    if not rows:
-        i = 0
-        while i < len(lines):
-            date_m = RE_MONTH_DAY.match(lines[i].strip())
-            if date_m:
-                month_abbrev, day = date_m.groups()
-                j = i + 1
-                ref_num = ""
-                amount_val = None
-                while j < len(lines) and j < i + 5:
-                    nxt = lines[j].strip()
-                    if not nxt:
-                        j += 1
-                        continue
-                    if RE_REF.match(nxt):
-                        ref_num = nxt
-                        j += 1
-                        if j < len(lines):
-                            amt = RE_AMOUNT.match(lines[j].strip().replace(",", ""))
-                            if amt:
-                                try:
-                                    amount_val = float(amt.group(1) + "." + amt.group(2))
-                                except ValueError:
-                                    pass
-                                j += 1
-                        break
-                    amt = RE_AMOUNT.match(nxt.replace(",", ""))
-                    if amt:
-                        try:
-                            amount_val = float(amt.group(1) + "." + amt.group(2))
-                        except ValueError:
-                            pass
-                        j += 1
-                        break
-                    break
-                if amount_val is not None and 0 < amount_val < 1e9:
-                    date_str = _normalize_date(month_abbrev, day, year)
-                    rows.append({
-                        "date": date_str,
-                        "description": f"Deposit {ref_num}" if ref_num else "Deposit",
-                        "amount": amount_val,
-                        "reference_number": ref_num
-                    })
-                i = j
-            else:
-                i += 1
+    # Deduplicate while preserving order
+    deduped = []
+    seen = set()
+    for r in rows:
+        key = (r["date"], r["description"], round(float(r["amount"]), 2), r["reference_number"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
 
-    return rows
+    return deduped
 
 
 def parse_us_bank_checking_text(text: str) -> list[dict]:
-    """Parse US Bank checking statement text. Returns list of {date, description, amount, reference_number}."""
     return _parse_us_bank_checking_text(text)
 
 
 def parse_us_bank_checking_pdf(pdf_path: str) -> list[dict]:
-    """Parse US Bank checking statement PDF."""
     text = extract_text_from_pdf(pdf_path)
     return parse_us_bank_checking_text(text)
 
