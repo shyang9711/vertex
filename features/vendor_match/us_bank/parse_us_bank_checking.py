@@ -1,10 +1,16 @@
 """
 Parse U.S. Bank Business Checking statement PDF/text.
-Output: list of dicts with date, description, amount (negative = withdrawal, positive = deposit), reference_number.
+Output: list of dicts with date, description, amount (negative = withdrawal, positive = deposit),
+  reference_number (check number for checks when present, else ref or ""),
+  payee (for electronic checks when present in PDF; else "").
 
 Account Summary mapping:
   Customer Deposits + Other Deposits  -> Deposits (positive amount)
   Other Withdrawals + Checks Paid     -> Withdrawals (negative amount)
+
+Checks:
+  - Checks Presented Conventionally: check number added when present; payee left empty.
+  - Checks Presented Electronically: check number added when present; payee added when present (for Vendor matching). If check number or payee doesn't exist, leave empty.
 """
 import re
 import sys
@@ -197,7 +203,8 @@ def _parse_customer_deposits(section_lines: list[str], year: int) -> list[dict]:
                 "date": _normalize_date(month_abbrev, day, year),
                 "description": f"Deposit {ref_num}" if ref_num else "Customer Deposit",
                 "amount": amount_val,
-                "reference_number": ref_num
+                "reference_number": ref_num,
+                "payee": "",
             })
             i = j
         else:
@@ -265,7 +272,8 @@ def _parse_other_deposits(section_lines: list[str], year: int) -> list[dict]:
                 "date": _normalize_date(month_abbrev, day, year),
                 "description": description,
                 "amount": amount_val,
-                "reference_number": ref_num
+                "reference_number": ref_num,
+                "payee": "",
             })
             i = j
         else:
@@ -334,7 +342,8 @@ def _parse_other_withdrawals(section_lines: list[str], year: int) -> list[dict]:
                 "date": _normalize_date(month_abbrev, day, year),
                 "description": description,
                 "amount": amount_val,
-                "reference_number": ref_num
+                "reference_number": ref_num,
+                "payee": "",
             })
             i = j
         else:
@@ -395,11 +404,13 @@ def _parse_checks_conventional(section_lines: list[str], year: int) -> list[dict
             j += 1
 
         if amount_val is not None:
+            check_no_val = check_no if check_no else ""
             rows.append({
                 "date": _normalize_date(month_abbrev, day, year),
-                "description": f"Check {check_no}",
+                "description": f"Check {check_no}" if check_no_val else "Check",
                 "amount": amount_val,
-                "reference_number": ref_num or check_no
+                "reference_number": check_no_val,
+                "payee": "",
             })
             i = j
         else:
@@ -463,11 +474,14 @@ def _parse_checks_electronic(section_lines: list[str], year: int) -> list[dict]:
             j += 1
 
         if amount_val is not None:
+            check_no_val = check_no if check_no else ""
+            payee_text = " ".join(x for x in desc_parts if x and not (RE_REF.match(x) or RE_ALNUM_REF.match(x))).strip()
             rows.append({
                 "date": _normalize_date(month_abbrev, day, year),
-                "description": " ".join(desc_parts).strip() or f"Electronic Check {check_no}",
+                "description": f"Check {check_no_val}" if check_no_val else "Electronic Check",
                 "amount": amount_val,
-                "reference_number": check_no
+                "reference_number": check_no_val,
+                "payee": payee_text,
             })
             i = j
         else:
@@ -622,7 +636,7 @@ def _parse_transaction_block_by_counts(lines: list[str], start: int, end: int, c
             idx = j
             continue
         if amount_val is not None:
-            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": f"Deposit {ref_num}" if ref_num else "Customer Deposit", "amount": amount_val, "reference_number": ref_num})
+            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": f"Deposit {ref_num}" if ref_num else "Customer Deposit", "amount": amount_val, "reference_number": ref_num, "payee": ""})
 
     for _ in range(counts.get("n_other_dep", 0)):
         if idx >= len(block):
@@ -667,7 +681,7 @@ def _parse_transaction_block_by_counts(lines: list[str], start: int, end: int, c
             m = RE_REF_IN_DESC.search(description)
             if m:
                 ref_num = m.group(1)
-            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": ref_num})
+            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": ref_num, "payee": ""})
 
     # Find where the 89 checks start (first REF line followed by a date, at or after current idx)
     check_section_start = len(block)
@@ -724,7 +738,7 @@ def _parse_transaction_block_by_counts(lines: list[str], start: int, end: int, c
             m = RE_REF_IN_DESC.search(description)
             if m:
                 ref_num = m.group(1)
-            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": ref_num})
+            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": ref_num, "payee": ""})
 
     idx = check_section_start
     for _ in range(counts.get("n_checks", 0)):
@@ -769,9 +783,11 @@ def _parse_transaction_block_by_counts(lines: list[str], start: int, end: int, c
             idx = j
             continue
         if amount_val is not None:
+            check_no_val = check_no if check_no else ""
+            payee_text = " ".join(x for x in desc_parts if x and not (RE_REF.match(x) or RE_ALNUM_REF.match(x))).strip()
             description = " ".join(desc_parts).strip() if desc_parts else ""
-            description = (f"Check {check_no} " + description).strip() or f"Check {check_no}"
-            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": check_no})
+            description = (f"Check {check_no_val} " + description).strip() or (f"Check {check_no_val}" if check_no_val else "Check")
+            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": check_no_val, "payee": payee_text})
 
     return rows
 

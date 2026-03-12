@@ -583,9 +583,9 @@ def parse_bank_of_america_text(text: str) -> pd.DataFrame:
     return df
 
 def _bofa_rows_to_dataframe(rows: list) -> pd.DataFrame:
-    """Convert BoA/Citi parser output (date, description, amount, optional reference_number) to vendor_match DataFrame columns."""
+    """Convert BoA/Citi/US Bank parser output (date, description, amount, optional reference_number, optional payee) to vendor_match DataFrame columns."""
     if not rows:
-        return pd.DataFrame(columns=["Date", "Transaction Date", "Description", "Merchant", "City", "State", "Reference Number", "Account Number", "Amount"])
+        return pd.DataFrame(columns=["Date", "Transaction Date", "Description", "Merchant", "City", "State", "Reference Number", "Account Number", "Amount", "Payee"])
     df = pd.DataFrame(rows)
     df = df.rename(columns={"date": "Date", "description": "Description", "amount": "Amount"})
     df["Transaction Date"] = df["Date"]
@@ -597,6 +597,11 @@ def _bofa_rows_to_dataframe(rows: list) -> pd.DataFrame:
         df.drop(columns=["reference_number"], inplace=True)
     else:
         df["Reference Number"] = ""
+    if "payee" in df.columns:
+        df["Payee"] = df["payee"].fillna("").astype(str)
+        df.drop(columns=["payee"], inplace=True)
+    else:
+        df["Payee"] = ""
     df["Account Number"] = ""
     return df
 
@@ -1095,6 +1100,24 @@ def find_best_vendor(description_norm: str, vendor_entries) -> str:
             best_vendor = canonical
             best_ratio = ratio
     return best_vendor
+
+
+def _build_vendors_out(tx_df: pd.DataFrame, desc_col: str, vendor_entries, apply_manual_rules) -> list:
+    """Build list of vendor names for each row. Uses Payee column when present (e.g. electronic checks); otherwise manual rules then find_best_vendor(description)."""
+    vendors_out = []
+    payee_col = tx_df["Payee"] if "Payee" in tx_df.columns else None
+    for i in range(len(tx_df)):
+        if payee_col is not None:
+            payee_val = payee_col.iloc[i]
+            if isinstance(payee_val, str) and payee_val.strip():
+                vendors_out.append(payee_val.strip())
+                continue
+        raw_desc = tx_df[desc_col].iloc[i] if desc_col else ""
+        raw_desc = (raw_desc.fillna("") if hasattr(raw_desc, "fillna") else raw_desc) or ""
+        raw_desc = str(raw_desc).strip() if raw_desc else ""
+        manual = apply_manual_rules(raw_desc)
+        vendors_out.append(manual if manual else find_best_vendor(normalize_text(raw_desc), vendor_entries))
+    return vendors_out
 
 
 def _format_date_mm_dd_yyyy(value) -> str:
@@ -2096,14 +2119,11 @@ class App:
                     last_month, last_year = get_last_transaction_month_year(tx_df)
                     if last_month is None or last_year is None:
                         last_month, last_year = get_statement_month_year_from_path(path_for_name)
-                    check_col = None if self.selected_bank in ("US Bank (Bank)", "US Bank (Credit Card)") else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+                    check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
                     for df, filt in [(debits_df, "debits"), (credits_df, "credits")]:
                         if df.empty:
                             continue
-                        vendors_out = []
-                        for raw_desc in df[desc_col].fillna("").astype(str):
-                            manual = self._apply_manual_rules(raw_desc)
-                            vendors_out.append(manual if manual else find_best_vendor(normalize_text(raw_desc), vendor_entries))
+                        vendors_out = _build_vendors_out(df, desc_col, vendor_entries, self._apply_manual_rules)
                         accounts = [self.account_map.get((v, filt), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
                         out_df = build_output_dataframe(df, vendors_out, accounts, amount_col, check_col, filt)
                         base_name = default_output_filename(self.current_company, month=last_month, year=last_year, transaction_filter=filt)
@@ -2178,17 +2198,10 @@ class App:
                         continue
                     desc_col = detect_description_column(tx_df)
                     amount_col = detect_amount_column(tx_df)
-                    vendors_out = []
-                    for raw_desc in tx_df[desc_col].fillna("").astype(str):
-                        manual = self._apply_manual_rules(raw_desc)
-                        if manual:
-                            vendors_out.append(manual)
-                        else:
-                            norm = normalize_text(raw_desc)
-                            vendors_out.append(find_best_vendor(norm, vendor_entries))
+                    vendors_out = _build_vendors_out(tx_df, desc_col, vendor_entries, self._apply_manual_rules)
                     accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-                    # For US Bank (Bank and Credit Card), Ref # is not a check number — leave Check Number column blank
-                    check_col = None if self.selected_bank in ("US Bank (Bank)", "US Bank (Credit Card)") else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+                    # US Bank (Bank): Reference Number holds check numbers for checks; US Bank (Credit Card): no check number column
+                    check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
                     out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
                     last_month, last_year = get_last_transaction_month_year(tx_df)
                     if last_month is None or last_year is None:
@@ -2241,17 +2254,11 @@ class App:
             self.status_var.set("Matching vendors...")
             self.root.update_idletasks()
 
-            vendors_out = []
-            for raw_desc in tx_df[desc_col].fillna("").astype(str):
-                manual = self._apply_manual_rules(raw_desc)
-                if manual:
-                    vendors_out.append(manual)
-                else:
-                    norm = normalize_text(raw_desc)
-                    vendors_out.append(find_best_vendor(norm, vendor_entries))
+            vendors_out = _build_vendors_out(tx_df, desc_col, vendor_entries, self._apply_manual_rules)
 
             accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-            check_col = None if self.selected_bank in ("US Bank (Bank)", "US Bank (Credit Card)") else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+            # US Bank (Bank): Reference Number holds check numbers for checks; US Bank (Credit Card): no check number column
+            check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
             out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
 
             last_month, last_year = get_last_transaction_month_year(tx_df)
