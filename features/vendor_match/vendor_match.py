@@ -583,9 +583,9 @@ def parse_bank_of_america_text(text: str) -> pd.DataFrame:
     return df
 
 def _bofa_rows_to_dataframe(rows: list) -> pd.DataFrame:
-    """Convert BoA/Citi/US Bank parser output (date, description, amount, optional reference_number, optional payee) to vendor_match DataFrame columns."""
+    """Convert BoA/Citi/US Bank parser output (date, description, amount, optional reference_number, optional check_number, optional payee) to vendor_match DataFrame columns. Reference Number = bank ref; Check Number = actual check number (checks only)."""
     if not rows:
-        return pd.DataFrame(columns=["Date", "Transaction Date", "Description", "Merchant", "City", "State", "Reference Number", "Account Number", "Amount", "Payee"])
+        return pd.DataFrame(columns=["Date", "Transaction Date", "Description", "Merchant", "City", "State", "Reference Number", "Check Number", "Account Number", "Amount", "Payee"])
     df = pd.DataFrame(rows)
     df = df.rename(columns={"date": "Date", "description": "Description", "amount": "Amount"})
     df["Transaction Date"] = df["Date"]
@@ -597,6 +597,11 @@ def _bofa_rows_to_dataframe(rows: list) -> pd.DataFrame:
         df.drop(columns=["reference_number"], inplace=True)
     else:
         df["Reference Number"] = ""
+    if "check_number" in df.columns:
+        df["Check Number"] = df["check_number"].fillna("").astype(str)
+        df.drop(columns=["check_number"], inplace=True)
+    else:
+        df["Check Number"] = ""
     if "payee" in df.columns:
         df["Payee"] = df["payee"].fillna("").astype(str)
         df.drop(columns=["payee"], inplace=True)
@@ -2119,7 +2124,7 @@ class App:
                     last_month, last_year = get_last_transaction_month_year(tx_df)
                     if last_month is None or last_year is None:
                         last_month, last_year = get_statement_month_year_from_path(path_for_name)
-                    check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+                    check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Check Number" if "Check Number" in tx_df.columns else ("Reference Number" if "Reference Number" in tx_df.columns else None))
                     for df, filt in [(debits_df, "debits"), (credits_df, "credits")]:
                         if df.empty:
                             continue
@@ -2201,7 +2206,7 @@ class App:
                     vendors_out = _build_vendors_out(tx_df, desc_col, vendor_entries, self._apply_manual_rules)
                     accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
                     # US Bank (Bank): Reference Number holds check numbers for checks; US Bank (Credit Card): no check number column
-                    check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+                    check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Check Number" if "Check Number" in tx_df.columns else ("Reference Number" if "Reference Number" in tx_df.columns else None))
                     out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
                     last_month, last_year = get_last_transaction_month_year(tx_df)
                     if last_month is None or last_year is None:
@@ -2257,8 +2262,8 @@ class App:
             vendors_out = _build_vendors_out(tx_df, desc_col, vendor_entries, self._apply_manual_rules)
 
             accounts = [self.account_map.get((v, transaction_filter), "") if isinstance(v, str) and v.strip() else "" for v in vendors_out]
-            # US Bank (Bank): Reference Number holds check numbers for checks; US Bank (Credit Card): no check number column
-            check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Reference Number" if "Reference Number" in tx_df.columns else None)
+            # US Bank (Bank): use Check Number column (actual check #); US Bank (Credit Card): no check number; others: Reference Number
+            check_col = None if self.selected_bank == "US Bank (Credit Card)" else ("Check Number" if "Check Number" in tx_df.columns else ("Reference Number" if "Reference Number" in tx_df.columns else None))
             out_df = build_output_dataframe(tx_df, vendors_out, accounts, amount_col, check_col, transaction_filter)
 
             last_month, last_year = get_last_transaction_month_year(tx_df)
