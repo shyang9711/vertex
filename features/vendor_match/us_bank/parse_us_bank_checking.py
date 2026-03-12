@@ -669,13 +669,25 @@ def _parse_transaction_block_by_counts(lines: list[str], start: int, end: int, c
                 ref_num = m.group(1)
             rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": ref_num})
 
+    # Find where the 89 checks start (first REF line followed by a date, at or after current idx)
+    check_section_start = len(block)
+    for i in range(idx, len(block)):
+        s = (block[i] or "").strip()
+        if s and (RE_REF.match(s) or RE_ALNUM_REF.match(s)) and _get_date_start(block, i + 1) is not None:
+            check_section_start = i
+            break
+
     for _ in range(counts.get("n_other_wdr", 0)):
-        if idx >= len(block):
+        if idx >= len(block) or idx >= check_section_start:
             break
-        while idx < len(block) and _get_date_start(block, idx) is None:
+        while idx < len(block) and idx < check_section_start and _get_date_start(block, idx) is None:
             idx += 1
-        if idx >= len(block):
+        if idx >= len(block) or idx >= check_section_start:
             break
+        # Skip date lines that are part of a check (check_no line is REF, next is date)
+        if idx >= 1 and (RE_REF.match((block[idx - 1] or "").strip()) or RE_ALNUM_REF.match((block[idx - 1] or "").strip())):
+            idx += 1
+            continue
         ds = _get_date_start(block, idx)
         if not ds:
             idx += 1
@@ -714,13 +726,16 @@ def _parse_transaction_block_by_counts(lines: list[str], start: int, end: int, c
                 ref_num = m.group(1)
             rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": ref_num})
 
+    idx = check_section_start
     for _ in range(counts.get("n_checks", 0)):
         if idx >= len(block):
             break
         while idx < len(block):
             s = (block[idx] or "").strip()
             if s and (RE_REF.match(s) or RE_ALNUM_REF.match(s)):
-                break
+                # Only treat as check start if next line is a date (Mon or Mon DD); else it's a ref in the middle of another entry
+                if _get_date_start(block, idx + 1) is not None:
+                    break
             idx += 1
         if idx >= len(block):
             break
@@ -746,7 +761,7 @@ def _parse_transaction_block_by_counts(lines: list[str], start: int, end: int, c
                 amount_val = -abs(amt)
                 idx = j + 1
                 break
-            if RE_REF.match(nxt) or RE_ALNUM_REF.match(nxt) or _get_date_start(block, j):
+            if _get_date_start(block, j):
                 break
             desc_parts.append(nxt)
             j += 1
@@ -754,8 +769,9 @@ def _parse_transaction_block_by_counts(lines: list[str], start: int, end: int, c
             idx = j
             continue
         if amount_val is not None:
-            description = " ".join(desc_parts).strip() if desc_parts else f"Check {check_no}"
-            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description or f"Check {check_no}", "amount": amount_val, "reference_number": check_no})
+            description = " ".join(desc_parts).strip() if desc_parts else ""
+            description = (f"Check {check_no} " + description).strip() or f"Check {check_no}"
+            rows.append({"date": _normalize_date(month_abbrev, day, year), "description": description, "amount": amount_val, "reference_number": check_no})
 
     return rows
 
