@@ -2019,6 +2019,53 @@ class App(ttk.Frame):
         self._work_taskbar_sync_buttons(client_idx)
         self._refresh_logs_tab_for_client_idx(client_idx)
 
+    def _work_edit_held_note(self, client_idx: int, work_item_id: str) -> None:
+        """Update the note on an on-hold work item (Logs / Notes UI)."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx]
+        work_id = str(work_item_id or "").strip()
+        if not work_id:
+            return
+        task_name = ""
+        current_note = ""
+        for wi in c.get("work_items") or []:
+            if not isinstance(wi, dict):
+                continue
+            if str(wi.get("id", "") or "").strip() != work_id:
+                continue
+            if str(wi.get("status", "") or "").strip().lower() != "on_hold":
+                messagebox.showinfo("Edit note", "Only tasks on hold can use this note editor.")
+                return
+            task_name = str(wi.get("task_name", "") or "").strip()
+            current_note = str(wi.get("note", "") or "")
+            break
+        else:
+            return
+        if not task_name:
+            messagebox.showinfo("Edit note", "Could not find that held task.")
+            return
+        d = OptionalNoteDialog(
+            self.winfo_toplevel(),
+            title="Edit hold note",
+            prompt="Note for this held task:",
+            initial=current_note,
+        )
+        self.wait_window(d)
+        if d.result is None:
+            return
+        new_note = str(d.result)
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        for wi in c.get("work_items") or []:
+            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
+                wi["note"] = new_note
+                wi["updated_at"] = now_iso
+                break
+        save_clients(self.items, self._data_file_path)
+        self._work_taskbar_refresh_dropdown_options(client_idx)
+        self._work_taskbar_sync_buttons(client_idx)
+        self._refresh_logs_tab_for_client_idx(client_idx)
+
     def _work_unfinish_item(self, client_idx: int, work_item_id: str) -> None:
         """Revert a completed work item to on hold (undo mistaken finish)."""
         if not (0 <= client_idx < len(getattr(self, "items", []) or [])):

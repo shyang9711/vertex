@@ -186,9 +186,10 @@ class NotePage:
         self.btn_hold = ttk.Button(self.dyn, text="Hold", command=self._do_hold)
         self.btn_finish = ttk.Button(self.dyn, text="Finished", command=self._do_finish)
         self.btn_unfinish = ttk.Button(self.dyn, text="Unfinish", command=self._do_unfinish)
+        self.btn_edit_hold_note = ttk.Button(self.dyn, text="Edit hold note", command=self._do_edit_hold_note)
         self._all_dyn = (
             self.btn_edit, self.btn_del, self.btn_toggle,
-            self.btn_start, self.btn_rejoin, self.btn_hold, self.btn_finish, self.btn_unfinish,
+            self.btn_start, self.btn_edit_hold_note, self.btn_rejoin, self.btn_hold, self.btn_finish, self.btn_unfinish,
         )
 
     def _hide_dyn(self):
@@ -348,6 +349,7 @@ class NotePage:
         if kind == "work":
             if st == "on_hold" and wid:
                 place(self.btn_start)
+                place(self.btn_edit_hold_note)
             elif st == "active":
                 if not c.get("active_work") and wid:
                     place(self.btn_rejoin)
@@ -437,6 +439,14 @@ class NotePage:
             self.app._work_resume_held_item(cidx, wid)
             self.refresh()
 
+    def _do_edit_hold_note(self):
+        m = self._sel_meta()
+        cidx = m.get("client_idx")
+        wid = str(m.get("work_item_id", "") or "").strip()
+        if isinstance(cidx, int) and wid:
+            self.app._work_edit_held_note(cidx, wid)
+            self.refresh()
+
     def _do_rejoin(self):
         m = self._sel_meta()
         cidx = m.get("client_idx")
@@ -478,10 +488,15 @@ class NotePage:
         if not iid:
             return
         m = self._row_meta.get(iid) or {}
-        if self._memo_index(m) is not None:
-            self.tree.selection_set(iid)
-            self._edit_memo()
-            return
+        self.tree.selection_set(iid)
+        # Done memos: no navigation / no edit on double-click
+        li = self._memo_index(m)
+        if li is not None:
+            cidx = m.get("client_idx")
+            c = self._client_at(cidx)
+            if c and 0 <= li < len(c.get("logs") or []):
+                if bool(c["logs"][li].get("done")):
+                    return
         cidx = m.get("client_idx")
         if isinstance(cidx, int):
             self.app.navigate("detail", cidx, push=True)

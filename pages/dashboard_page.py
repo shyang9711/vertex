@@ -303,7 +303,7 @@ class DashboardPage:
             except Exception:
                 pass
 
-        root.columnconfigure(0, weight=0, minsize=118)   # LEFT: compact summary column
+        root.columnconfigure(0, weight=0, minsize=100)   # LEFT: compact (held clients + memos)
         root.columnconfigure(1, weight=1, minsize=640)   # MIDDLE: flexible (tasks)
         root.columnconfigure(2, weight=0, minsize=240)   # RIGHT: protected
 
@@ -433,7 +433,7 @@ class DashboardPage:
                 style="Modern.Treeview",
             )
             self.held_tv.heading("line", text="Client — held tasks")
-            self.held_tv.column("line", width=360, anchor="w", stretch=True)
+            self.held_tv.column("line", width=220, anchor="w", stretch=False)
 
             self.held_client_idx_by_iid = {}
             for row in held_summaries:

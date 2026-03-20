@@ -149,6 +149,8 @@ class ClientDialog(tk.Toplevel):
         ttk.Label(frm, text="Entity Type").grid(row=R0+2, column=0, sticky="w", pady=(0,2))
         cb_entity = ttk.Combobox(frm, values=ENTITY_TYPES, textvariable=self.v_entity, state="readonly")
         cb_entity.grid(row=R0+3, column=0, sticky="we", pady=(0,6))
+        for _seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            cb_entity.bind(_seq, lambda e: "break")
 
         lbl_ein = ttk.Label(frm, text="EIN (e.g., 12-3456789)")
         lbl_ein.grid(row=R0+2, column=1, sticky="w", pady=(0,2))
@@ -197,6 +199,8 @@ class ClientDialog(tk.Toplevel):
 
         cb_state = ttk.Combobox(frm, values=US_STATES, textvariable=self.v_state, state="readonly")
         cb_state.grid(row=r, column=2, sticky="we", pady=(0, 6))
+        for _seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            cb_state.bind(_seq, lambda e: "break")
 
         ent_zip = ttk.Entry(frm, textvariable=self.v_zip)
         ent_zip.grid(row=r, column=3, sticky="we", pady=(0, 6))

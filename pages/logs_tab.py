@@ -244,8 +244,11 @@ def init_logs_tab(
     btn_hold = ttk.Button(dyn, text="Hold", command=lambda: _do_hold())
     btn_finish = ttk.Button(dyn, text="Finished", command=lambda: _do_finish())
     btn_unfinish = ttk.Button(dyn, text="Unfinish", command=lambda: _do_unfinish())
+    btn_edit_hold_note = ttk.Button(dyn, text="Edit hold note", command=lambda: _do_edit_hold_note())
 
-    _all_dyn = (btn_edit, btn_del, btn_toggle, btn_start, btn_rejoin, btn_hold, btn_finish, btn_unfinish)
+    _all_dyn = (
+        btn_edit, btn_del, btn_toggle, btn_start, btn_edit_hold_note, btn_rejoin, btn_hold, btn_finish, btn_unfinish,
+    )
 
     def _hide_dynamic():
         for b in _all_dyn:
@@ -294,6 +297,17 @@ def init_logs_tab(
         if wid:
             app._work_unfinish_item(idx, wid)
 
+    def _do_edit_hold_note():
+        if idx is None:
+            return
+        sel = tv.selection()
+        if not sel:
+            return
+        m = row_meta.get(sel[0]) or {}
+        wid = str(m.get("work_item_id", "") or "").strip()
+        if wid:
+            app._work_edit_held_note(idx, wid)
+
     def sync_action_buttons():
         _hide_dynamic()
         sel = tv.selection()
@@ -333,6 +347,7 @@ def init_logs_tab(
         if kind == "work":
             if st == "on_hold" and wid:
                 place(btn_start)
+                place(btn_edit_hold_note)
             elif st == "active":
                 if not client.get("active_work") and wid:
                     place(btn_rejoin)
@@ -344,7 +359,13 @@ def init_logs_tab(
 
     def on_tree_double(e):
         row = tv.identify_row(e.y)
-        if row and _memo_log_index_from_iid(row) is not None:
+        if not row:
+            return
+        mi = _memo_log_index_from_iid(row)
+        if mi is not None:
+            client.setdefault("logs", [])
+            if 0 <= mi < len(client["logs"]) and bool(client["logs"][mi].get("done")):
+                return
             edit_log()
 
     def on_tree_release(e):
