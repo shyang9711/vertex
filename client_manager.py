@@ -59,6 +59,7 @@ try:
     from vertex.ui.dialogs.clientdialog import ClientDialog
     from vertex.ui.dialogs.linkdialog import LinkDialog
     from vertex.ui.dialogs.logdialog import LogDialog
+    from vertex.ui.dialogs.work_session_popup import WorkSessionPopup, OptionalNoteDialog
     from vertex.ui.components.autocomplete import AutocompletePopup
     from vertex.ui.components.scrollframe import ScrollFrame
     from vertex.utils.io import (
@@ -108,6 +109,7 @@ except ModuleNotFoundError:
     from ui.dialogs.clientdialog import ClientDialog
     from ui.dialogs.linkdialog import LinkDialog
     from ui.dialogs.logdialog import LogDialog
+    from ui.dialogs.work_session_popup import WorkSessionPopup, OptionalNoteDialog
     from ui.components.autocomplete import AutocompletePopup
     from ui.components.scrollframe import ScrollFrame
     from utils.io import (
@@ -137,6 +139,38 @@ except Exception:
     NewUI = None
 
 LOG = get_logger("client_manager")
+
+
+# ---------------- Work-in-progress task tracking (Client page) ----------------
+# Used for the task selector dropdown between the client header and the tabs.
+PREDEFINED_WORK_TASK_KINDS: list[str] = [
+    "PAYROLL",
+    "BANK UPDATE",
+    "STATEMENT OF INFORMATION",
+    "BOOKKEEPING",
+    "PAYROLL TAX",
+    "SALES TAX",
+    "WORKERS COMP",
+    "MEETING",
+    "CHILD CARE SUPPORT",
+    "INCOME TAX",
+    "BUSINESS TAX",
+    "DOCUMENT REQUEST",
+    "PROFIT AND LOSS",
+    "SIMPLE IRA",
+    "OTHER",
+]
+
+
+def _work_task_kind_label(kind: str) -> str:
+    kind = (kind or "").strip().upper()
+    if not kind:
+        return ""
+    if kind == "STATEMENT OF INFORMATION":
+        return "SOI"
+    # For readability, keep spacing and capitalization simple.
+    # Example: "WORKERS COMP" -> "Workers Comp"
+    return " ".join([w.capitalize() for w in kind.replace("_", " ").split() if w])
 
 # -----------------------------
 # Single-instance (Windows mutex)
@@ -1356,6 +1390,75 @@ class App(ttk.Frame):
 
         page.bind_all("<Control-e>", lambda e=None, i=idx: self._detail_edit(i))
 
+        # ------------- Task tracking bar (Client page) -------------
+        # Inserted between the client header/info bar and the existing tab notebook.
+        self._work_taskbar_frame = ttk.Frame(page, padding=(8, 2), style="Card.TFrame")
+        self._work_taskbar_frame.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 6))
+
+        ttk.Label(self._work_taskbar_frame, text="Working on:", style="Subtle.TLabel").pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+
+        self._taskbar_task_var = tk.StringVar(value="")
+        task_opts = self._client_work_task_options(idx)
+        self._taskbar_option_map = {opt["dropdown_label"]: opt for opt in task_opts}
+        task_values = [opt["dropdown_label"] for opt in task_opts]
+
+        active_work = c.get("active_work") or {}
+        active_dropdown_label = str(active_work.get("selected_option_label") or "").strip()
+        if active_dropdown_label and active_dropdown_label not in task_values:
+            task_values.append(active_dropdown_label)  # so combobox shows the active task label
+
+        self._taskbar_task_combo = ttk.Combobox(
+            self._work_taskbar_frame,
+            textvariable=self._taskbar_task_var,
+            state="readonly",
+            values=task_values,
+            width=52,
+        )
+        self._taskbar_task_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self._taskbar_task_combo.bind(
+            "<<ComboboxSelected>>", lambda _e=None: self._work_taskbar_sync_buttons(idx)
+        )
+
+        btns = ttk.Frame(self._work_taskbar_frame)
+        btns.pack(side=tk.RIGHT)
+
+        self._taskbar_start_btn = ttk.Button(
+            btns,
+            text="Start",
+            command=lambda i=idx: self._work_task_start(i),
+            style="Compact.Accent.TButton",
+        )
+        self._taskbar_hold_btn = ttk.Button(
+            btns,
+            text="Hold",
+            command=lambda i=idx: self._work_task_hold(i),
+            style="Compact.TButton",
+        )
+        self._taskbar_finish_btn = ttk.Button(
+            btns,
+            text="Finished",
+            command=lambda i=idx: self._work_task_finish(i),
+            style="Compact.TButton",
+        )
+
+        self._taskbar_start_btn.pack(side=tk.LEFT)
+        self._taskbar_hold_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self._taskbar_finish_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+        # If a work session is already active (restored from saved state), re-show popup.
+        if active_work:
+            if active_dropdown_label:
+                self._taskbar_task_var.set(active_dropdown_label)
+            else:
+                # Best-effort fallback for combobox display.
+                self._taskbar_task_var.set(str(active_work.get("task_name") or "").strip())
+            self._ensure_work_popup_for_client(idx)
+
+        self._work_taskbar_sync_buttons(idx)
+
 
         nb = ttk.Notebook(page); nb.pack(fill="both", expand=True, padx=6, pady=6)
         self._detail_notebook = nb
@@ -1429,6 +1532,358 @@ class App(ttk.Frame):
             self._current_page = ("detail", (idx, restore_tab))
         else:
             self._current_page = ("detail", idx)
+
+    # ------------- Work session / task tracking (Client page) -------------
+    def _client_work_task_options(self, client_idx: int) -> list[dict]:
+        """Build dropdown options for the task selector in the Client detail page."""
+        if not isinstance(client_idx, int) or not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return []
+
+        c = self.items[client_idx] or {}
+        logs = c.get("logs") or []
+
+        options: list[dict] = []
+
+        # Predefined/manual task types
+        for kind in PREDEFINED_WORK_TASK_KINDS:
+            label = _work_task_kind_label(kind)
+            if not label:
+                continue
+            options.append(
+                {
+                    "source": "predefined",
+                    "dropdown_label": label,
+                    "task_name": label,
+                    "task_kind": kind,
+                    "from_unchecked_log": False,
+                }
+            )
+
+        # Tasks from existing unchecked logs
+        for entry in logs:
+            if not isinstance(entry, dict):
+                continue
+            if bool(entry.get("done", False)):
+                continue  # checked/completed logs are not selectable
+
+            ts = str(entry.get("ts", "") or "").strip()
+            text = str(entry.get("text", "") or "").strip()
+            preview = (text or "(empty)").replace("\n", " ").strip()
+            if len(preview) > 44:
+                preview = preview[:41] + "..."
+
+            dropdown_label = f"Log ({ts or '—'}) {preview}"
+            options.append(
+                {
+                    "source": "log",
+                    "dropdown_label": dropdown_label,
+                    "task_name": text,
+                    "from_unchecked_log": True,
+                    "log_ref": {"ts": ts, "text": text},
+                }
+            )
+
+        return options
+
+    def _work_taskbar_sync_buttons(self, client_idx: int) -> None:
+        """Enable/disable Start/Hold/Finished according to active work session."""
+        # Widgets may not exist yet during initial page build.
+        if not hasattr(self, "_taskbar_start_btn") or not hasattr(self, "_taskbar_hold_btn") or not hasattr(self, "_taskbar_finish_btn"):
+            return
+
+        if not isinstance(client_idx, int) or not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+
+        c = self.items[client_idx] or {}
+        has_active = bool(c.get("active_work"))
+
+        if has_active:
+            self._taskbar_start_btn.config(state=tk.DISABLED)
+            self._taskbar_hold_btn.config(state=tk.NORMAL)
+            self._taskbar_finish_btn.config(state=tk.NORMAL)
+        else:
+            self._taskbar_hold_btn.config(state=tk.DISABLED)
+            self._taskbar_finish_btn.config(state=tk.DISABLED)
+
+            sel = str(getattr(self, "_taskbar_task_var", tk.StringVar()).get() or "").strip()
+            option_map = getattr(self, "_taskbar_option_map", {}) or {}
+            can_start = bool(sel) and sel in option_map
+            self._taskbar_start_btn.config(state=tk.NORMAL if can_start else tk.DISABLED)
+
+    def _work_taskbar_refresh_dropdown_options(self, client_idx: int) -> None:
+        """Rebuild combobox values after logs change (Hold/Finished)."""
+        if not hasattr(self, "_taskbar_task_combo"):
+            return
+        if not hasattr(self, "_taskbar_task_var"):
+            return
+
+        opts = self._client_work_task_options(client_idx)
+        self._taskbar_option_map = {opt["dropdown_label"]: opt for opt in opts}
+        values = [opt["dropdown_label"] for opt in opts]
+
+        cur_sel = str(self._taskbar_task_var.get() or "").strip()
+        if cur_sel and cur_sel in values:
+            self._taskbar_task_combo["values"] = values
+            # keep selection
+        else:
+            self._taskbar_task_combo["values"] = values
+            self._taskbar_task_var.set("")
+
+    def _prompt_optional_note(self, *, parent, title: str, prompt: str) -> Optional[str]:
+        d = OptionalNoteDialog(parent, title=title, prompt=prompt, initial="")
+        self.winfo_toplevel().wait_window(d)
+        return d.result
+
+    def _destroy_work_popup_ui(self) -> None:
+        if hasattr(self, "_work_popup") and self._work_popup and getattr(self._work_popup, "winfo_exists", lambda: False)():
+            try:
+                self._work_popup.destroy()
+            except Exception:
+                pass
+        self._work_popup = None
+
+    def _ensure_work_popup_for_client(self, client_idx: int) -> None:
+        """Create/update the always-on-top popup for the active work session."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+
+        c = self.items[client_idx] or {}
+        active = c.get("active_work") or None
+        if not active:
+            return
+
+        # One popup at a time.
+        self._destroy_work_popup_ui()
+
+        client_name = str(active.get("client_name") or c.get("name") or "").strip()
+        task_name = str(active.get("task_name") or "").strip()
+
+        self._work_popup = WorkSessionPopup(
+            self.winfo_toplevel(),
+            on_hold=lambda i=client_idx: self._work_task_hold(i),
+            on_finish=lambda i=client_idx: self._work_task_finish(i),
+        )
+        try:
+            self._work_popup.set_content(client_name=client_name, task_name=task_name)
+            self._work_popup.attributes("-topmost", True)
+            self._work_popup.lift()
+        except Exception:
+            pass
+
+    def _find_log_entry_by_ref(self, client: dict, log_ref: dict) -> tuple[int | None, dict | None]:
+        logs = client.get("logs") or []
+        if not isinstance(log_ref, dict):
+            return (None, None)
+
+        ts_ref = str(log_ref.get("ts", "") or "").strip()
+        text_ref = str(log_ref.get("text", "") or "").strip()
+
+        # Primary: exact ts + text match.
+        if ts_ref or text_ref:
+            for i, entry in enumerate(logs):
+                if not isinstance(entry, dict):
+                    continue
+                if ts_ref and str(entry.get("ts", "") or "").strip() != ts_ref:
+                    continue
+                if text_ref and str(entry.get("text", "") or "").strip() != text_ref:
+                    continue
+                return (i, entry)
+
+        # Fallback: ts only, prefer unchecked.
+        if ts_ref:
+            for i, entry in enumerate(logs):
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("ts", "") or "").strip() == ts_ref and not bool(entry.get("done", False)):
+                    return (i, entry)
+            for i, entry in enumerate(logs):
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("ts", "") or "").strip() == ts_ref:
+                    return (i, entry)
+
+        # Fallback: text only, prefer unchecked.
+        if text_ref:
+            for i, entry in enumerate(logs):
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("text", "") or "").strip() == text_ref and not bool(entry.get("done", False)):
+                    return (i, entry)
+            for i, entry in enumerate(logs):
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("text", "") or "").strip() == text_ref:
+                    return (i, entry)
+
+        return (None, None)
+
+    def _work_task_start(self, client_idx: int) -> None:
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+
+        c = self.items[client_idx] or {}
+        if c.get("active_work"):
+            messagebox.showinfo("Work Session", "A task is already active. Hold or Finished it first.")
+            return
+
+        sel = str(getattr(self, "_taskbar_task_var", tk.StringVar()).get() or "").strip()
+        option_map = getattr(self, "_taskbar_option_map", {}) or {}
+        opt = option_map.get(sel)
+        if not opt:
+            messagebox.showinfo("Start Task", "Please select a valid task option first.")
+            return
+
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        active = {
+            "client_name": str(c.get("name", "") or "").strip(),
+            "task_name": str(opt.get("task_name", "") or "").strip(),
+            "task_kind": str(opt.get("task_kind", "") or "").strip(),
+            "created_at": now_iso,
+            "from_unchecked_log": bool(opt.get("from_unchecked_log", False)),
+            "log_ref": opt.get("log_ref") if opt.get("from_unchecked_log") else {},
+            "selected_option_label": str(opt.get("dropdown_label", "") or "").strip(),
+        }
+        c["active_work"] = active
+        save_clients(self.items, self._data_file_path)
+
+        self._ensure_work_popup_for_client(client_idx)
+        self._work_taskbar_sync_buttons(client_idx)
+
+    def _work_task_hold(self, client_idx: int) -> None:
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx] or {}
+        active = c.get("active_work") or None
+        if not active:
+            return
+
+        parent = getattr(self, "_work_popup", None) or self.winfo_toplevel()
+        from_unchecked_log = bool(active.get("from_unchecked_log", False))
+        note = self._prompt_optional_note(
+            parent=parent,
+            title="Hold",
+            prompt=(
+                "Optional note. Leave blank to keep the existing log text."
+                if from_unchecked_log
+                else "Optional note. Leave blank to keep the log text as the task name only."
+            ),
+        )
+        if note is None:
+            return  # user cancelled
+        note = str(note or "").strip()
+
+        logs = c.setdefault("logs", [])
+        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if from_unchecked_log:
+            log_ref = active.get("log_ref") or {}
+            _idx, entry = self._find_log_entry_by_ref(c, log_ref)
+
+            # Hold keeps the log entry unchecked.
+            if entry and not bool(entry.get("done", False)):
+                if note and note != str(entry.get("text", "") or "").strip():
+                    entry["text"] = note
+                    entry["edited"] = True
+                entry["done"] = False
+            else:
+                # Best-effort fallback: create a new unchecked log if the original entry can't be found.
+                text = note if note else str(active.get("task_name") or "").strip()
+                logs.append(
+                    {
+                        "ts": now_iso,
+                        "user": "",
+                        "text": text,
+                        "done": False,
+                        "edited": False,
+                    }
+                )
+        else:
+            # Manual/predefined task: create a new unchecked log.
+            task_name = str(active.get("task_name") or "").strip()
+            text = task_name if not note else f"{task_name} | {note}"
+            logs.append(
+                {
+                    "ts": now_iso,
+                    "user": "",
+                    "text": text,
+                    "done": False,
+                    "edited": False,
+                }
+            )
+
+        # Clear active work session and close popup.
+        c.pop("active_work", None)
+        save_clients(self.items, self._data_file_path)
+        self._destroy_work_popup_ui()
+        self._work_taskbar_refresh_dropdown_options(client_idx)
+        self._work_taskbar_sync_buttons(client_idx)
+
+    def _work_task_finish(self, client_idx: int) -> None:
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx] or {}
+        active = c.get("active_work") or None
+        if not active:
+            return
+
+        parent = getattr(self, "_work_popup", None) or self.winfo_toplevel()
+        from_unchecked_log = bool(active.get("from_unchecked_log", False))
+        note = self._prompt_optional_note(
+            parent=parent,
+            title="Finished",
+            prompt=(
+                "Optional note. Leave blank to keep the existing log text."
+                if from_unchecked_log
+                else "Optional note. Leave blank to keep the log text as the task name only."
+            ),
+        )
+        if note is None:
+            return  # user cancelled
+        note = str(note or "").strip()
+
+        logs = c.setdefault("logs", [])
+        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        if from_unchecked_log:
+            log_ref = active.get("log_ref") or {}
+            _idx, entry = self._find_log_entry_by_ref(c, log_ref)
+
+            if entry:
+                if note and note != str(entry.get("text", "") or "").strip():
+                    entry["text"] = note
+                    entry["edited"] = True
+                entry["done"] = True
+            else:
+                # Best-effort fallback: create a new checked log if the original entry can't be found.
+                text = note if note else str(active.get("task_name") or "").strip()
+                logs.append(
+                    {
+                        "ts": now_iso,
+                        "user": "",
+                        "text": text,
+                        "done": True,
+                        "edited": False,
+                    }
+                )
+        else:
+            # Manual/predefined task: create a new checked log.
+            task_name = str(active.get("task_name") or "").strip()
+            text = task_name if not note else f"{task_name} | {note}"
+            logs.append(
+                {
+                    "ts": now_iso,
+                    "user": "",
+                    "text": text,
+                    "done": True,
+                    "edited": False,
+                }
+            )
+
+        c.pop("active_work", None)
+        save_clients(self.items, self._data_file_path)
+        self._destroy_work_popup_ui()
+        self._work_taskbar_refresh_dropdown_options(client_idx)
+        self._work_taskbar_sync_buttons(client_idx)
 
     # ---------- Personnel Detail Page ----------
     def _build_person_page(self, client_idx: int, role_key: str, person_idx: int):
@@ -3204,6 +3659,14 @@ class App(ttk.Frame):
                 self._current_page = target
 
         self._compress_history()
+        
+        # If we're leaving a client detail page, destroy the UI-only "work in progress" popup.
+        # The active work state is persisted in the client dict and will re-open on return.
+        try:
+            if current_page and current_page[0] == "detail":
+                self._destroy_work_popup_ui()
+        except Exception:
+            pass
     
         self._clear_page_host()
     
