@@ -210,6 +210,13 @@ def load_clients(path: Path | None = None) -> List[Dict[str, Any]]:
             # Logs list (optional)
             c.setdefault("logs", [])
             c["logs"] = normalize_logs(c.get("logs", []))
+            # Work item model for taskbar workflow
+            c.setdefault("work_items", [])
+            if not isinstance(c.get("work_items"), list):
+                c["work_items"] = []
+            c.setdefault("active_work", {})
+            if not isinstance(c.get("active_work"), dict):
+                c["active_work"] = {}
 
             out.append(c)
         return out
@@ -256,7 +263,7 @@ def _normalize_clients_for_io(items: List[Dict[str, Any]]) -> List[Dict[str, Any
             "addr1":"", "addr2":"", "city":"", "state":"", "zip":"",
             "acct_mgr":"", "edd_number":"", "sales_tax_account":"", "entity_type":"",
             "ui_rate":"", "sales_tax_rate":"", "other_tax_rates":"",
-            "tax_rates_last_checked":"", "logs":[]
+            "tax_rates_last_checked":"", "logs":[], "work_items":[], "active_work":{}
         }.items():
 
             if k not in cc:

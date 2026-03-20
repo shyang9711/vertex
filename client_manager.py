@@ -22,7 +22,7 @@ _PARENT = _BASE.parent
 if str(_PARENT) not in sys.path:
     sys.path.insert(0, str(_PARENT))
 
-import os, sys, json, re, hashlib, webbrowser, subprocess, shutil, datetime as dt, urllib.request, urllib.error, ssl, urllib.parse
+import os, sys, json, re, hashlib, webbrowser, subprocess, shutil, datetime as dt, urllib.request, urllib.error, ssl, urllib.parse, uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import date, datetime
@@ -1333,6 +1333,12 @@ class App(ttk.Frame):
         self._clear_page_host()
 
         c = self.items[idx]
+        c.setdefault("work_items", [])
+        if not isinstance(c.get("work_items"), list):
+            c["work_items"] = []
+        c.setdefault("active_work", {})
+        if not isinstance(c.get("active_work"), dict):
+            c["active_work"] = {}
         print("=" * 80)
         print(f"[DETAIL] Building detail page for idx={idx}, client={c.get('name', 'N/A')}")
         print(f"[DETAIL] Client relations count: {len(c.get('relations', []))}")
@@ -1540,8 +1546,7 @@ class App(ttk.Frame):
             return []
 
         c = self.items[client_idx] or {}
-        logs = c.get("logs") or []
-
+        work_items = c.setdefault("work_items", [])
         options: list[dict] = []
 
         # Predefined/manual task types
@@ -1559,31 +1564,107 @@ class App(ttk.Frame):
                 }
             )
 
-        # Tasks from existing unchecked logs
-        for entry in logs:
+        # Resumable held tasks
+        for entry in work_items:
             if not isinstance(entry, dict):
                 continue
-            if bool(entry.get("done", False)):
-                continue  # checked/completed logs are not selectable
-
-            ts = str(entry.get("ts", "") or "").strip()
-            text = str(entry.get("text", "") or "").strip()
-            preview = (text or "(empty)").replace("\n", " ").strip()
-            if len(preview) > 44:
-                preview = preview[:41] + "..."
-
-            dropdown_label = f"Log ({ts or '—'}) {preview}"
+            if str(entry.get("status", "") or "").strip().lower() != "on_hold":
+                continue
+            task_name = str(entry.get("task_name", "") or "").strip()
+            if not task_name:
+                continue
+            held_at = str(entry.get("held_at", "") or entry.get("updated_at", "") or "").strip()
+            note_preview = str(entry.get("note", "") or "").replace("\n", " ").strip()
+            if len(note_preview) > 30:
+                note_preview = note_preview[:27] + "..."
+            tail = f" | {note_preview}" if note_preview else ""
+            dropdown_label = f"Held ({held_at or '—'}) {task_name}{tail}"
             options.append(
                 {
-                    "source": "log",
+                    "source": "held",
                     "dropdown_label": dropdown_label,
-                    "task_name": text,
-                    "from_unchecked_log": True,
-                    "log_ref": {"ts": ts, "text": text},
+                    "task_name": task_name,
+                    "from_unchecked_log": False,
+                    "work_item_id": str(entry.get("id", "") or "").strip(),
                 }
             )
 
         return options
+
+    def _client_work_item_upsert(
+        self,
+        client_idx: int,
+        *,
+        task_name: str,
+        status: str,
+        note: str = "",
+        existing_item_id: str = "",
+    ) -> dict:
+        c = self.items[client_idx] or {}
+        c.setdefault("work_items", [])
+        work_items = c["work_items"]
+
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        canonical_client_id = self._canonical_client_key(c, client_idx)
+        client_name = str(c.get("name", "") or "").strip()
+        existing = None
+        existing_idx = None
+
+        if existing_item_id:
+            for i, wi in enumerate(work_items):
+                if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == existing_item_id:
+                    existing = wi
+                    existing_idx = i
+                    break
+
+        if existing is None:
+            task_cf = (task_name or "").strip().casefold()
+            for i, wi in enumerate(work_items):
+                if not isinstance(wi, dict):
+                    continue
+                if (wi.get("task_name") or "").strip().casefold() == task_cf and (wi.get("status") or "").strip().lower() in ("active", "on_hold"):
+                    existing = wi
+                    existing_idx = i
+                    break
+
+        if existing is None:
+            existing = {
+                "id": str(uuid.uuid4()),
+                "client_id": canonical_client_id,
+                "client_name": client_name,
+                "task_name": task_name,
+                "status": status,
+                "note": note,
+                "created_at": now_iso,
+                "started_at": now_iso if status == "active" else "",
+                "held_at": now_iso if status == "on_hold" else "",
+                "completed_at": now_iso if status == "completed" else "",
+                "updated_at": now_iso,
+            }
+            work_items.append(existing)
+            return existing
+
+        existing["client_id"] = canonical_client_id
+        existing["client_name"] = client_name
+        existing["task_name"] = task_name
+        existing["status"] = status
+        existing["updated_at"] = now_iso
+        if note:
+            existing["note"] = note
+        else:
+            existing.setdefault("note", "")
+        existing.setdefault("created_at", now_iso)
+
+        if status == "active":
+            existing["started_at"] = now_iso
+        elif status == "on_hold":
+            existing["held_at"] = now_iso
+        elif status == "completed":
+            existing["completed_at"] = now_iso
+
+        if existing_idx is not None:
+            work_items[existing_idx] = existing
+        return existing
 
     def _work_taskbar_sync_buttons(self, client_idx: int) -> None:
         """Enable/disable Start/Hold/Finished according to active work session."""
@@ -1748,13 +1829,31 @@ class App(ttk.Frame):
             return
 
         now_iso = datetime.now().isoformat(timespec="seconds")
+        selected_item_id = str(opt.get("work_item_id", "") or "").strip()
+        task_name = str(opt.get("task_name", "") or "").strip()
+        if not task_name:
+            messagebox.showinfo("Start Task", "Please select a valid task option first.")
+            return
+
+        work_item = self._client_work_item_upsert(
+            client_idx,
+            task_name=task_name,
+            status="active",
+            note="",
+            existing_item_id=selected_item_id,
+        )
+
         active = {
             "client_name": str(c.get("name", "") or "").strip(),
-            "task_name": str(opt.get("task_name", "") or "").strip(),
+            "client_id": self._canonical_client_key(c, client_idx),
+            "task_name": task_name,
             "task_kind": str(opt.get("task_kind", "") or "").strip(),
             "created_at": now_iso,
+            "started_at": now_iso,
+            "status": "active",
             "from_unchecked_log": bool(opt.get("from_unchecked_log", False)),
-            "log_ref": opt.get("log_ref") if opt.get("from_unchecked_log") else {},
+            "log_ref": {},
+            "work_item_id": str(work_item.get("id", "") or "").strip(),
             "selected_option_label": str(opt.get("dropdown_label", "") or "").strip(),
         }
         c["active_work"] = active
@@ -1777,58 +1876,25 @@ class App(ttk.Frame):
             parent=parent,
             title="Hold",
             prompt=(
-                "Optional note. Leave blank to keep the existing log text."
-                if from_unchecked_log
-                else "Optional note. Leave blank to keep the log text as the task name only."
+                "Optional note for this held task."
             ),
         )
         if note is None:
             return  # user cancelled
         note = str(note or "").strip()
 
-        logs = c.setdefault("logs", [])
-        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-        if from_unchecked_log:
-            log_ref = active.get("log_ref") or {}
-            _idx, entry = self._find_log_entry_by_ref(c, log_ref)
-
-            # Hold keeps the log entry unchecked.
-            if entry and not bool(entry.get("done", False)):
-                if note and note != str(entry.get("text", "") or "").strip():
-                    entry["text"] = note
-                    entry["edited"] = True
-                entry["done"] = False
-            else:
-                # Best-effort fallback: create a new unchecked log if the original entry can't be found.
-                text = note if note else str(active.get("task_name") or "").strip()
-                logs.append(
-                    {
-                        "ts": now_iso,
-                        "user": "",
-                        "text": text,
-                        "done": False,
-                        "edited": False,
-                    }
-                )
-        else:
-            # Manual/predefined task: create a new unchecked log.
-            task_name = str(active.get("task_name") or "").strip()
-            text = task_name if not note else f"{task_name} | {note}"
-            logs.append(
-                {
-                    "ts": now_iso,
-                    "user": "",
-                    "text": text,
-                    "done": False,
-                    "edited": False,
-                }
-            )
+        _ = from_unchecked_log  # legacy compatibility marker; no longer drives hold workflow.
+        self._client_work_item_upsert(
+            client_idx,
+            task_name=str(active.get("task_name", "") or "").strip(),
+            status="on_hold",
+            note=note,
+            existing_item_id=str(active.get("work_item_id", "") or "").strip(),
+        )
 
         # Clear active work session and close popup.
         c.pop("active_work", None)
         save_clients(self.items, self._data_file_path)
-        self._refresh_logs_tab_for_client_idx(client_idx)
         self._destroy_work_popup_ui()
         self._work_taskbar_refresh_dropdown_options(client_idx)
         self._work_taskbar_sync_buttons(client_idx)
@@ -1847,52 +1913,34 @@ class App(ttk.Frame):
             parent=parent,
             title="Finished",
             prompt=(
-                "Optional note. Leave blank to keep the existing log text."
-                if from_unchecked_log
-                else "Optional note. Leave blank to keep the log text as the task name only."
+                "Optional completion note."
             ),
         )
         if note is None:
             return  # user cancelled
         note = str(note or "").strip()
 
-        logs = c.setdefault("logs", [])
-        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
+        _ = from_unchecked_log  # legacy compatibility marker; no longer drives finish workflow.
+        task_name = str(active.get("task_name", "") or "").strip()
+        self._client_work_item_upsert(
+            client_idx,
+            task_name=task_name,
+            status="completed",
+            note=note,
+            existing_item_id=str(active.get("work_item_id", "") or "").strip(),
+        )
 
-        if from_unchecked_log:
-            log_ref = active.get("log_ref") or {}
-            _idx, entry = self._find_log_entry_by_ref(c, log_ref)
-
-            if entry:
-                if note and note != str(entry.get("text", "") or "").strip():
-                    entry["text"] = note
-                    entry["edited"] = True
-                entry["done"] = True
-            else:
-                # Best-effort fallback: create a new checked log if the original entry can't be found.
-                text = note if note else str(active.get("task_name") or "").strip()
-                logs.append(
-                    {
-                        "ts": now_iso,
-                        "user": "",
-                        "text": text,
-                        "done": True,
-                        "edited": False,
-                    }
-                )
-        else:
-            # Manual/predefined task: create a new checked log.
-            task_name = str(active.get("task_name") or "").strip()
-            text = task_name if not note else f"{task_name} | {note}"
-            logs.append(
-                {
-                    "ts": now_iso,
-                    "user": "",
-                    "text": text,
-                    "done": True,
-                    "edited": False,
-                }
-            )
+        # Keep lightweight task history in logs (separate from memo logs)
+        c.setdefault("logs", []).append(
+            {
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "user": "",
+                "text": task_name if not note else f"{task_name} | {note}",
+                "done": True,
+                "edited": False,
+                "log_type": "history",
+            }
+        )
 
         c.pop("active_work", None)
         save_clients(self.items, self._data_file_path)

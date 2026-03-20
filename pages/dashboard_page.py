@@ -23,6 +23,7 @@ try:
     from vertex.pages.reports_page import ReportsPage
 
     from vertex.utils.app_logging import get_logger
+    from vertex.utils.io import save_clients
     
     from vertex.ui.components.autocomplete import AutocompletePopup
 
@@ -38,6 +39,7 @@ except ModuleNotFoundError:
     from pages.reports_page import ReportsPage
 
     from utils.app_logging import get_logger
+    from utils.io import save_clients
 
     from ui.components.autocomplete import AutocompletePopup
 LOG = get_logger("dashboard")
@@ -363,6 +365,56 @@ class DashboardPage:
 
             if len(pending) > MAX_SHOW:
                 ttk.Label(left, text=f"(+{len(pending)-MAX_SHOW} more)", style="Subtle.TLabel").pack(anchor="w")
+
+        # ---- Tasks On Hold (separate from unchecked logs/memos)
+        held_items = self._collect_on_hold_work_items()
+        ttk.Separator(left).pack(fill="x", pady=10)
+        ttk.Label(left, text=f"Tasks On Hold: {len(held_items)}", style="Header.TLabel").pack(anchor="w")
+
+        if held_items:
+            held_wrap = ttk.Frame(left)
+            held_wrap.pack(fill="both", expand=False, pady=(4, 0))
+
+            cols = ("client", "task", "held_at", "note")
+            self.held_tv = ttk.Treeview(held_wrap, columns=cols, show="headings", selectmode="browse", height=8, style="Modern.Treeview")
+            self.held_tv.heading("client", text="Client")
+            self.held_tv.heading("task", text="Task")
+            self.held_tv.heading("held_at", text="Held At")
+            self.held_tv.heading("note", text="Note")
+            self.held_tv.column("client", width=150, anchor="w")
+            self.held_tv.column("task", width=140, anchor="w")
+            self.held_tv.column("held_at", width=120, anchor="w")
+            self.held_tv.column("note", width=200, anchor="w")
+
+            self.held_rows = {}
+            for wi in held_items:
+                note = (wi.get("note") or "").replace("\n", " ").strip()
+                if len(note) > 50:
+                    note = note[:47] + "..."
+                iid = self.held_tv.insert(
+                    "",
+                    "end",
+                    values=(
+                        wi.get("client_name", ""),
+                        wi.get("task_name", ""),
+                        wi.get("held_at", "") or wi.get("updated_at", "") or "",
+                        note,
+                    ),
+                )
+                self.held_rows[iid] = wi
+
+            self.held_tv.pack(side=tk.LEFT, fill="both", expand=True)
+            held_ys = ttk.Scrollbar(held_wrap, orient="vertical", command=self.held_tv.yview)
+            self.held_tv.configure(yscrollcommand=held_ys.set)
+            held_ys.pack(side=tk.RIGHT, fill="y")
+
+            held_btns = ttk.Frame(left)
+            held_btns.pack(fill="x", pady=(6, 0))
+            ttk.Button(held_btns, text="Resume", command=self._resume_selected_held_task).pack(side=tk.LEFT)
+            ttk.Button(held_btns, text="Open Client", command=self._open_selected_held_task_client).pack(side=tk.LEFT, padx=(6, 0))
+            ttk.Button(held_btns, text="Mark Finished", command=self._finish_selected_held_task).pack(side=tk.LEFT, padx=(6, 0))
+        else:
+            ttk.Label(left, text="No held tasks.", style="Subtle.TLabel").pack(anchor="w")
 
 
         # ---- Middle card: To‑Do
@@ -1769,6 +1821,97 @@ class DashboardPage:
 
         return (idx, (name or "").strip())
 
+    def _collect_on_hold_work_items(self) -> list[dict]:
+        out = []
+        items = getattr(self.app, "items", []) or []
+        for i, c in enumerate(items):
+            if not isinstance(c, dict):
+                continue
+            for wi in (c.get("work_items") or []):
+                if not isinstance(wi, dict):
+                    continue
+                if (wi.get("status") or "").strip().lower() != "on_hold":
+                    continue
+                row = dict(wi)
+                row["_client_idx"] = i
+                row["client_name"] = row.get("client_name") or c.get("name") or ""
+                out.append(row)
+        out.sort(key=lambda x: ((x.get("held_at") or x.get("updated_at") or ""), (x.get("client_name") or "").casefold()), reverse=True)
+        return out
+
+    def _selected_held_row(self):
+        tv = getattr(self, "held_tv", None)
+        if not tv or not tv.winfo_exists():
+            return None
+        sel = tv.selection()
+        if not sel:
+            return None
+        iid = sel[0]
+        return (getattr(self, "held_rows", {}) or {}).get(iid)
+
+    def _resume_selected_held_task(self):
+        row = self._selected_held_row()
+        if not row:
+            messagebox.showinfo("Tasks On Hold", "Select a held task first.")
+            return
+        idx = row.get("_client_idx")
+        if idx is None:
+            return
+        c = self.app.items[idx]
+        work_id = str(row.get("id", "") or "").strip()
+        if not work_id:
+            return
+        for wi in (c.get("work_items") or []):
+            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
+                wi["status"] = "active"
+                wi["started_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+                wi["updated_at"] = wi["started_at"]
+                break
+        c["active_work"] = {
+            "client_name": c.get("name", ""),
+            "client_id": row.get("client_id", ""),
+            "task_name": row.get("task_name", ""),
+            "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "status": "active",
+            "work_item_id": work_id,
+            "selected_option_label": f"Held ({row.get('held_at','') or row.get('updated_at','') or '—'}) {row.get('task_name','')}",
+        }
+        save_clients(self.app.items, getattr(self.app, "_data_file_path", None))
+        self.app.navigate("detail", idx, push=True)
+
+    def _open_selected_held_task_client(self):
+        row = self._selected_held_row()
+        if not row:
+            messagebox.showinfo("Tasks On Hold", "Select a held task first.")
+            return
+        idx = row.get("_client_idx")
+        if idx is None:
+            return
+        self.app.navigate("detail", idx, push=True)
+
+    def _finish_selected_held_task(self):
+        row = self._selected_held_row()
+        if not row:
+            messagebox.showinfo("Tasks On Hold", "Select a held task first.")
+            return
+        idx = row.get("_client_idx")
+        if idx is None:
+            return
+        c = self.app.items[idx]
+        work_id = str(row.get("id", "") or "").strip()
+        now_iso = _dt.datetime.now().isoformat(timespec="seconds")
+        for wi in (c.get("work_items") or []):
+            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
+                wi["status"] = "completed"
+                wi["completed_at"] = now_iso
+                wi["updated_at"] = now_iso
+                break
+        if isinstance(c.get("active_work"), dict) and str(c["active_work"].get("work_item_id", "") or "").strip() == work_id:
+            c.pop("active_work", None)
+        save_clients(self.app.items, getattr(self.app, "_data_file_path", None))
+        self._ensure_built()
+
     def _count_unchecked_logs_for_client(self, client: dict) -> int:
         """
         Best-effort counter for 'unchecked logs' across a few common shapes.
@@ -1805,6 +1948,9 @@ class DashboardPage:
         unchecked = 0
         for it in items:
             if not isinstance(it, dict):
+                continue
+            # Memo logs are lightweight notes and not part of actionable unchecked-log workflow.
+            if str(it.get("log_type", "") or "").strip().lower() == "memo":
                 continue
 
             # Common "checked" flags

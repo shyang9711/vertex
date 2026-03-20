@@ -65,9 +65,9 @@ def _ensure_row_tags(tv: ttk.Treeview, dark: bool):
     }
 
 def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
-    """Builds the Notes tab for a given client inside the provided notebook."""
+    """Builds the Client Memo Log tab for a given client inside the provided notebook."""
     logs_tab = ttk.Frame(notebook, padding=8)
-    notebook.add(logs_tab, text="Notes")
+    notebook.add(logs_tab, text="Memo Log")
 
     # ---- Treeview with checkbox-ish Done column; fixed row height ----
     cols = ("done", "ts", "text")
@@ -139,26 +139,28 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         return tv.index(sel[0])
 
     def edit_log():
-        LOG.info("Edit note clicked")
+        LOG.info("Edit memo clicked")
         i = selected_index()
         if i is None:
-            messagebox.showinfo("Edit Note", "Select a note row to edit.")
+            messagebox.showinfo("Edit Memo", "Select a memo row to edit.")
             return
         entry = (client.get("logs") or [])[i]
-        d = LogDialog(app.winfo_toplevel(), "Edit Note", initial=entry)
+        d = LogDialog(app.winfo_toplevel(), "Edit Memo", initial=entry)
         app.wait_window(d)
         if d.result:
-            client["logs"][i] = d.result
+            merged = dict(d.result)
+            merged["log_type"] = str(entry.get("log_type", "memo") or "memo").strip().lower()
+            client["logs"][i] = merged
             save_clients_cb(app.items)
             refresh_tv()
 
     def delete_log():
-        LOG.info("Delete note clicked")
+        LOG.info("Delete memo clicked")
         i = selected_index()
         if i is None:
-            messagebox.showinfo("Delete Note", "Select a note row to delete.")
+            messagebox.showinfo("Delete Memo", "Select a memo row to delete.")
             return
-        if not messagebox.askyesno("Delete Note", "Delete the selected note entry?"):
+        if not messagebox.askyesno("Delete Memo", "Delete the selected memo entry?"):
             return
         del client["logs"][i]
         save_clients_cb(app.items)
@@ -209,15 +211,16 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         client.setdefault("logs", []).append({
             "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             "text": t,
-            "done": False
+            "done": False,
+            "log_type": "memo",
         })
         save_clients_cb(app.items)
         v_quick.set("")
         refresh_tv()
 
-    ttk.Button(controls, text="Add",         command=add_note).grid(row=0, column=1, padx=(6,0))
-    ttk.Button(controls, text="Edit",         command=edit_log).grid(row=0, column=2, padx=(6,0))
-    ttk.Button(controls, text="Delete",      command=delete_log).grid(row=0, column=3, padx=(6,0))
+    ttk.Button(controls, text="Add Memo",    command=add_note).grid(row=0, column=1, padx=(6,0))
+    ttk.Button(controls, text="Edit Memo",   command=edit_log).grid(row=0, column=2, padx=(6,0))
+    ttk.Button(controls, text="Delete Memo", command=delete_log).grid(row=0, column=3, padx=(6,0))
     ttk.Button(controls, text="Toggle Done", command=toggle_done).grid(row=0, column=4, padx=(6,0))
 
     # Double-click to edit, single-click on ✓ column to toggle

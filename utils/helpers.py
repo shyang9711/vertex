@@ -117,9 +117,11 @@ def normalize_logs(logs):
                 "user": str(x.get("user","")).strip(),
                 "text": str(x.get("text","")).strip(),
                 "done": bool(x.get("done", False)),
+                # Distinguish lightweight memo logs from task/audit history
+                "log_type": str(x.get("log_type", "memo") or "memo").strip().lower(),
             })
         else:
-            out.append({"ts":"", "user":"", "text":str(x), "done": False})
+            out.append({"ts":"", "user":"", "text":str(x), "done": False, "log_type": "memo"})
     return out
 
 
