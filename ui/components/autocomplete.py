@@ -8,6 +8,35 @@ except Exception:
     class NewUI:
         BORDER = "#2b2b2b"
 
+# Active suggestion popups (hide_all on app focus loss)
+_ACTIVE_POPUPS: list["AutocompletePopup"] = []
+
+
+def hide_all_autocomplete_popups():
+    for p in list(_ACTIVE_POPUPS):
+        try:
+            p.hide()
+        except Exception:
+            pass
+
+
+def should_keep_autocomplete_open_for_widget(widget) -> bool:
+    """True if click/focus is on an autocomplete popup or its anchor entry."""
+    w = widget
+    for p in list(_ACTIVE_POPUPS):
+        try:
+            if not p.winfo_viewable():
+                continue
+            if str(w).startswith(str(p)):
+                return True
+            a = getattr(p, "anchor", None)
+            if a is not None and (w is a or str(w).startswith(str(a))):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 class AutocompletePopup(tk.Toplevel):
     def __init__(self, master, anchor_entry: tk.Entry, on_choose: Callable[[str], None]):
         super().__init__(master)
@@ -37,12 +66,31 @@ class AutocompletePopup(tk.Toplevel):
         self.listbox.bind("<FocusOut>", self._maybe_hide)
         self.listbox.bind("<Escape>", lambda e: self.hide())
 
+        self.listbox.bind("<MouseWheel>", self._on_listbox_wheel)
+        self.listbox.bind("<Button-4>", self._on_listbox_wheel)
+        self.listbox.bind("<Button-5>", self._on_listbox_wheel)
+        self.bind("<MouseWheel>", self._on_listbox_wheel)
+
+    def _on_listbox_wheel(self, event=None):
+        if not self.winfo_viewable():
+            return
+        if event.delta:
+            self.listbox.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        else:
+            if event.num == 4:
+                self.listbox.yview_scroll(-3, "units")
+            elif event.num == 5:
+                self.listbox.yview_scroll(3, "units")
+        return "break"
+
     def show(self, items: list[str]):
         self.listbox.delete(0, tk.END)
         for s in items[:20]:
             self.listbox.insert(tk.END, s)
         if not items:
             self.hide(); return
+        if self not in _ACTIVE_POPUPS:
+            _ACTIVE_POPUPS.append(self)
         x = self.anchor.winfo_rootx()
         y = self.anchor.winfo_rooty() + self.anchor.winfo_height()
         w = self.anchor.winfo_width()
@@ -84,6 +132,11 @@ class AutocompletePopup(tk.Toplevel):
         self.hide()
 
     def hide(self):
+        try:
+            if self in _ACTIVE_POPUPS:
+                _ACTIVE_POPUPS.remove(self)
+        except ValueError:
+            pass
         try:
             self.withdraw()
             self.update_idletasks()

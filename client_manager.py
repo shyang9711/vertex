@@ -60,7 +60,11 @@ try:
     from vertex.ui.dialogs.linkdialog import LinkDialog
     from vertex.ui.dialogs.logdialog import LogDialog
     from vertex.ui.dialogs.work_session_popup import WorkSessionPopup, OptionalNoteDialog
-    from vertex.ui.components.autocomplete import AutocompletePopup
+    from vertex.ui.components.autocomplete import (
+        AutocompletePopup,
+        hide_all_autocomplete_popups,
+        should_keep_autocomplete_open_for_widget,
+    )
     from vertex.ui.components.scrollframe import ScrollFrame
     from vertex.utils.io import (
         load_clients, save_clients,
@@ -110,7 +114,11 @@ except ModuleNotFoundError:
     from ui.dialogs.linkdialog import LinkDialog
     from ui.dialogs.logdialog import LogDialog
     from ui.dialogs.work_session_popup import WorkSessionPopup, OptionalNoteDialog
-    from ui.components.autocomplete import AutocompletePopup
+    from ui.components.autocomplete import (
+        AutocompletePopup,
+        hide_all_autocomplete_popups,
+        should_keep_autocomplete_open_for_widget,
+    )
     from ui.components.scrollframe import ScrollFrame
     from utils.io import (
         load_clients, save_clients,
@@ -431,15 +439,18 @@ class App(ttk.Frame):
         # Autocomplete
         self._ac = AutocompletePopup(self, self.search_entry, on_choose=self._open_from_suggestion)
 
-        # Hide suggestions when clicking anywhere outside the popup or the entry
+        # Hide suggestions when clicking anywhere outside popups / anchors
         def _dismiss_ac_on_click(e):
-            if not self._ac or not self._ac.winfo_exists() or not self._ac.winfo_viewable():
+            if should_keep_autocomplete_open_for_widget(e.widget):
                 return
-            w = e.widget
-            in_popup = str(w).startswith(str(self._ac))
-            on_entry = (w is self.search_entry) or str(w).startswith(str(self.search_entry))
-            if not (in_popup or on_entry):
-                self._ac.hide()
+            hide_all_autocomplete_popups()
+
+        self.bind_all("<Button-1>", _dismiss_ac_on_click, add=True)
+        try:
+            # When the main window loses activation (Alt+Tab, another monitor click), close lists.
+            self.winfo_toplevel().bind("<Deactivate>", lambda _e: hide_all_autocomplete_popups(), add=True)
+        except Exception:
+            pass
 
         def _on_q_change(*_):
             self._update_suggestions()
@@ -1427,6 +1438,10 @@ class App(ttk.Frame):
         self._taskbar_task_combo.bind(
             "<<ComboboxSelected>>", lambda _e=None: self._work_taskbar_sync_buttons(idx)
         )
+        # Prevent mousewheel over the task combobox from scrolling a parent ScrollFrame / page.
+        self._taskbar_task_combo.bind("<MouseWheel>", lambda _e: "break")
+        self._taskbar_task_combo.bind("<Button-4>", lambda _e: "break")
+        self._taskbar_task_combo.bind("<Button-5>", lambda _e: "break")
 
         btns = ttk.Frame(self._work_taskbar_frame)
         btns.pack(side=tk.RIGHT)
@@ -1499,7 +1514,7 @@ class App(ttk.Frame):
             traceback.print_exc()
             messagebox.showerror("Documents Tab Error", f"{type(ex).__name__}: {ex}")
 
-        init_logs_tab(nb, self, c, _save_clients)
+        init_logs_tab(nb, self, c, _save_clients, client_idx=idx)
 
         # Analysis tab
         ana = ttk.Frame(nb, padding=8); nb.add(ana, text="Analysis")
@@ -1953,6 +1968,148 @@ class App(ttk.Frame):
         self._destroy_work_popup_ui()
         self._work_taskbar_refresh_dropdown_options(client_idx)
         self._work_taskbar_sync_buttons(client_idx)
+
+    def _work_resume_held_item(self, client_idx: int, work_item_id: str) -> None:
+        """Start / resume a held work item from Logs tab (or other UI)."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx]
+        if c.get("active_work"):
+            messagebox.showinfo("Work Session", "A task is already active. Hold or Finished it first.")
+            return
+        work_id = str(work_item_id or "").strip()
+        if not work_id:
+            return
+        row = None
+        for wi in c.get("work_items") or []:
+            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
+                row = wi
+                break
+        if not row:
+            return
+        if str(row.get("status", "") or "").strip().lower() != "on_hold":
+            messagebox.showinfo("Start Task", "Only held tasks can be started from this action.")
+            return
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        task_name = str(row.get("task_name", "") or "").strip()
+        held_at = str(row.get("held_at", "") or row.get("updated_at", "") or "").strip()
+        self._client_work_item_upsert(
+            client_idx,
+            task_name=task_name,
+            status="active",
+            note="",
+            existing_item_id=work_id,
+        )
+        c["active_work"] = {
+            "client_name": str(c.get("name", "") or "").strip(),
+            "client_id": self._canonical_client_key(c, client_idx),
+            "task_name": task_name,
+            "task_kind": "",
+            "created_at": now_iso,
+            "started_at": now_iso,
+            "status": "active",
+            "from_unchecked_log": False,
+            "log_ref": {},
+            "work_item_id": work_id,
+            "selected_option_label": f"Held ({held_at or '—'}) {task_name}",
+        }
+        save_clients(self.items, self._data_file_path)
+        self._ensure_work_popup_for_client(client_idx)
+        self._work_taskbar_refresh_dropdown_options(client_idx)
+        self._work_taskbar_sync_buttons(client_idx)
+        self._refresh_logs_tab_for_client_idx(client_idx)
+
+    def _work_unfinish_item(self, client_idx: int, work_item_id: str) -> None:
+        """Revert a completed work item to on hold (undo mistaken finish)."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx]
+        work_id = str(work_item_id or "").strip()
+        if not work_id:
+            return
+        task_name = ""
+        for wi in c.get("work_items") or []:
+            if not isinstance(wi, dict):
+                continue
+            if str(wi.get("id", "") or "").strip() != work_id:
+                continue
+            if str(wi.get("status", "") or "").strip().lower() != "completed":
+                messagebox.showinfo("Unfinish", "This task is not marked finished.")
+                return
+            task_name = str(wi.get("task_name", "") or "").strip()
+            now_iso = datetime.now().isoformat(timespec="seconds")
+            wi["status"] = "on_hold"
+            wi["held_at"] = now_iso
+            wi["updated_at"] = now_iso
+            wi["completed_at"] = ""
+            break
+        else:
+            return
+        # Remove the most recent matching history log line (from finish), if present
+        logs = c.get("logs") or []
+        remove_i = None
+        for i in range(len(logs) - 1, -1, -1):
+            lg = logs[i]
+            if not isinstance(lg, dict):
+                continue
+            if str(lg.get("log_type", "") or "").strip().lower() != "history":
+                continue
+            text = str(lg.get("text", "") or "")
+            head = text.split(" | ", 1)[0].strip()
+            if task_name and head.casefold() == task_name.casefold():
+                remove_i = i
+                break
+        if remove_i is not None:
+            del logs[remove_i]
+        save_clients(self.items, self._data_file_path)
+        self._work_taskbar_refresh_dropdown_options(client_idx)
+        self._work_taskbar_sync_buttons(client_idx)
+        self._refresh_logs_tab_for_client_idx(client_idx)
+
+    def _work_rehydrate_active_from_item(self, client_idx: int, work_item_id: str) -> None:
+        """If a work_item is active but active_work is missing, restore the session shell."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx]
+        if c.get("active_work"):
+            return
+        wid = str(work_item_id or "").strip()
+        for wi in c.get("work_items") or []:
+            if not isinstance(wi, dict) or str(wi.get("id", "") or "").strip() != wid:
+                continue
+            if str(wi.get("status", "") or "").strip().lower() != "active":
+                return
+            now_iso = datetime.now().isoformat(timespec="seconds")
+            tn = str(wi.get("task_name", "") or "").strip()
+            c["active_work"] = {
+                "client_name": str(c.get("name", "") or "").strip(),
+                "client_id": self._canonical_client_key(c, client_idx),
+                "task_name": tn,
+                "task_kind": "",
+                "created_at": str(wi.get("created_at") or now_iso),
+                "started_at": str(wi.get("started_at") or wi.get("updated_at") or now_iso),
+                "status": "active",
+                "from_unchecked_log": False,
+                "log_ref": {},
+                "work_item_id": wid,
+                "selected_option_label": tn,
+            }
+            save_clients(self.items, self._data_file_path)
+            self._ensure_work_popup_for_client(client_idx)
+            self._work_taskbar_refresh_dropdown_options(client_idx)
+            self._work_taskbar_sync_buttons(client_idx)
+            self._refresh_logs_tab_for_client_idx(client_idx)
+            return
+
+    def refresh_all_logs_tabs(self) -> None:
+        """Redraw every mounted client Logs tab (e.g. after global Notes page edit)."""
+        refs = getattr(self, "_logs_tab_refreshers", {}) or {}
+        for fn in list(refs.values()):
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
 
     # ---------- Personnel Detail Page ----------
     def _build_person_page(self, client_idx: int, role_key: str, person_idx: int):
@@ -3827,7 +3984,12 @@ class App(ttk.Frame):
         Called from NotePage to switch to the Notes tab if your detail page uses a ttk.Notebook.
         Safe no-op if not found.
         """
-        nb = getattr(self, "detail_notebook", None) or getattr(self, "detail_nb", None) or getattr(self, "notebook", None)
+        nb = (
+            getattr(self, "_detail_notebook", None)
+            or getattr(self, "detail_notebook", None)
+            or getattr(self, "detail_nb", None)
+            or getattr(self, "notebook", None)
+        )
         if not nb or not hasattr(nb, "tabs"):
             return
         try:

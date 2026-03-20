@@ -303,7 +303,7 @@ class DashboardPage:
             except Exception:
                 pass
 
-        root.columnconfigure(0, weight=0, minsize=160)   # LEFT: protected
+        root.columnconfigure(0, weight=0, minsize=118)   # LEFT: compact summary column
         root.columnconfigure(1, weight=1, minsize=640)   # MIDDLE: flexible (tasks)
         root.columnconfigure(2, weight=0, minsize=240)   # RIGHT: protected
 
