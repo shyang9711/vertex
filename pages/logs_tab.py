@@ -11,7 +11,7 @@ from tkinter import ttk, messagebox
 import datetime
 try:
     from vertex.utils.app_logging import get_logger
-    
+
 except ModuleNotFoundError:
     from utils.app_logging import get_logger
 
@@ -24,7 +24,6 @@ except Exception:
         @staticmethod
         def stripe_tree(tv): pass
 
-        
 
 # LogDialog moved to ui/dialogs/logdialog.py
 try:
@@ -41,12 +40,10 @@ def _is_dark(app) -> bool:
                 or getattr(app, "dark_mode", False)
                 or (getattr(app, "theme", "") in ("dark", "Dark")))
 
-def _ensure_row_tags(tv: ttk.Treeview, dark: bool):
-    # DONE rows (de-emphasized but readable)
-    tv.tag_configure('done_light', foreground='#6B7280', background='#F3F4F6')  # gray-500 on gray-100
-    tv.tag_configure('done_dark',  foreground='#9CA3AF', background='#1F2937')  # gray-400 on gray-800
 
-    # ACTIVE (unchecked) rows (slightly emphasized)
+def _ensure_row_tags(tv: ttk.Treeview, dark: bool):
+    tv.tag_configure('done_light', foreground='#6B7280', background='#F3F4F6')
+    tv.tag_configure('done_dark',  foreground='#9CA3AF', background='#1F2937')
     try:
         import tkinter.font as tkfont
         base = tkfont.nametofont("TkTextFont")
@@ -58,168 +55,282 @@ def _ensure_row_tags(tv: ttk.Treeview, dark: bool):
         tv.tag_configure('active_light', foreground='#111827', background='#EEF2FF')
         tv.tag_configure('active_dark',  foreground='#E5E7EB', background='#312E81')
 
+    tv.tag_configure('task_light', foreground='#1F2937', background='#F9FAFB')
+    tv.tag_configure('task_dark',  foreground='#E5E7EB', background='#111827')
+
     return {
         "done":   'done_dark' if dark else 'done_light',
         "active": 'active_dark' if dark else 'active_light',
+        "task":   'task_dark' if dark else 'task_light',
     }
 
 
-def _task_detail_cell(wi: dict) -> str:
-    """Second-line detail for an on-hold work item row."""
-    held = str(wi.get("held_at") or wi.get("updated_at") or "").strip()
-    note = str(wi.get("note") or "").replace("\n", " ").strip()
-    if note:
-        tail = note if len(note) <= 48 else note[:45] + "…"
-        return f"{held} — {tail}" if held else tail
-    return held or "—"
+def _norm_minute(ts: str) -> str:
+    """Normalize timestamps to minute precision for dedupe keys."""
+    s = str(ts or "").strip().replace("T", " ").replace("Z", "")
+    return s[:16]
+
+
+def _parse_sort_ts(raw: str) -> datetime.datetime:
+    s = str(raw or "").strip()
+    if not s:
+        return datetime.datetime.min
+    s_iso = s.replace("Z", "+00:00")
+    try:
+        return datetime.datetime.fromisoformat(s_iso)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(s[:19], fmt)
+        except ValueError:
+            pass
+    return datetime.datetime.min
+
+
+def _split_history_text(text: str) -> tuple[str, str]:
+    """Split 'Task | note' style history lines (same as finish flow)."""
+    t = (text or "").strip()
+    if " | " in t:
+        a, b = t.split(" | ", 1)
+        return a.strip(), b.strip()
+    return t, ""
+
+
+def _build_merged_rows(client: dict) -> list[dict]:
+    """
+    Build unified rows for the Logs tab Treeview.
+
+    Each row dict:
+      status, task, time_disp, note_disp, sort_ts, tag, meta
+    meta: {kind, log_index?} for memo actions; kind in memo|history|work|active
+    """
+    rows: list[dict] = []
+
+    # Keys to skip redundant history log lines when a completed work_item exists
+    completed_keys: set[tuple[str, str]] = set()
+    for wi in client.get("work_items") or []:
+        if not isinstance(wi, dict):
+            continue
+        if str(wi.get("status", "") or "").strip().lower() != "completed":
+            continue
+        tn = (wi.get("task_name") or "").strip()
+        ca = wi.get("completed_at") or wi.get("updated_at") or ""
+        if tn:
+            completed_keys.add((tn.casefold(), _norm_minute(str(ca))))
+
+    # --- Active session (task bar)
+    aw = client.get("active_work") or {}
+    active_wid = ""
+    if isinstance(aw, dict) and aw:
+        active_wid = str(aw.get("work_item_id", "") or "").strip()
+        tname = str(aw.get("task_name") or "").strip() or "—"
+        since = str(aw.get("started_at") or aw.get("created_at") or "").strip() or "—"
+        rows.append({
+            "status": "Active",
+            "task": tname,
+            "time_disp": since,
+            "note_disp": "",
+            "sort_ts": _parse_sort_ts(since),
+            "tag": "task",
+            "meta": {"kind": "active"},
+        })
+
+    # --- Work items (held / completed / stray active)
+    for wi in client.get("work_items") or []:
+        if not isinstance(wi, dict):
+            continue
+        st = str(wi.get("status", "") or "").strip().lower()
+        wid = str(wi.get("id", "") or "").strip()
+        tname = str(wi.get("task_name", "") or "").strip()
+        if not tname:
+            tname = "—"
+
+        if st == "active":
+            if active_wid and wid == active_wid:
+                continue
+            ts = str(wi.get("started_at") or wi.get("updated_at") or wi.get("created_at") or "").strip() or "—"
+            rows.append({
+                "status": "Active",
+                "task": tname,
+                "time_disp": ts,
+                "note_disp": str(wi.get("note") or "").replace("\n", " ").strip(),
+                "sort_ts": _parse_sort_ts(ts),
+                "tag": "task",
+                "meta": {"kind": "work", "work_item_id": wid},
+            })
+        elif st == "on_hold":
+            ts = str(wi.get("held_at") or wi.get("updated_at") or "").strip() or "—"
+            note = str(wi.get("note") or "").replace("\n", " ").strip()
+            rows.append({
+                "status": "On hold",
+                "task": tname,
+                "time_disp": ts,
+                "note_disp": note,
+                "sort_ts": _parse_sort_ts(ts),
+                "tag": "task",
+                "meta": {"kind": "work", "work_item_id": wid},
+            })
+        elif st == "completed":
+            ts = str(wi.get("completed_at") or wi.get("updated_at") or "").strip() or "—"
+            note = str(wi.get("note") or "").replace("\n", " ").strip()
+            rows.append({
+                "status": "Finished",
+                "task": tname,
+                "time_disp": ts,
+                "note_disp": note,
+                "sort_ts": _parse_sort_ts(ts),
+                "tag": "task",
+                "meta": {"kind": "work", "work_item_id": wid},
+            })
+
+    # --- Log entries (memos + history)
+    for i, entry in enumerate(client.get("logs") or []):
+        if not isinstance(entry, dict):
+            continue
+        lt = str(entry.get("log_type", "") or "").strip().lower()
+        if not lt:
+            lt = "memo"
+        ts_raw = entry.get("ts", "")
+        ts_disp = str(ts_raw or "").strip()
+        if entry.get("edited"):
+            ts_disp = f"{ts_disp} (Edited)" if ts_disp else "(Edited)"
+        text = str(entry.get("text", "") or "").strip()
+        sort_ts = _parse_sort_ts(str(ts_raw))
+
+        if lt == "history":
+            task_part, note_part = _split_history_text(text)
+            key = (task_part.casefold(), _norm_minute(str(ts_raw)))
+            if key in completed_keys:
+                continue
+            rows.append({
+                "status": "Finished",
+                "task": task_part or "—",
+                "time_disp": ts_disp,
+                "note_disp": note_part,
+                "sort_ts": sort_ts,
+                "tag": "task",
+                "meta": {"kind": "history", "log_index": i},
+            })
+        else:
+            # Memo (and any non-history log)
+            done = bool(entry.get("done"))
+            st_label = "N/A"
+            if done:
+                st_label = "N/A ✓"
+            rows.append({
+                "status": st_label,
+                "task": text or "—",
+                "time_disp": ts_disp,
+                "note_disp": "",
+                "sort_ts": sort_ts,
+                "tag": "done" if done else "active",
+                "meta": {"kind": "memo", "log_index": i},
+            })
+
+    rows.sort(key=lambda r: r["sort_ts"], reverse=True)
+    return rows
 
 
 def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
-    """Client Logs tab: working-on tasks summary + memo/history log list."""
+    """Client Logs tab: merged tasks + memos/history in one list."""
     logs_tab = ttk.Frame(notebook, padding=8)
     notebook.add(logs_tab, text=LOGS_TAB_LABEL)
 
     DARK = _is_dark(app)
+    ROW_TAGS = None  # set after tv created
 
-    # ---- Working on tasks (read-only; use task bar above to Start / Hold / Finished)
-    ttk.Label(logs_tab, text="Working on tasks", font=("Segoe UI", 10, "bold")).grid(
-        row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)
-    )
-    task_cols = ("status", "task", "detail")
-    _task_style = ttk.Style(logs_tab)
-    _task_style.configure("TasksTab.Treeview", rowheight=24)
-    tasks_tv = ttk.Treeview(
+    cols = ("status", "task", "time", "note")
+    _merged_style = ttk.Style(logs_tab)
+    _merged_style.configure("MergedLogs.Treeview", rowheight=26)
+    tv = ttk.Treeview(
         logs_tab,
-        columns=task_cols,
+        columns=cols,
         show="headings",
         selectmode="browse",
-        height=6,
-        style="TasksTab.Treeview",
-    )
-    tasks_tv.heading("status", text="Status")
-    tasks_tv.heading("task", text="Task")
-    tasks_tv.heading("detail", text="Since / note")
-
-    tasks_tv.column("status", width=110, anchor="w", stretch=False)
-    tasks_tv.column("task", width=220, anchor="w", stretch=True)
-    tasks_tv.column("detail", width=360, anchor="w", stretch=True)
-
-    tasks_yscr = ttk.Scrollbar(logs_tab, orient="vertical", command=tasks_tv.yview)
-    tasks_tv.configure(yscrollcommand=tasks_yscr.set)
-    tasks_tv.grid(row=1, column=0, sticky="nsew")
-    tasks_yscr.grid(row=1, column=1, sticky="ns")
-
-    def refresh_tasks_tv():
-        tasks_tv.delete(*tasks_tv.get_children())
-        active = client.get("active_work") or {}
-        if isinstance(active, dict) and active:
-            tname = str(active.get("task_name") or "").strip() or "—"
-            since = str(active.get("started_at") or active.get("created_at") or "").strip() or "—"
-            tasks_tv.insert("", "end", values=("In progress", tname, since))
-        held: list[dict] = []
-        for wi in client.get("work_items") or []:
-            if not isinstance(wi, dict):
-                continue
-            if str(wi.get("status", "") or "").strip().lower() != "on_hold":
-                continue
-            if not str(wi.get("task_name", "") or "").strip():
-                continue
-            held.append(wi)
-        held.sort(key=lambda w: str(w.get("held_at") or w.get("updated_at") or ""), reverse=True)
-        for wi in held:
-            tasks_tv.insert(
-                "",
-                "end",
-                values=("On hold", str(wi.get("task_name") or "").strip(), _task_detail_cell(wi)),
-            )
-        if not tasks_tv.get_children():
-            tasks_tv.insert("", "end", values=("—", "(no active or held tasks)", ""))
-        try:
-            NewUI.stripe_tree(tasks_tv)
-        except Exception:
-            pass
-
-    ttk.Separator(logs_tab).grid(row=2, column=0, columnspan=2, sticky="ew", pady=10)
-
-    ttk.Label(logs_tab, text="Log entries (memos & task history)", font=("Segoe UI", 10, "bold")).grid(
-        row=3, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        height=14,
+        style="MergedLogs.Treeview",
     )
 
-    # ---- Log Treeview with checkbox-ish Done column
-    cols = ("done", "ts", "text")
-    _notes_tab_style = ttk.Style(logs_tab)
-    _notes_tab_style.configure("NotesTab.Treeview", rowheight=28)
-    tv = ttk.Treeview(
-        logs_tab, columns=cols, show="headings", selectmode="browse", height=10, style="NotesTab.Treeview"
-    )
+    tv.heading("status", text="Status")
+    tv.heading("task", text="Task / memo")
+    tv.heading("time", text="Time")
+    tv.heading("note", text="Note")
 
-    ROW_TAGS = _ensure_row_tags(tv, DARK)
-
-    tv.heading("done", text="✓")
-    tv.heading("ts",   text="When")
-    tv.heading("text", text="Entry")
-
-    tv.column("done", width=40,  anchor="center", stretch=False)
-    tv.column("ts",   width=200, anchor="w",      stretch=False)
-    tv.column("text", width=700, anchor="w",      stretch=True)
+    tv.column("status", width=100, anchor="w", stretch=False)
+    tv.column("task", width=280, anchor="w", stretch=True)
+    tv.column("time", width=180, anchor="w", stretch=False)
+    tv.column("note", width=260, anchor="w", stretch=True)
 
     yscr = ttk.Scrollbar(logs_tab, orient="vertical", command=tv.yview)
     tv.configure(yscrollcommand=yscr.set)
 
-    tv.grid(row=4, column=0, sticky="nsew")
-    yscr.grid(row=4, column=1, sticky="ns")
+    tv.grid(row=0, column=0, sticky="nsew")
+    yscr.grid(row=0, column=1, sticky="ns")
 
-    logs_tab.grid_rowconfigure(4, weight=1)
+    logs_tab.grid_rowconfigure(0, weight=1)
     logs_tab.grid_columnconfigure(0, weight=1)
 
-    def _ts_display(entry):
-        ts = entry.get("ts", "")
-        if entry.get("edited"):
-            return f"{ts} (Edited)" if ts else "(Edited)"
-        return ts
+    ROW_TAGS = _ensure_row_tags(tv, DARK)
+    row_meta: dict[str, dict] = {}
 
-    def refresh_tv():
+    def refresh_merged():
         tv.delete(*tv.get_children())
-        iids = []
-        for entry in (client.get("logs") or []):
-            done_mark = "☑" if entry.get("done") else "☐"
-            iid = tv.insert("", "end", values=(
-                done_mark,
-                _ts_display(entry),
-                entry.get("text", ""),
-            ))
-            iids.append((iid, bool(entry.get("done"))))
+        row_meta.clear()
+        merged = _build_merged_rows(client)
+        tag_apply: list[tuple[str, str]] = []
+        if not merged:
+            tv.insert("", "end", values=("—", "(no entries yet)", "", ""))
+        else:
+            for r in merged:
+                iid = tv.insert(
+                    "",
+                    "end",
+                    values=(r["status"], r["task"], r["time_disp"], r["note_disp"]),
+                )
+                row_meta[iid] = r["meta"]
+                tag_apply.append((iid, r.get("tag") or "task"))
         try:
             NewUI.stripe_tree(tv)
         except Exception:
             pass
-        
-        for iid, is_done in iids:
-            tv.item(iid, tags=(ROW_TAGS["done"] if is_done else ROW_TAGS["active"],))
+        # Re-apply semantic tags on top of zebra (stripe_tree overwrites tags).
+        for iid, tag_key in tag_apply:
+            stripes = tuple(tv.item(iid, "tags") or ())
+            semantic = ROW_TAGS.get(tag_key, ROW_TAGS["task"])
+            tv.item(iid, tags=stripes + (semantic,))
 
-    def refresh_all():
-        refresh_tasks_tv()
-        refresh_tv()
-
-    # Expose refresh so task bar / Hold / Finished can update tasks + log list immediately.
+    # Expose refresh for task bar / Hold / Finished
     try:
         if not hasattr(app, "_logs_tab_refreshers"):
             app._logs_tab_refreshers = {}
-        app._logs_tab_refreshers[id(client)] = refresh_all
+        app._logs_tab_refreshers[id(client)] = refresh_merged
     except Exception:
         pass
 
-    def selected_index():
+    def _meta_for_selection():
         sel = tv.selection()
         if not sel:
             return None
-        return tv.index(sel[0])
+        return row_meta.get(sel[0])
+
+    def _memo_log_index_from_iid(iid: str) -> int | None:
+        m = row_meta.get(iid) or {}
+        if m.get("kind") != "memo":
+            return None
+        idx = m.get("log_index")
+        return idx if isinstance(idx, int) else None
+
+    def selected_memo_log_index():
+        sel = tv.selection()
+        if not sel:
+            return None
+        return _memo_log_index_from_iid(sel[0])
 
     def edit_log():
-        LOG.info("Edit log clicked")
-        i = selected_index()
+        i = selected_memo_log_index()
         if i is None:
-            messagebox.showinfo("Edit log", "Select a log row to edit.")
+            messagebox.showinfo("Edit log", "Select a memo row (Status N/A) to edit.")
             return
         entry = (client.get("logs") or [])[i]
         d = LogDialog(app.winfo_toplevel(), "Edit log entry", initial=entry)
@@ -229,53 +340,48 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
             merged["log_type"] = str(entry.get("log_type", "memo") or "memo").strip().lower()
             client["logs"][i] = merged
             save_clients_cb(app.items)
-            refresh_all()
+            refresh_merged()
 
     def delete_log():
-        LOG.info("Delete log clicked")
-        i = selected_index()
+        i = selected_memo_log_index()
         if i is None:
-            messagebox.showinfo("Delete log", "Select a log row to delete.")
+            messagebox.showinfo("Delete log", "Select a memo row (Status N/A) to delete.")
             return
-        if not messagebox.askyesno("Delete log", "Delete the selected log entry?"):
+        if not messagebox.askyesno("Delete log", "Delete the selected memo entry?"):
             return
         del client["logs"][i]
         save_clients_cb(app.items)
-        refresh_all()
+        refresh_merged()
 
     def toggle_done():
-        LOG.info("Toggle done clicked")
         sel = tv.selection()
         if not sel:
-            messagebox.showinfo("Toggle", "Select a row to toggle done / not done.")
+            messagebox.showinfo("Toggle", "Select a memo row to toggle done / not done.")
             return
         _toggle_done_by_iid(sel[0])
 
-
     def _toggle_done_by_iid(iid: str):
-        try:
-            idx = tv.index(iid)
-        except Exception:
+        i = _memo_log_index_from_iid(iid)
+        if i is None:
             return
         client.setdefault("logs", [])
-        if 0 <= idx < len(client["logs"]):
-            client["logs"][idx]["done"] = not bool(client["logs"][idx].get("done"))
+        if 0 <= i < len(client["logs"]):
+            client["logs"][i]["done"] = not bool(client["logs"][i].get("done"))
             save_clients_cb(app.items)
-            refresh_all()
-            try:
-                new_iid = tv.get_children()[idx]
-                tv.selection_set(new_iid)
-                tv.focus(new_iid)
-            except Exception:
-                pass
-
+            refresh_merged()
+            # re-select same logical row if still present
+            for child in tv.get_children():
+                m = row_meta.get(child) or {}
+                if m.get("kind") == "memo" and m.get("log_index") == i:
+                    tv.selection_set(child)
+                    tv.focus(child)
+                    break
 
     # Controls row
     controls = ttk.Frame(logs_tab)
-    controls.grid(row=5, column=0, sticky="we", pady=(6, 0))
+    controls.grid(row=1, column=0, sticky="we", pady=(6, 0))
     controls.grid_columnconfigure(0, weight=1)
 
-    # Quick-add entry (memo)
     v_quick = tk.StringVar()
     ttk.Entry(controls, textvariable=v_quick).grid(row=0, column=0, sticky="we")
 
@@ -291,12 +397,12 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         })
         save_clients_cb(app.items)
         v_quick.set("")
-        refresh_all()
+        refresh_merged()
 
-    ttk.Button(controls, text="Add log",    command=add_note).grid(row=0, column=1, padx=(6,0))
-    ttk.Button(controls, text="Edit",   command=edit_log).grid(row=0, column=2, padx=(6,0))
-    ttk.Button(controls, text="Delete", command=delete_log).grid(row=0, column=3, padx=(6,0))
-    ttk.Button(controls, text="Toggle Done", command=toggle_done).grid(row=0, column=4, padx=(6,0))
+    ttk.Button(controls, text="Add log", command=add_note).grid(row=0, column=1, padx=(6, 0))
+    ttk.Button(controls, text="Edit", command=edit_log).grid(row=0, column=2, padx=(6, 0))
+    ttk.Button(controls, text="Delete", command=delete_log).grid(row=0, column=3, padx=(6, 0))
+    ttk.Button(controls, text="Toggle Done", command=toggle_done).grid(row=0, column=4, padx=(6, 0))
 
     def on_tree_double(_e):
         edit_log()
@@ -307,11 +413,12 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         if row:
             tv.selection_set(row)
             tv.focus(row)
+            # First data column = Status — click toggles done for memos
             if col == "#1":
                 _toggle_done_by_iid(row)
         else:
             tv.selection_remove(tv.selection())
-            tv.focus('')
+            tv.focus("")
 
     tv.unbind("<Button-1>")
     tv.unbind("<ButtonRelease-1>")
@@ -322,15 +429,15 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
 
     def clear_selection(_e=None):
         tv.selection_remove(tv.selection())
-        tv.focus('')
+        tv.focus("")
 
     logs_tab.bind("<Button-1>", lambda e: clear_selection() if e.widget is logs_tab else None)
     controls.bind("<Button-1>", lambda e: clear_selection())
 
     def _on_tab_changed(_e=None):
         clear_selection()
-    notebook.bind("<<NotebookTabChanged>>", _on_tab_changed)
 
+    notebook.bind("<<NotebookTabChanged>>", _on_tab_changed)
 
     menu = tk.Menu(tv, tearoff=False)
     menu.add_command(label="Toggle Done", command=toggle_done)
@@ -341,8 +448,16 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         row = tv.identify_row(ev.y)
         if row:
             tv.selection_set(row)
+            m = row_meta.get(row) or {}
+            st = tk.NORMAL if m.get("kind") == "memo" else tk.DISABLED
+            try:
+                menu.entryconfigure(0, state=st)
+                menu.entryconfigure(1, state=st)
+                menu.entryconfigure(2, state=st)
+            except Exception:
+                pass
             menu.tk_popup(ev.x_root, ev.y_root)
 
     tv.bind("<Button-3>", popup)
 
-    refresh_all()
+    refresh_merged()

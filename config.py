@@ -4,7 +4,7 @@ APP_NAME = "Vertex"
 UPDATE_POLICY_ASSET_NAME = "update_policy.json"
 
 # 🔢 bump this each time you ship a new version
-APP_VERSION = "0.2.72"
+APP_VERSION = "0.2.73"
 
 # 🔗 set this to your real GitHub repo once you create it,
 GITHUB_REPO = "shyang9711/vertex"
