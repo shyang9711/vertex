@@ -121,6 +121,16 @@ def init_logs_tab(notebook: ttk.Notebook, app, client: dict, save_clients_cb):
         for iid, is_done in iids:
             tv.item(iid, tags=(ROW_TAGS["done"] if is_done else ROW_TAGS["active"],))
 
+    # Expose a refresh callback so other parts of the UI (e.g. taskbar Hold/Finished)
+    # can force the log Treeview to update immediately without navigating away.
+    try:
+        if not hasattr(app, "_logs_tab_refreshers"):
+            app._logs_tab_refreshers = {}
+        app._logs_tab_refreshers[id(client)] = refresh_tv
+    except Exception:
+        # Best-effort only; failure shouldn't break the logs tab.
+        pass
+
     def selected_index():
         sel = tv.selection()
         if not sel:

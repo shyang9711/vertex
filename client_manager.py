@@ -1629,6 +1629,20 @@ class App(ttk.Frame):
             self._taskbar_task_combo["values"] = values
             self._taskbar_task_var.set("")
 
+    def _refresh_logs_tab_for_client_idx(self, client_idx: int) -> None:
+        """Force the Notes tab Treeview to redraw for this client, if mounted."""
+        try:
+            c = self.items[client_idx]
+        except Exception:
+            return
+        refresher_map = getattr(self, "_logs_tab_refreshers", {}) or {}
+        refresher = refresher_map.get(id(c))
+        if callable(refresher):
+            try:
+                refresher()
+            except Exception:
+                pass
+
     def _prompt_optional_note(self, *, parent, title: str, prompt: str) -> Optional[str]:
         d = OptionalNoteDialog(parent, title=title, prompt=prompt, initial="")
         self.winfo_toplevel().wait_window(d)
@@ -1814,6 +1828,7 @@ class App(ttk.Frame):
         # Clear active work session and close popup.
         c.pop("active_work", None)
         save_clients(self.items, self._data_file_path)
+        self._refresh_logs_tab_for_client_idx(client_idx)
         self._destroy_work_popup_ui()
         self._work_taskbar_refresh_dropdown_options(client_idx)
         self._work_taskbar_sync_buttons(client_idx)
@@ -1881,6 +1896,7 @@ class App(ttk.Frame):
 
         c.pop("active_work", None)
         save_clients(self.items, self._data_file_path)
+        self._refresh_logs_tab_for_client_idx(client_idx)
         self._destroy_work_popup_ui()
         self._work_taskbar_refresh_dropdown_options(client_idx)
         self._work_taskbar_sync_buttons(client_idx)
