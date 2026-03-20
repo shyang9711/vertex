@@ -1508,7 +1508,10 @@ class App(ttk.Frame):
         ttk.Label(ana, text=f"Has EIN: {'Yes' if c.get('ein') else 'No'}").pack(anchor="w")
         ttk.Label(ana, text=f"Entity Type: {c.get('entity_type','') or '—'}").pack(anchor="w")
 
-        # Restore the active tab if specified
+        # Restore the active tab if specified (legacy: "Memo Log" renamed to "Logs")
+        if restore_tab == "Memo Log":
+            restore_tab = "Logs"
+
         if restore_tab:
             print(f"[NAV] Attempting to restore tab: '{restore_tab}'")
             try:
@@ -1711,7 +1714,7 @@ class App(ttk.Frame):
             self._taskbar_task_var.set("")
 
     def _refresh_logs_tab_for_client_idx(self, client_idx: int) -> None:
-        """Force the Notes tab Treeview to redraw for this client, if mounted."""
+        """Force the Logs tab (tasks + entries) to redraw for this client, if mounted."""
         try:
             c = self.items[client_idx]
         except Exception:
@@ -1861,6 +1864,7 @@ class App(ttk.Frame):
 
         self._ensure_work_popup_for_client(client_idx)
         self._work_taskbar_sync_buttons(client_idx)
+        self._refresh_logs_tab_for_client_idx(client_idx)
 
     def _work_task_hold(self, client_idx: int) -> None:
         if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
@@ -1898,6 +1902,7 @@ class App(ttk.Frame):
         self._destroy_work_popup_ui()
         self._work_taskbar_refresh_dropdown_options(client_idx)
         self._work_taskbar_sync_buttons(client_idx)
+        self._refresh_logs_tab_for_client_idx(client_idx)
 
     def _work_task_finish(self, client_idx: int) -> None:
         if not (0 <= client_idx < len(getattr(self, "items", []) or [])):

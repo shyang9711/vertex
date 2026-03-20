@@ -416,6 +416,26 @@ class DashboardPage:
         else:
             ttk.Label(left, text="No held tasks.", style="Subtle.TLabel").pack(anchor="w")
 
+        # ---- Unchecked memos (Logs tab memos; log_type memo, not done)
+        pending_memos = []
+        for c in items:
+            if not isinstance(c, dict):
+                continue
+            mcnt = self._count_unchecked_memos_for_client(c)
+            if mcnt > 0:
+                pending_memos.append(((c.get("name") or "").strip(), mcnt))
+        pending_memos.sort(key=lambda x: (-x[1], x[0].casefold()))
+        ttk.Separator(left).pack(fill="x", pady=10)
+        total_memos = sum(cnt for _name, cnt in pending_memos)
+        ttk.Label(left, text=f"Unchecked memos: {total_memos}", style="Header.TLabel").pack(anchor="w")
+        if pending_memos:
+            MAX_MEMO_SHOW = 20
+            for name, cnt in pending_memos[:MAX_MEMO_SHOW]:
+                ttk.Label(left, text=f"• {name} — {cnt}", style="Subtle.TLabel").pack(anchor="w")
+            if len(pending_memos) > MAX_MEMO_SHOW:
+                ttk.Label(left, text=f"(+{len(pending_memos)-MAX_MEMO_SHOW} more)", style="Subtle.TLabel").pack(anchor="w")
+        else:
+            ttk.Label(left, text="No unchecked memos.", style="Subtle.TLabel").pack(anchor="w")
 
         # ---- Middle card: To‑Do
         mid = ttk.Frame(root, padding=12, style="Card.TFrame")
@@ -1974,6 +1994,41 @@ class DashboardPage:
             if not checked:
                 unchecked += 1
 
+        return unchecked
+
+    def _count_unchecked_memos_for_client(self, client: dict) -> int:
+        """
+        Count memo log entries that are still unchecked (not toggled done).
+        Only considers client['logs'] with log_type memo (or missing log_type for legacy).
+        """
+        if not isinstance(client, dict):
+            return 0
+        logs = client.get("logs") or []
+        if not isinstance(logs, list):
+            return 0
+        unchecked = 0
+        for it in logs:
+            if not isinstance(it, dict):
+                continue
+            lt = str(it.get("log_type", "") or "").strip().lower()
+            if lt not in ("memo", ""):
+                continue
+            checked_val = it.get("checked", None)
+            done_val = it.get("done", None)
+            is_done_val = it.get("is_done", None)
+            is_checked_val = it.get("is_checked", None)
+            if checked_val is not None:
+                checked = bool(checked_val)
+            elif is_checked_val is not None:
+                checked = bool(is_checked_val)
+            elif done_val is not None:
+                checked = bool(done_val)
+            elif is_done_val is not None:
+                checked = bool(is_done_val)
+            else:
+                checked = False
+            if not checked:
+                unchecked += 1
         return unchecked
 
     def _shift_month(self, delta):
