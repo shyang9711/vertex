@@ -11,6 +11,7 @@ from tkinter import ttk, messagebox
 from pathlib import Path
 import datetime as _dt
 import json, calendar as _cal, uuid
+from collections import defaultdict
 try:
     from vertex.models.tasks_model import (
         TasksStore,
@@ -83,6 +84,48 @@ class AutoCompleteCombobox(ttk.Combobox):
 
 def _today():
     return _dt.date.today()
+
+
+def _format_on_hold_type_count(task_name: str, count: int) -> str:
+    """
+    Human-readable count + task label for dashboard summaries.
+    Matches common Vertex predefined task display names (see client_manager._work_task_kind_label).
+    """
+    name = (task_name or "").strip() or "Task"
+    if count < 1:
+        return f"{count} {name}"
+    if count == 1:
+        return f"1 {name}"
+    key = name.casefold()
+    plural_map = {
+        "payroll": f"{count} Payrolls",
+        "bank update": f"{count} Bank Updates",
+        "statement of information": f"{count} SOI",
+        "soi": f"{count} SOI",
+        "bookkeeping": f"{count} Bookkeeping",
+        "payroll tax": f"{count} Payroll Taxes",
+        "sales tax": f"{count} Sales Taxes",
+        "workers comp": f"{count} Workers Comp",
+        "meeting": f"{count} Meetings",
+        "child care support": f"{count} Child Care Supports",
+        "income tax": f"{count} Income Taxes",
+        "business tax": f"{count} Business Taxes",
+        "document request": f"{count} Document Requests",
+        "profit and loss": f"{count} Profit and Loss",
+        "simple ira": f"{count} Simple IRAs",
+        "other": f"{count} Other",
+    }
+    if key in plural_map:
+        return plural_map[key]
+    # Short acronyms (e.g. SOI) — avoid "SOIs"
+    if name.isupper() and 2 <= len(name) <= 5:
+        return f"{count} {name}"
+    if name.lower().endswith("s"):
+        return f"{count} {name}"
+    if name.lower().endswith("y"):
+        return f"{count} {name[:-1]}ies"
+    return f"{count} {name}s"
+
 
 # ---------- Weekend/Holiday helpers (unchanged) ----------
 WEEKDAY_NAMES = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
@@ -366,55 +409,49 @@ class DashboardPage:
             if len(pending) > MAX_SHOW:
                 ttk.Label(left, text=f"(+{len(pending)-MAX_SHOW} more)", style="Subtle.TLabel").pack(anchor="w")
 
-        # ---- Tasks On Hold (separate from unchecked logs/memos)
-        held_items = self._collect_on_hold_work_items()
+        # ---- Clients with tasks on hold (compact summary; double-click opens client)
+        held_summaries = self._summarize_clients_with_on_hold_tasks()
         ttk.Separator(left).pack(fill="x", pady=10)
-        ttk.Label(left, text=f"Tasks On Hold: {len(held_items)}", style="Header.TLabel").pack(anchor="w")
+        n_clients_held = len(held_summaries)
+        ttk.Label(
+            left,
+            text=f"Clients With Tasks On Hold: {n_clients_held}",
+            style="Header.TLabel",
+        ).pack(anchor="w")
 
-        if held_items:
+        if held_summaries:
             held_wrap = ttk.Frame(left)
             held_wrap.pack(fill="both", expand=False, pady=(4, 0))
 
-            cols = ("client", "task", "held_at", "note")
-            self.held_tv = ttk.Treeview(held_wrap, columns=cols, show="headings", selectmode="browse", height=8, style="Modern.Treeview")
-            self.held_tv.heading("client", text="Client")
-            self.held_tv.heading("task", text="Task")
-            self.held_tv.heading("held_at", text="Held At")
-            self.held_tv.heading("note", text="Note")
-            self.held_tv.column("client", width=150, anchor="w")
-            self.held_tv.column("task", width=140, anchor="w")
-            self.held_tv.column("held_at", width=120, anchor="w")
-            self.held_tv.column("note", width=200, anchor="w")
+            cols = ("line",)
+            self.held_tv = ttk.Treeview(
+                held_wrap,
+                columns=cols,
+                show="headings",
+                selectmode="browse",
+                height=6,
+                style="Modern.Treeview",
+            )
+            self.held_tv.heading("line", text="Client — held tasks")
+            self.held_tv.column("line", width=360, anchor="w", stretch=True)
 
-            self.held_rows = {}
-            for wi in held_items:
-                note = (wi.get("note") or "").replace("\n", " ").strip()
-                if len(note) > 50:
-                    note = note[:47] + "..."
-                iid = self.held_tv.insert(
-                    "",
-                    "end",
-                    values=(
-                        wi.get("client_name", ""),
-                        wi.get("task_name", ""),
-                        wi.get("held_at", "") or wi.get("updated_at", "") or "",
-                        note,
-                    ),
-                )
-                self.held_rows[iid] = wi
+            self.held_client_idx_by_iid = {}
+            for row in held_summaries:
+                line = f"{row['client_name']} — {row['summary']}"
+                iid = self.held_tv.insert("", "end", values=(line,))
+                self.held_client_idx_by_iid[iid] = row["client_idx"]
 
             self.held_tv.pack(side=tk.LEFT, fill="both", expand=True)
             held_ys = ttk.Scrollbar(held_wrap, orient="vertical", command=self.held_tv.yview)
             self.held_tv.configure(yscrollcommand=held_ys.set)
             held_ys.pack(side=tk.RIGHT, fill="y")
 
-            held_btns = ttk.Frame(left)
-            held_btns.pack(fill="x", pady=(6, 0))
-            ttk.Button(held_btns, text="Resume", command=self._resume_selected_held_task).pack(side=tk.LEFT)
-            ttk.Button(held_btns, text="Open Client", command=self._open_selected_held_task_client).pack(side=tk.LEFT, padx=(6, 0))
-            ttk.Button(held_btns, text="Mark Finished", command=self._finish_selected_held_task).pack(side=tk.LEFT, padx=(6, 0))
+            self.held_tv.bind("<Double-1>", self._held_summary_open_client)
+            ttk.Label(left, text="Double-click to open client.", style="Subtle.TLabel").pack(anchor="w", pady=(4, 0))
         else:
-            ttk.Label(left, text="No held tasks.", style="Subtle.TLabel").pack(anchor="w")
+            self.held_tv = None
+            self.held_client_idx_by_iid = {}
+            ttk.Label(left, text="No clients with held tasks.", style="Subtle.TLabel").pack(anchor="w")
 
         # ---- Unchecked memos (Logs tab memos; log_type memo, not done)
         pending_memos = []
@@ -1841,96 +1878,78 @@ class DashboardPage:
 
         return (idx, (name or "").strip())
 
-    def _collect_on_hold_work_items(self) -> list[dict]:
-        out = []
+    def _summarize_clients_with_on_hold_tasks(self) -> list[dict]:
+        """
+        One row per client that has at least one work_item with status on_hold.
+        Groups multiple held items by task_name (display label) and formats counts.
+
+        Returns:
+            list of {"client_idx": int, "client_name": str, "summary": str}
+            sorted by client name (case-insensitive).
+        """
         items = getattr(self.app, "items", []) or []
+        per_idx: dict[int, dict[str, int]] = {}
+        names: dict[int, str] = {}
+
         for i, c in enumerate(items):
             if not isinstance(c, dict):
                 continue
-            for wi in (c.get("work_items") or []):
+            for wi in c.get("work_items") or []:
                 if not isinstance(wi, dict):
                     continue
                 if (wi.get("status") or "").strip().lower() != "on_hold":
                     continue
-                row = dict(wi)
-                row["_client_idx"] = i
-                row["client_name"] = row.get("client_name") or c.get("name") or ""
-                out.append(row)
-        out.sort(key=lambda x: ((x.get("held_at") or x.get("updated_at") or ""), (x.get("client_name") or "").casefold()), reverse=True)
-        return out
+                tn = (wi.get("task_name") or "").strip()
+                if not tn:
+                    continue
+                if i not in per_idx:
+                    per_idx[i] = defaultdict(int)
+                per_idx[i][tn] += 1
+                names[i] = (c.get("name") or "").strip() or "(unnamed)"
 
-    def _selected_held_row(self):
+        rows: list[dict] = []
+        for idx in sorted(per_idx.keys(), key=lambda ix: names.get(ix, "").casefold()):
+            counts = per_idx[idx]
+            parts = [
+                _format_on_hold_type_count(tn, cnt)
+                for tn, cnt in sorted(counts.items(), key=lambda x: x[0].casefold())
+            ]
+            rows.append(
+                {
+                    "client_idx": idx,
+                    "client_name": names[idx],
+                    "summary": ", ".join(parts),
+                }
+            )
+        return rows
+
+    def _held_summary_open_client(self, event=None):
+        """Double-click a compact held-task row to open that client's detail page."""
         tv = getattr(self, "held_tv", None)
         if not tv or not tv.winfo_exists():
-            return None
-        sel = tv.selection()
+            return
+        if event is not None:
+            row = tv.identify_row(event.y)
+            if not row:
+                return
+            tv.selection_set(row)
+            sel = (row,)
+        else:
+            sel = tv.selection()
         if not sel:
-            return None
-        iid = sel[0]
-        return (getattr(self, "held_rows", {}) or {}).get(iid)
-
-    def _resume_selected_held_task(self):
-        row = self._selected_held_row()
-        if not row:
-            messagebox.showinfo("Tasks On Hold", "Select a held task first.")
             return
-        idx = row.get("_client_idx")
-        if idx is None:
+        idx = (getattr(self, "held_client_idx_by_iid", {}) or {}).get(sel[0])
+        n = len(getattr(self.app, "items", []) or [])
+        if not isinstance(idx, int) or not (0 <= idx < n):
             return
-        c = self.app.items[idx]
-        work_id = str(row.get("id", "") or "").strip()
-        if not work_id:
-            return
-        for wi in (c.get("work_items") or []):
-            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
-                wi["status"] = "active"
-                wi["started_at"] = _dt.datetime.now().isoformat(timespec="seconds")
-                wi["updated_at"] = wi["started_at"]
-                break
-        c["active_work"] = {
-            "client_name": c.get("name", ""),
-            "client_id": row.get("client_id", ""),
-            "task_name": row.get("task_name", ""),
-            "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
-            "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
-            "status": "active",
-            "work_item_id": work_id,
-            "selected_option_label": f"Held ({row.get('held_at','') or row.get('updated_at','') or '—'}) {row.get('task_name','')}",
-        }
-        save_clients(self.app.items, getattr(self.app, "_data_file_path", None))
-        self.app.navigate("detail", idx, push=True)
-
-    def _open_selected_held_task_client(self):
-        row = self._selected_held_row()
-        if not row:
-            messagebox.showinfo("Tasks On Hold", "Select a held task first.")
-            return
-        idx = row.get("_client_idx")
-        if idx is None:
-            return
-        self.app.navigate("detail", idx, push=True)
-
-    def _finish_selected_held_task(self):
-        row = self._selected_held_row()
-        if not row:
-            messagebox.showinfo("Tasks On Hold", "Select a held task first.")
-            return
-        idx = row.get("_client_idx")
-        if idx is None:
-            return
-        c = self.app.items[idx]
-        work_id = str(row.get("id", "") or "").strip()
-        now_iso = _dt.datetime.now().isoformat(timespec="seconds")
-        for wi in (c.get("work_items") or []):
-            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
-                wi["status"] = "completed"
-                wi["completed_at"] = now_iso
-                wi["updated_at"] = now_iso
-                break
-        if isinstance(c.get("active_work"), dict) and str(c["active_work"].get("work_item_id", "") or "").strip() == work_id:
-            c.pop("active_work", None)
-        save_clients(self.app.items, getattr(self.app, "_data_file_path", None))
-        self._ensure_built()
+        try:
+            self.app.navigate("detail", idx, push=True)
+        except Exception as e:
+            LOG.exception("Open client from held summary: %s", e)
+            try:
+                self.app.navigate("detail", idx)
+            except Exception:
+                pass
 
     def _count_unchecked_logs_for_client(self, client: dict) -> int:
         """
