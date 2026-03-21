@@ -22,7 +22,7 @@ _PARENT = _BASE.parent
 if str(_PARENT) not in sys.path:
     sys.path.insert(0, str(_PARENT))
 
-import os, sys, json, re, hashlib, webbrowser, subprocess, shutil, datetime as dt, urllib.request, urllib.error, ssl, urllib.parse, uuid
+import os, sys, json, re, hashlib, webbrowser, subprocess, shutil, datetime as dt, urllib.request, urllib.error, ssl, urllib.parse, uuid, atexit
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import date, datetime
@@ -362,8 +362,8 @@ class App(ttk.Frame):
 
         self.taskbar = TaskbarModel(
             self.winfo_toplevel(),
-            # Close the main window / app
-            on_exit=lambda: self.winfo_toplevel().destroy(),
+            # Close the main window / app (suspend active work first)
+            on_exit=self._request_app_exit,
 
             # New client menu item
             on_new_client=self.on_new,
@@ -574,12 +574,15 @@ class App(ttk.Frame):
         self._history: List[Tuple[str, Any]] = []
         self._future:  List[Tuple[str, Any]] = []
         self._current_page: Tuple[str, Any] = ("main", None)
+        self._work_popup_session_key: tuple[int, str] | None = None
+        self._exit_suspend_done = False
 
         # Start
         self.log.info("Navigate start -> main")
         self.navigate("main", None, push=False)
         self.populate()
         self.update_sales_tax_rates_if_due()
+        self._install_clean_exit_hooks()
 
         # --- Manager filter state
         self._mgr_filter_active = set()
@@ -587,6 +590,77 @@ class App(ttk.Frame):
 
     def _show_about(self):
         show_about_dialog(self.winfo_toplevel())
+
+    def _install_clean_exit_hooks(self) -> None:
+        """Main window close + process exit: auto-hold active work sessions."""
+        try:
+            atexit.register(self._suspend_active_work_on_atexit)
+        except Exception:
+            pass
+        try:
+            self.winfo_toplevel().protocol("WM_DELETE_WINDOW", self._request_app_exit)
+        except Exception:
+            pass
+
+    def _suspend_active_work_on_atexit(self) -> None:
+        """Last-chance save when interpreter exits without a normal WM_DELETE path."""
+        if getattr(self, "_exit_suspend_done", False):
+            return
+        try:
+            self._suspend_all_active_work_for_shutdown()
+        except Exception:
+            pass
+
+    def _request_app_exit(self) -> None:
+        """File → Exit / window X: hold open tasks, then destroy UI."""
+        self._suspend_all_active_work_for_shutdown()
+        try:
+            self.winfo_toplevel().destroy()
+        except Exception:
+            pass
+
+    def _suspend_all_active_work_for_shutdown(self) -> None:
+        """
+        Put every in-progress work session on hold (no prompts), save, close popup.
+        Used on app close, update, or abnormal exit where atexit runs.
+        """
+        if getattr(self, "_exit_suspend_done", False):
+            return
+        items = getattr(self, "items", None) or []
+        path = getattr(self, "_data_file_path", None)
+        changed = False
+        auto_note = "Auto-held on app exit"
+        for i, c in enumerate(items):
+            if not isinstance(c, dict):
+                continue
+            active = c.get("active_work")
+            if not isinstance(active, dict) or not active:
+                continue
+            work_id = str(active.get("work_item_id", "") or "").strip()
+            task_name = str(active.get("task_name", "") or "").strip()
+            if not task_name:
+                c.pop("active_work", None)
+                changed = True
+                continue
+            try:
+                self._client_work_item_upsert(
+                    i,
+                    task_name=task_name,
+                    status="on_hold",
+                    note=auto_note,
+                    existing_item_id=work_id,
+                )
+            except Exception:
+                LOG.exception("suspend work item for client_idx=%s", i)
+            c.pop("active_work", None)
+            changed = True
+        if changed and path:
+            try:
+                save_clients(self.items, path)
+            except Exception:
+                LOG.exception("save_clients after suspend on exit")
+        self._exit_suspend_done = True
+        self._destroy_work_popup_ui()
 
     # Taskbar helper
     def _clients_folder(self) -> str:
@@ -1754,6 +1828,7 @@ class App(ttk.Frame):
             except Exception:
                 pass
         self._work_popup = None
+        self._work_popup_session_key = None
 
     def _ensure_work_popup_for_client(self, client_idx: int) -> None:
         """Create/update the always-on-top popup for the active work session."""
@@ -1765,8 +1840,27 @@ class App(ttk.Frame):
         if not active:
             return
 
-        # One popup at a time.
+        wid = str(active.get("work_item_id", "") or "").strip()
+        tname = str(active.get("task_name", "") or "").strip()
+        session_key = (client_idx, wid or tname)
+        # Keep the same window when navigating away and back (only Hold/Finished destroy it).
+        if (
+            getattr(self, "_work_popup_session_key", None) == session_key
+            and self._work_popup
+            and getattr(self._work_popup, "winfo_exists", lambda: False)()
+        ):
+            try:
+                client_name = str(active.get("client_name") or c.get("name") or "").strip()
+                task_name = str(active.get("task_name") or "").strip()
+                self._work_popup.set_content(client_name=client_name, task_name=task_name)
+                self._work_popup.attributes("-topmost", True)
+                self._work_popup.lift()
+            except Exception:
+                pass
+            return
+
         self._destroy_work_popup_ui()
+        self._work_popup_session_key = session_key
 
         client_name = str(active.get("client_name") or c.get("name") or "").strip()
         task_name = str(active.get("task_name") or "").strip()
@@ -1775,6 +1869,8 @@ class App(ttk.Frame):
             self.winfo_toplevel(),
             on_hold=lambda i=client_idx: self._work_task_hold(i),
             on_finish=lambda i=client_idx: self._work_task_finish(i),
+            on_remove=lambda i=client_idx: self._work_remove_active_session_item(i),
+            on_edit_note=lambda i=client_idx: self._work_edit_active_session_note(i),
         )
         try:
             self._work_popup.set_content(client_name=client_name, task_name=task_name)
@@ -1969,6 +2065,132 @@ class App(ttk.Frame):
         self._work_taskbar_refresh_dropdown_options(client_idx)
         self._work_taskbar_sync_buttons(client_idx)
 
+    def _work_finish_held_direct(self, client_idx: int, work_item_id: str) -> None:
+        """Mark an on-hold work item finished without resuming the session (Logs / Notes)."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx]
+        if c.get("active_work"):
+            messagebox.showinfo("Work Session", "Finish or hold the active session first.")
+            return
+        work_id = str(work_item_id or "").strip()
+        if not work_id:
+            return
+        task_name = ""
+        for wi in c.get("work_items") or []:
+            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
+                if str(wi.get("status", "") or "").strip().lower() != "on_hold":
+                    messagebox.showinfo("Finished", "Only a held task can be finished this way.")
+                    return
+                task_name = str(wi.get("task_name", "") or "").strip()
+                break
+        else:
+            return
+        if not task_name:
+            return
+        parent = self.winfo_toplevel()
+        note = self._prompt_optional_note(
+            parent=parent,
+            title="Finished",
+            prompt="Optional completion note.",
+        )
+        if note is None:
+            return
+        note = str(note or "").strip()
+        self._client_work_item_upsert(
+            client_idx,
+            task_name=task_name,
+            status="completed",
+            note=note,
+            existing_item_id=work_id,
+        )
+        c.setdefault("logs", []).append(
+            {
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "user": "",
+                "text": task_name if not note else f"{task_name} | {note}",
+                "done": True,
+                "edited": False,
+                "log_type": "history",
+            }
+        )
+        save_clients(self.items, self._data_file_path)
+        self._refresh_logs_tab_for_client_idx(client_idx)
+        self._work_taskbar_refresh_dropdown_options(client_idx)
+        self._work_taskbar_sync_buttons(client_idx)
+
+    def _work_remove_work_item(self, client_idx: int, work_item_id: str) -> None:
+        """Remove a work item (on hold or not actively conflicting). Clears active_work if it matches."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        work_id = str(work_item_id or "").strip()
+        if not work_id:
+            return
+        if not messagebox.askyesno(
+            "Remove task",
+            "Remove this task entry from the client? This cannot be undone.",
+        ):
+            return
+        c = self.items[client_idx]
+        aw = c.get("active_work") or {}
+        if isinstance(aw, dict) and str(aw.get("work_item_id", "") or "").strip() == work_id:
+            c.pop("active_work", None)
+            self._destroy_work_popup_ui()
+        items = [wi for wi in (c.get("work_items") or []) if not (isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id)]
+        c["work_items"] = items
+        save_clients(self.items, self._data_file_path)
+        self._refresh_logs_tab_for_client_idx(client_idx)
+        self._work_taskbar_refresh_dropdown_options(client_idx)
+        self._work_taskbar_sync_buttons(client_idx)
+
+    def _work_edit_active_session_note(self, client_idx: int) -> None:
+        """Edit note on the work item for the current active session (popup / logs)."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx]
+        aw = c.get("active_work") or {}
+        if not isinstance(aw, dict) or not aw:
+            messagebox.showinfo("Edit note", "No active work session.")
+            return
+        work_id = str(aw.get("work_item_id", "") or "").strip()
+        if not work_id:
+            return
+        current = ""
+        for wi in c.get("work_items") or []:
+            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
+                current = str(wi.get("note", "") or "")
+                break
+        d = OptionalNoteDialog(
+            self.winfo_toplevel(),
+            title="Edit note",
+            prompt="Note for this task:",
+            initial=current,
+        )
+        self.wait_window(d)
+        if d.result is None:
+            return
+        new_note = str(d.result)
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        for wi in c.get("work_items") or []:
+            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == work_id:
+                wi["note"] = new_note
+                wi["updated_at"] = now_iso
+                break
+        save_clients(self.items, self._data_file_path)
+        self._refresh_logs_tab_for_client_idx(client_idx)
+        self._work_taskbar_refresh_dropdown_options(client_idx)
+
+    def _work_remove_active_session_item(self, client_idx: int) -> None:
+        """Remove task from popup; delegates to _work_remove_work_item using active work."""
+        if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
+            return
+        c = self.items[client_idx]
+        aw = c.get("active_work") or {}
+        wid = str(aw.get("work_item_id", "") or "").strip()
+        if not wid:
+            return
+        self._work_remove_work_item(client_idx, wid)
+
     def _work_resume_held_item(self, client_idx: int, work_item_id: str) -> None:
         """Start / resume a held work item from Logs tab (or other UI)."""
         if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
@@ -2034,8 +2256,9 @@ class App(ttk.Frame):
                 continue
             if str(wi.get("id", "") or "").strip() != work_id:
                 continue
-            if str(wi.get("status", "") or "").strip().lower() != "on_hold":
-                messagebox.showinfo("Edit note", "Only tasks on hold can use this note editor.")
+            stwi = str(wi.get("status", "") or "").strip().lower()
+            if stwi not in ("on_hold", "active"):
+                messagebox.showinfo("Edit note", "Only an active or held task can use this note editor.")
                 return
             task_name = str(wi.get("task_name", "") or "").strip()
             current_note = str(wi.get("note", "") or "")
@@ -2043,12 +2266,12 @@ class App(ttk.Frame):
         else:
             return
         if not task_name:
-            messagebox.showinfo("Edit note", "Could not find that held task.")
+            messagebox.showinfo("Edit note", "Could not find that task.")
             return
         d = OptionalNoteDialog(
             self.winfo_toplevel(),
-            title="Edit hold note",
-            prompt="Note for this held task:",
+            title="Edit note",
+            prompt="Note for this task:",
             initial=current_note,
         )
         self.wait_window(d)
@@ -3932,15 +4155,9 @@ class App(ttk.Frame):
                 self._current_page = target
 
         self._compress_history()
-        
-        # If we're leaving a client detail page, destroy the UI-only "work in progress" popup.
-        # The active work state is persisted in the client dict and will re-open on return.
-        try:
-            if current_page and current_page[0] == "detail":
-                self._destroy_work_popup_ui()
-        except Exception:
-            pass
-    
+        # Do NOT destroy the "Currently working on" popup when leaving the client page.
+        # It stays until Hold / Finished, or until the app exits (then we auto-hold).
+
         self._clear_page_host()
     
         # Ensure _current_page is set before unpacking

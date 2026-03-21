@@ -58,10 +58,13 @@ def _ensure_row_tags(tv: ttk.Treeview, dark: bool):
         tv.tag_configure('active_dark',  foreground='#E5E7EB', background='#312E81')
     tv.tag_configure('task_light', foreground='#1F2937', background='#F9FAFB')
     tv.tag_configure('task_dark',  foreground='#E5E7EB', background='#111827')
+    tv.tag_configure('finished_light', foreground='#6B7280', background='#E5E7EB')
+    tv.tag_configure('finished_dark',  foreground='#9CA3AF', background='#374151')
     return {
         "done":   'done_dark' if dark else 'done_light',
         "active": 'active_dark' if dark else 'active_light',
         "task":   'task_dark' if dark else 'task_light',
+        "finished": 'finished_dark' if dark else 'finished_light',
     }
 
 
@@ -185,11 +188,12 @@ class NotePage:
         self.btn_rejoin = ttk.Button(self.dyn, text="Resume session", command=self._do_rejoin)
         self.btn_hold = ttk.Button(self.dyn, text="Hold", command=self._do_hold)
         self.btn_finish = ttk.Button(self.dyn, text="Finished", command=self._do_finish)
+        self.btn_remove = ttk.Button(self.dyn, text="Remove", command=self._do_remove)
         self.btn_unfinish = ttk.Button(self.dyn, text="Unfinish", command=self._do_unfinish)
-        self.btn_edit_hold_note = ttk.Button(self.dyn, text="Edit hold note", command=self._do_edit_hold_note)
+        self.btn_edit_note = ttk.Button(self.dyn, text="Edit note", command=self._do_edit_note)
         self._all_dyn = (
             self.btn_edit, self.btn_del, self.btn_toggle,
-            self.btn_start, self.btn_edit_hold_note, self.btn_rejoin, self.btn_hold, self.btn_finish, self.btn_unfinish,
+            self.btn_start, self.btn_rejoin, self.btn_hold, self.btn_finish, self.btn_remove, self.btn_unfinish, self.btn_edit_note,
         )
 
     def _hide_dyn(self):
@@ -344,18 +348,28 @@ class NotePage:
         if kind == "active":
             place(self.btn_hold)
             place(self.btn_finish)
+            place(self.btn_remove)
+            place(self.btn_edit_note)
             return
 
         if kind == "work":
             if st == "on_hold" and wid:
                 place(self.btn_start)
-                place(self.btn_edit_hold_note)
+                place(self.btn_finish)
+                place(self.btn_remove)
+                place(self.btn_edit_note)
             elif st == "active":
                 if not c.get("active_work") and wid:
                     place(self.btn_rejoin)
                 if c.get("active_work"):
                     place(self.btn_hold)
                     place(self.btn_finish)
+                    place(self.btn_remove)
+                    place(self.btn_edit_note)
+                elif wid:
+                    place(self.btn_finish)
+                    place(self.btn_remove)
+                    place(self.btn_edit_note)
             elif st == "completed" and wid:
                 place(self.btn_unfinish)
 
@@ -439,13 +453,28 @@ class NotePage:
             self.app._work_resume_held_item(cidx, wid)
             self.refresh()
 
-    def _do_edit_hold_note(self):
+    def _do_remove(self):
         m = self._sel_meta()
         cidx = m.get("client_idx")
         wid = str(m.get("work_item_id", "") or "").strip()
         if isinstance(cidx, int) and wid:
-            self.app._work_edit_held_note(cidx, wid)
+            self.app._work_remove_work_item(cidx, wid)
             self.refresh()
+
+    def _do_edit_note(self):
+        m = self._sel_meta()
+        cidx = m.get("client_idx")
+        wid = str(m.get("work_item_id", "") or "").strip()
+        c = self._client_at(cidx) if isinstance(cidx, int) else None
+        if not isinstance(cidx, int) or not wid or not c:
+            return
+        aw = c.get("active_work") or {}
+        awid = str(aw.get("work_item_id", "") or "").strip()
+        if c.get("active_work") and wid == awid:
+            self.app._work_edit_active_session_note(cidx)
+        else:
+            self.app._work_edit_held_note(cidx, wid)
+        self.refresh()
 
     def _do_rejoin(self):
         m = self._sel_meta()
@@ -465,9 +494,16 @@ class NotePage:
     def _do_finish(self):
         m = self._sel_meta()
         cidx = m.get("client_idx")
-        if isinstance(cidx, int):
+        wid = str(m.get("work_item_id", "") or "").strip()
+        c = self._client_at(cidx) if isinstance(cidx, int) else None
+        if not isinstance(cidx, int) or not c:
+            return
+        st = _work_item_status(c, wid) if wid else ""
+        if st == "on_hold" and wid:
+            self.app._work_finish_held_direct(cidx, wid)
+        else:
             self.app._work_task_finish(cidx)
-            self.refresh()
+        self.refresh()
 
     def _do_unfinish(self):
         m = self._sel_meta()

@@ -114,7 +114,7 @@ def build_merged_rows(client: dict) -> list[dict]:
                 "time_disp": ts,
                 "note_disp": note,
                 "sort_ts": parse_sort_ts(ts),
-                "tag": "task",
+                "tag": "finished",
                 "meta": {"kind": "work", "work_item_id": wid},
             })
 
@@ -142,7 +142,7 @@ def build_merged_rows(client: dict) -> list[dict]:
                 "time_disp": ts_disp,
                 "note_disp": note_part,
                 "sort_ts": sort_ts,
-                "tag": "task",
+                "tag": "finished",
                 "meta": {"kind": "history", "log_index": i},
             })
         else:

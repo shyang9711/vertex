@@ -81,11 +81,15 @@ class WorkSessionPopup(tk.Toplevel):
         *,
         on_hold: Callable[[], None],
         on_finish: Callable[[], None],
+        on_remove: Optional[Callable[[], None]] = None,
+        on_edit_note: Optional[Callable[[], None]] = None,
     ):
         super().__init__(master)
 
         self._on_hold = on_hold
         self._on_finish = on_finish
+        self._on_remove = on_remove
+        self._on_edit_note = on_edit_note
         self._top_keepalive_job: Optional[str] = None
 
         self.title("Currently working on")
@@ -115,13 +119,19 @@ class WorkSessionPopup(tk.Toplevel):
         self.btn_hold = ttk.Button(btns, text="Hold", command=self._hold_clicked, width=8)
         self.btn_finish = ttk.Button(btns, text="Finish", command=self._finish_clicked, width=8, style="Accent.TButton")
         self.btn_hold.pack(side=tk.LEFT, padx=(0, 8))
-        self.btn_finish.pack(side=tk.LEFT)
+        self.btn_finish.pack(side=tk.LEFT, padx=(0, 8))
+        if on_remove is not None:
+            self.btn_remove = ttk.Button(btns, text="Remove", command=self._remove_clicked, width=8)
+            self.btn_remove.pack(side=tk.LEFT, padx=(0, 8))
+        if on_edit_note is not None:
+            self.btn_edit_note = ttk.Button(btns, text="Edit note", command=self._edit_note_clicked, width=9)
+            self.btn_edit_note.pack(side=tk.LEFT, padx=(0, 0))
 
         self.after(50, self._keep_top_alive)
 
         # Reasonable compact size.
         try:
-            self.geometry("380x170")
+            self.geometry("520x170")
         except Exception:
             pass
 
@@ -160,4 +170,12 @@ class WorkSessionPopup(tk.Toplevel):
 
     def _finish_clicked(self):
         self._on_finish()
+
+    def _remove_clicked(self):
+        if self._on_remove:
+            self._on_remove()
+
+    def _edit_note_clicked(self):
+        if self._on_edit_note:
+            self._on_edit_note()
 

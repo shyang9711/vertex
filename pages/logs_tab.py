@@ -55,10 +55,13 @@ def _ensure_row_tags(tv: ttk.Treeview, dark: bool):
         tv.tag_configure('active_dark',  foreground='#E5E7EB', background='#312E81')
     tv.tag_configure('task_light', foreground='#1F2937', background='#F9FAFB')
     tv.tag_configure('task_dark',  foreground='#E5E7EB', background='#111827')
+    tv.tag_configure('finished_light', foreground='#6B7280', background='#E5E7EB')
+    tv.tag_configure('finished_dark',  foreground='#9CA3AF', background='#374151')
     return {
         "done":   'done_dark' if dark else 'done_light',
         "active": 'active_dark' if dark else 'active_light',
         "task":   'task_dark' if dark else 'task_light',
+        "finished": 'finished_dark' if dark else 'finished_light',
     }
 
 
@@ -243,11 +246,12 @@ def init_logs_tab(
     btn_rejoin = ttk.Button(dyn, text="Resume session", command=lambda: _do_rejoin())
     btn_hold = ttk.Button(dyn, text="Hold", command=lambda: _do_hold())
     btn_finish = ttk.Button(dyn, text="Finished", command=lambda: _do_finish())
+    btn_remove = ttk.Button(dyn, text="Remove", command=lambda: _do_remove())
     btn_unfinish = ttk.Button(dyn, text="Unfinish", command=lambda: _do_unfinish())
-    btn_edit_hold_note = ttk.Button(dyn, text="Edit hold note", command=lambda: _do_edit_hold_note())
+    btn_edit_note = ttk.Button(dyn, text="Edit note", command=lambda: _do_edit_note())
 
     _all_dyn = (
-        btn_edit, btn_del, btn_toggle, btn_start, btn_edit_hold_note, btn_rejoin, btn_hold, btn_finish, btn_unfinish,
+        btn_edit, btn_del, btn_toggle, btn_start, btn_rejoin, btn_hold, btn_finish, btn_remove, btn_unfinish, btn_edit_note,
     )
 
     def _hide_dynamic():
@@ -284,7 +288,45 @@ def init_logs_tab(
     def _do_finish():
         if idx is None:
             return
-        app._work_task_finish(idx)
+        sel = tv.selection()
+        if not sel:
+            return
+        m = row_meta.get(sel[0]) or {}
+        wid = str(m.get("work_item_id", "") or "").strip()
+        st = _work_item_status(client, wid) if wid else ""
+        if st == "on_hold" and wid:
+            app._work_finish_held_direct(idx, wid)
+        else:
+            app._work_task_finish(idx)
+        refresh_merged()
+
+    def _do_remove():
+        if idx is None:
+            return
+        sel = tv.selection()
+        if not sel:
+            return
+        m = row_meta.get(sel[0]) or {}
+        wid = str(m.get("work_item_id", "") or "").strip()
+        if wid:
+            app._work_remove_work_item(idx, wid)
+        refresh_merged()
+
+    def _do_edit_note():
+        if idx is None:
+            return
+        sel = tv.selection()
+        if not sel:
+            return
+        m = row_meta.get(sel[0]) or {}
+        wid = str(m.get("work_item_id", "") or "").strip()
+        aw = client.get("active_work") or {}
+        awid = str(aw.get("work_item_id", "") or "").strip()
+        if client.get("active_work") and wid and wid == awid:
+            app._work_edit_active_session_note(idx)
+        elif wid:
+            app._work_edit_held_note(idx, wid)
+        refresh_merged()
 
     def _do_unfinish():
         if idx is None:
@@ -296,17 +338,6 @@ def init_logs_tab(
         wid = str(m.get("work_item_id", "") or "").strip()
         if wid:
             app._work_unfinish_item(idx, wid)
-
-    def _do_edit_hold_note():
-        if idx is None:
-            return
-        sel = tv.selection()
-        if not sel:
-            return
-        m = row_meta.get(sel[0]) or {}
-        wid = str(m.get("work_item_id", "") or "").strip()
-        if wid:
-            app._work_edit_held_note(idx, wid)
 
     def sync_action_buttons():
         _hide_dynamic()
@@ -342,18 +373,28 @@ def init_logs_tab(
         if kind == "active":
             place(btn_hold)
             place(btn_finish)
+            place(btn_remove)
+            place(btn_edit_note)
             return
 
         if kind == "work":
             if st == "on_hold" and wid:
                 place(btn_start)
-                place(btn_edit_hold_note)
+                place(btn_finish)
+                place(btn_remove)
+                place(btn_edit_note)
             elif st == "active":
                 if not client.get("active_work") and wid:
                     place(btn_rejoin)
                 if client.get("active_work"):
                     place(btn_hold)
                     place(btn_finish)
+                    place(btn_remove)
+                    place(btn_edit_note)
+                elif wid:
+                    place(btn_finish)
+                    place(btn_remove)
+                    place(btn_edit_note)
             elif st == "completed" and wid:
                 place(btn_unfinish)
 
