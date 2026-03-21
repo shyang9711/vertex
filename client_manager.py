@@ -1838,6 +1838,16 @@ class App(ttk.Frame):
                 return str(wi.get("note", "") or "")
         return ""
 
+    def _merge_note_append(self, existing: str, addition: str) -> str:
+        """Append optional new text to an existing note without replacing it."""
+        ex = (existing or "").strip()
+        add = (addition or "").strip()
+        if not add:
+            return ex
+        if not ex:
+            return add
+        return f"{ex}\n\n{add}"
+
     def _ensure_work_popup_for_client(self, client_idx: int) -> None:
         """Create/update the always-on-top popup for the active work session."""
         if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
@@ -1998,26 +2008,29 @@ class App(ttk.Frame):
         if not active:
             return
 
+        wid = str(active.get("work_item_id", "") or "").strip()
+        prior_note = self._work_item_note_text(c, wid) if wid else ""
+
         parent = getattr(self, "_work_popup", None) or self.winfo_toplevel()
         from_unchecked_log = bool(active.get("from_unchecked_log", False))
-        note = self._prompt_optional_note(
+        incoming = self._prompt_optional_note(
             parent=parent,
             title="Hold",
             prompt=(
-                "Optional note for this held task."
+                "Optional note to add (appended to any existing note on this task)."
             ),
         )
-        if note is None:
+        if incoming is None:
             return  # user cancelled
-        note = str(note or "").strip()
+        merged_note = self._merge_note_append(prior_note, str(incoming or "").strip())
 
         _ = from_unchecked_log  # legacy compatibility marker; no longer drives hold workflow.
         self._client_work_item_upsert(
             client_idx,
             task_name=str(active.get("task_name", "") or "").strip(),
             status="on_hold",
-            note=note,
-            existing_item_id=str(active.get("work_item_id", "") or "").strip(),
+            note=merged_note,
+            existing_item_id=wid,
         )
 
         # Clear active work session and close popup.
@@ -2036,18 +2049,22 @@ class App(ttk.Frame):
         if not active:
             return
 
+        wid = str(active.get("work_item_id", "") or "").strip()
+        prior_note = self._work_item_note_text(c, wid) if wid else ""
+
         parent = getattr(self, "_work_popup", None) or self.winfo_toplevel()
         from_unchecked_log = bool(active.get("from_unchecked_log", False))
-        note = self._prompt_optional_note(
+        incoming = self._prompt_optional_note(
             parent=parent,
             title="Finished",
             prompt=(
-                "Optional completion note."
+                "Optional completion note to add (appended to any existing note on this task)."
             ),
         )
-        if note is None:
+        if incoming is None:
             return  # user cancelled
-        note = str(note or "").strip()
+        incoming_stripped = str(incoming or "").strip()
+        merged_note = self._merge_note_append(prior_note, incoming_stripped)
 
         _ = from_unchecked_log  # legacy compatibility marker; no longer drives finish workflow.
         task_name = str(active.get("task_name", "") or "").strip()
@@ -2055,8 +2072,8 @@ class App(ttk.Frame):
             client_idx,
             task_name=task_name,
             status="completed",
-            note=note,
-            existing_item_id=str(active.get("work_item_id", "") or "").strip(),
+            note=merged_note,
+            existing_item_id=wid,
         )
 
         # Keep lightweight task history in logs (separate from memo logs)
@@ -2064,7 +2081,7 @@ class App(ttk.Frame):
             {
                 "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "user": "",
-                "text": task_name if not note else f"{task_name} | {note}",
+                "text": task_name if not incoming_stripped else f"{task_name} | {incoming_stripped}",
                 "done": True,
                 "edited": False,
                 "log_type": "history",
@@ -2101,27 +2118,29 @@ class App(ttk.Frame):
             return
         if not task_name:
             return
+        prior_note = self._work_item_note_text(c, work_id)
         parent = self.winfo_toplevel()
-        note = self._prompt_optional_note(
+        incoming = self._prompt_optional_note(
             parent=parent,
             title="Finished",
-            prompt="Optional completion note.",
+            prompt="Optional completion note to add (appended to any existing note on this task).",
         )
-        if note is None:
+        if incoming is None:
             return
-        note = str(note or "").strip()
+        incoming_stripped = str(incoming or "").strip()
+        merged_note = self._merge_note_append(prior_note, incoming_stripped)
         self._client_work_item_upsert(
             client_idx,
             task_name=task_name,
             status="completed",
-            note=note,
+            note=merged_note,
             existing_item_id=work_id,
         )
         c.setdefault("logs", []).append(
             {
                 "ts": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "user": "",
-                "text": task_name if not note else f"{task_name} | {note}",
+                "text": task_name if not incoming_stripped else f"{task_name} | {incoming_stripped}",
                 "done": True,
                 "edited": False,
                 "log_type": "history",
