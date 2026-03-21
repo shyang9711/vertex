@@ -112,10 +112,20 @@ class WorkSessionPopup(tk.Toplevel):
 
         ttk.Label(root, text="Task", style="Subtle.TLabel").grid(row=2, column=0, sticky="w")
         self.lbl_task = ttk.Label(root, text="", style="Header.TLabel", wraplength=340)
-        self.lbl_task.grid(row=3, column=0, sticky="w", pady=(0, 10))
+        self.lbl_task.grid(row=3, column=0, sticky="w", pady=(0, 4))
+
+        ttk.Label(root, text="Note", style="Subtle.TLabel").grid(row=4, column=0, sticky="w")
+        self.lbl_note = ttk.Label(
+            root,
+            text="",
+            wraplength=480,
+            justify="left",
+            font=("Segoe UI", 9),
+        )
+        self.lbl_note.grid(row=5, column=0, sticky="ew", pady=(0, 10))
 
         btns = ttk.Frame(root)
-        btns.grid(row=4, column=0, sticky="e")
+        btns.grid(row=6, column=0, sticky="e")
         self.btn_hold = ttk.Button(btns, text="Hold", command=self._hold_clicked, width=8)
         self.btn_finish = ttk.Button(btns, text="Finish", command=self._finish_clicked, width=8, style="Accent.TButton")
         self.btn_hold.pack(side=tk.LEFT, padx=(0, 8))
@@ -129,9 +139,11 @@ class WorkSessionPopup(tk.Toplevel):
 
         self.after(50, self._keep_top_alive)
 
-        # Reasonable compact size.
+        root.columnconfigure(0, weight=1)
+
+        # Reasonable compact size (taller to fit saved note).
         try:
-            self.geometry("520x170")
+            self.geometry("520x260")
         except Exception:
             pass
 
@@ -161,9 +173,23 @@ class WorkSessionPopup(tk.Toplevel):
         except Exception:
             pass
 
-    def set_content(self, *, client_name: str, task_name: str):
+    def set_content(self, *, client_name: str, task_name: str, note: str = ""):
         self.lbl_client.config(text=client_name or "—")
         self.lbl_task.config(text=task_name or "—")
+        raw = (note or "").strip()
+        if raw:
+            try:
+                self.lbl_note.config(text=raw, style="TLabel")
+            except Exception:
+                self.lbl_note.config(text=raw)
+        else:
+            try:
+                self.lbl_note.config(text="(No note saved)", style="Subtle.TLabel")
+            except Exception:
+                try:
+                    self.lbl_note.config(text="(No note saved)", foreground="gray")
+                except Exception:
+                    self.lbl_note.config(text="(No note saved)")
 
     def _hold_clicked(self):
         self._on_hold()

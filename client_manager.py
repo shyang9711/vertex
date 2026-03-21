@@ -1830,6 +1830,14 @@ class App(ttk.Frame):
         self._work_popup = None
         self._work_popup_session_key = None
 
+    def _work_item_note_text(self, client: dict, work_item_id: str) -> str:
+        """Return saved note text for a work item, or empty string."""
+        wid = str(work_item_id or "").strip()
+        for wi in client.get("work_items") or []:
+            if isinstance(wi, dict) and str(wi.get("id", "") or "").strip() == wid:
+                return str(wi.get("note", "") or "")
+        return ""
+
     def _ensure_work_popup_for_client(self, client_idx: int) -> None:
         """Create/update the always-on-top popup for the active work session."""
         if not (0 <= client_idx < len(getattr(self, "items", []) or [])):
@@ -1843,6 +1851,7 @@ class App(ttk.Frame):
         wid = str(active.get("work_item_id", "") or "").strip()
         tname = str(active.get("task_name", "") or "").strip()
         session_key = (client_idx, wid or tname)
+        note_text = self._work_item_note_text(c, wid) if wid else ""
         # Keep the same window when navigating away and back (only Hold/Finished destroy it).
         if (
             getattr(self, "_work_popup_session_key", None) == session_key
@@ -1852,7 +1861,9 @@ class App(ttk.Frame):
             try:
                 client_name = str(active.get("client_name") or c.get("name") or "").strip()
                 task_name = str(active.get("task_name") or "").strip()
-                self._work_popup.set_content(client_name=client_name, task_name=task_name)
+                self._work_popup.set_content(
+                    client_name=client_name, task_name=task_name, note=note_text
+                )
                 self._work_popup.attributes("-topmost", True)
                 self._work_popup.lift()
             except Exception:
@@ -1873,7 +1884,9 @@ class App(ttk.Frame):
             on_edit_note=lambda i=client_idx: self._work_edit_active_session_note(i),
         )
         try:
-            self._work_popup.set_content(client_name=client_name, task_name=task_name)
+            self._work_popup.set_content(
+                client_name=client_name, task_name=task_name, note=note_text
+            )
             self._work_popup.attributes("-topmost", True)
             self._work_popup.lift()
         except Exception:
@@ -2179,6 +2192,7 @@ class App(ttk.Frame):
         save_clients(self.items, self._data_file_path)
         self._refresh_logs_tab_for_client_idx(client_idx)
         self._work_taskbar_refresh_dropdown_options(client_idx)
+        self._ensure_work_popup_for_client(client_idx)
 
     def _work_remove_active_session_item(self, client_idx: int) -> None:
         """Remove task from popup; delegates to _work_remove_work_item using active work."""
