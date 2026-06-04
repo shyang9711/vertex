@@ -581,7 +581,10 @@ class App(ttk.Frame):
         self.log.info("Navigate start -> main")
         self.navigate("main", None, push=False)
         self.populate()
-        self.update_sales_tax_rates_if_due()
+        try:
+            self.winfo_toplevel().after(500, self.update_sales_tax_rates_if_due)
+        except Exception:
+            self.update_sales_tax_rates_if_due()
         self._install_clean_exit_hooks()
 
         # --- Manager filter state

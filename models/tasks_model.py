@@ -180,6 +180,12 @@ class TasksStore:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception:
             data = []
+        name_to_idx: Dict[str, int] = {}
+        if self.app:
+            for i, c in enumerate(getattr(self.app, "items", []) or []):
+                n = (c.get("name") or "").strip()
+                if n and n not in name_to_idx:
+                    name_to_idx[n] = i
         # normalize
         for t in data:
             t.setdefault("id", str(uuid.uuid4()))
@@ -193,13 +199,8 @@ class TasksStore:
             t.setdefault("is_paused", False)
             t.setdefault("pause_from", "")
             t.setdefault("resume_from", "")
-            if t.get("client_idx") is None and t.get("client_name") and self.app:
-                idx = next(
-                    (i for i, c in enumerate(getattr(self.app, "items", []))
-                    if c.get("name") == t["client_name"]),
-                    None,
-                )
-                t["client_idx"] = idx
+            if t.get("client_idx") is None and t.get("client_name"):
+                t["client_idx"] = name_to_idx.get((t.get("client_name") or "").strip())
         self.tasks = data
 
     def save(self) -> None:
@@ -280,7 +281,7 @@ class TasksStore:
         return False
 
     def iter_occurrences(
-        self, task: Dict[str, Any], start_d: _dt.date, end_d: _dt.date
+        self, task: Dict[str, Any], start_d: _dt.date, end_d: _dt.date, *, buffer_days: int = 10
     ) -> Iterator[Tuple[_dt.date, _dt.date, bool]]:
         """Yield (orig_date, display_date, is_done) scanning a buffer window."""
 
@@ -289,13 +290,16 @@ class TasksStore:
             end_d = end_on
 
         comp = set(task.get("completed") or [])
-        scan_start = start_d - _dt.timedelta(days=3)
-        scan_end   = end_d   + _dt.timedelta(days=3)
+        buf = max(0, int(buffer_days))
+        scan_start = start_d - _dt.timedelta(days=buf)
+        scan_end   = end_d   + _dt.timedelta(days=buf)
         d = scan_start
         while d <= scan_end:
             if self.occurs_on(task, d):
-                disp = display_date_for(task, d)
-                yield d, disp, (d.isoformat() in comp)
+                orig = d
+                disp = display_date_for(task, orig)
+                is_done = (orig.isoformat() in comp) or (disp.isoformat() in comp)
+                yield orig, disp, is_done
             d += _dt.timedelta(days=1)
 
     # ---------- state flips ----------

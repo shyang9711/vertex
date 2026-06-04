@@ -200,22 +200,7 @@ class DashboardPage:
             traceback.print_exc()
 
         self._data_dir = data_dir
-        print(f"[Dashboard] Initializing TasksStore with data_dir: {data_dir}")
-        print(f"[Dashboard] data_dir exists: {data_dir.exists() if data_dir else False}")
-        print(f"[Dashboard] data_dir is absolute: {data_dir.is_absolute() if data_dir else False}")
-        if data_dir:
-            tasks_file = data_dir / "tasks.json"
-            print(f"[Dashboard] tasks.json path: {tasks_file}")
-            print(f"[Dashboard] tasks.json exists: {tasks_file.exists()}")
-            if tasks_file.exists():
-                try:
-                    import json
-                    with open(tasks_file, 'r', encoding='utf-8') as f:
-                        tasks_data = json.load(f)
-                        print(f"[Dashboard] tasks.json contains {len(tasks_data) if isinstance(tasks_data, list) else 'non-list'} items")
-                except Exception as e:
-                    print(f"[Dashboard] ERROR reading tasks.json: {e}")
-        
+
         try:
             self.store = TasksStore(self._data_dir, app=self.app)
             print(f"[Dashboard] TasksStore initialized")
@@ -248,6 +233,7 @@ class DashboardPage:
         self._cal_wrap = None
         self._todo_rows = {}
         self._show_all_past = False
+        self._past_days_loaded = 7
         self._CAL_MAX_DOTS = 4
 
         self._todo_ctx = None
@@ -277,12 +263,22 @@ class DashboardPage:
         self.log.info("show()")
         frm = self.ensure(host)
         frm.pack(fill=tk.BOTH, expand=True)
-        self._refresh_todo_feed(); self._draw_calendar()
+        self._schedule_dashboard_refresh(frm)
+
+    def _schedule_dashboard_refresh(self, widget=None):
+        """Refresh todo list + calendar after the UI can paint (avoids blocking startup)."""
+        host = widget or getattr(self, "frame", None) or getattr(self.app, "root", None)
         try:
-            frm.after(0, lambda: (self._refresh_todo_feed(), self._draw_calendar()))
+            if host is not None:
+                host.after(0, self._refresh_dashboard_widgets)
+                return
         except Exception:
-            # Fallback if after() isn't available for some reason
-            self._refresh_todo_feed(); self._draw_calendar()
+            pass
+        self._refresh_dashboard_widgets()
+
+    def _refresh_dashboard_widgets(self):
+        self._refresh_todo_feed()
+        self._draw_calendar()
 
     # --- Import data ---
     def reload_from_disk(self):
@@ -502,6 +498,10 @@ class DashboardPage:
         self._show_past_var = tk.BooleanVar(value=self._show_all_past)
         def _flip_past():
             self._show_all_past = bool(self._show_past_var.get())
+            if self._show_all_past:
+                self._past_days_loaded = self._PAST_DAYS_CHUNK
+            else:
+                self._past_days_loaded = self._PAST_DAYS_DEFAULT
             self._refresh_todo_feed()
         ttk.Checkbutton(top_row, text="Show past", variable=self._show_past_var, command=_flip_past).grid(row=1, column=1, sticky="e")
 
@@ -553,19 +553,59 @@ class DashboardPage:
         _legend_badge(legend, "#9CA3AF", "done")
 
 
-        try:
-            root.after(0, lambda: (self._refresh_todo_feed(), self._draw_calendar()))
-        except Exception:
-            self._refresh_todo_feed(); self._draw_calendar()
-        
+        self._schedule_dashboard_refresh(root)
+
         self._sort_col = "date"
         self._sort_asc = False
         self._update_sort_headers()
 
     # -------------- To‑Do feed --------------
+    _PAST_DAYS_DEFAULT = 7
+    _PAST_DAYS_CHUNK = 90
+    _FUTURE_DAYS_DEFAULT = 7
+    _LOAD_MORE_ROW = "__load_more__"
+
+    def _todo_date_window(self):
+        import datetime as _dt
+        today = _dt.date.today()
+        past_days = (
+            int(getattr(self, "_past_days_loaded", self._PAST_DAYS_CHUNK))
+            if getattr(self, "_show_all_past", False)
+            else self._PAST_DAYS_DEFAULT
+        )
+        window_start = today - _dt.timedelta(days=past_days)
+        window_end = today + _dt.timedelta(days=self._FUTURE_DAYS_DEFAULT)
+        return today, window_start, window_end
+
+    def _is_load_more_row(self, iid: str) -> bool:
+        ref = self._todo_rows.get(iid)
+        return bool(ref) and ref[0] == self._LOAD_MORE_ROW
+
+    def _load_more_past(self):
+        self._past_days_loaded = int(getattr(self, "_past_days_loaded", self._PAST_DAYS_CHUNK)) + self._PAST_DAYS_CHUNK
+        self._refresh_todo_feed()
+
+    def _append_load_more_row(self, tv: ttk.Treeview, window_start: _dt.date) -> None:
+        import datetime as _dt
+        chunk = self._PAST_DAYS_CHUNK
+        next_end = window_start - _dt.timedelta(days=1)
+        next_start = window_start - _dt.timedelta(days=chunk)
+        label = f"Load more past ({chunk} days)…"
+        range_hint = f"{next_start.isoformat()} – {next_end.isoformat()}"
+        iid = tv.insert(
+            "",
+            "end",
+            values=("", label, range_hint, ""),
+            tags=("load_more",),
+        )
+        self._todo_rows[iid] = (self._LOAD_MORE_ROW, None)
+        tv.tag_configure("load_more", foreground="#2563EB")
+
     def _refresh_todo_feed(self):
         tv = getattr(self, "todo_tv", None)
         if not tv or not tv.winfo_exists():
+            return
+        if not getattr(self, "store", None):
             return
 
         import datetime as _dt
@@ -575,30 +615,8 @@ class DashboardPage:
         tv.tag_configure("due", background="#FEF3C7")
         tv.tag_configure("submission", background="#FFEDD5")
 
-        today = _dt.date.today()
-        past_days = 999 if getattr(self, "_show_all_past", False) else 7
-        future_days = 7
-        window_start = today - _dt.timedelta(days=past_days)
-        window_end   = today + _dt.timedelta(days=future_days)
-
-        rows = []
-        def occurs_between(t, start_d, end_d):
-            comp = set(t.get("completed", []) or [])
-            # was: 3 — too small for (lead 2 + weekend 2)
-            SHIFT_BUFFER = 10
-            scan_start = start_d - _dt.timedelta(days=SHIFT_BUFFER)
-            scan_end   = end_d   + _dt.timedelta(days=SHIFT_BUFFER)
-
-            d = scan_start
-            while d <= scan_end:
-                if self.store.occurs_on(t, d):
-                    orig = d
-                    disp = display_date_for(t, orig)
-                    # mark done if either actual OR display date was stored
-                    is_done = (orig.isoformat() in comp) or (disp.isoformat() in comp)
-                    yield orig, disp, is_done
-                d += _dt.timedelta(days=1)
-
+        today, window_start, window_end = self._todo_date_window()
+        yesterday = today - _dt.timedelta(days=1)
 
         rows = []
         seen = set()
@@ -609,36 +627,29 @@ class DashboardPage:
                 return (task.get("kind_other") or "").strip()
             return task.get("kind", "")
 
-        # ---- PAST (up to yesterday)
         for i, t in enumerate(self.store.tasks):
             if not t.get("is_enabled", True):
                 continue
             kind = _task_kind_display(t)
             idx, nm = self._task_client_ref(t)
             client = nm or self._client_name(idx) or ""
-            for orig, disp, is_done in occurs_between(t, window_start, today - _dt.timedelta(days=1)):
-                if window_start <= disp <= window_end:
-                    key = (i, orig.isoformat())
-                    if key not in seen:
-                        rows.append((disp, is_done, i, kind, client, orig))
-                        seen.add(key)
 
-        # ---- FUTURE (today .. window_end)
-        for i, t in enumerate(self.store.tasks):
-            if not t.get("is_enabled", True):
-                continue
-            kind = _task_kind_display(t)
-            idx, nm = self._task_client_ref(t)
-            client = nm or self._client_name(idx) or ""
+            if window_start <= yesterday:
+                for orig, disp, is_done in self.store.iter_occurrences(t, window_start, yesterday):
+                    if window_start <= disp <= window_end:
+                        key = (i, orig.isoformat())
+                        if key not in seen:
+                            rows.append((disp, is_done, i, kind, client, orig))
+                            seen.add(key)
+
             futures = []
-            for orig, disp, is_done in occurs_between(t, today, window_end):
+            for orig, disp, is_done in self.store.iter_occurrences(t, today, window_end):
                 if today <= disp <= window_end:
                     futures.append((disp, is_done, i, kind, client, orig))
             if not futures:
                 continue
             futures.sort(key=lambda x: x[0])
             first = futures[0]
-            
             for item in (first, next((f for f in futures[1:] if f[1] is False), None)):
                 if item is None:
                     continue
@@ -746,11 +757,16 @@ class DashboardPage:
             tv.tag_configure("cancelled", font=self._cancel_font)
             
         for iid in tv.get_children(""):
+            if self._is_load_more_row(iid):
+                continue
             tags = list(tv.item(iid, "tags") or [])
             if "due" in tags and tags[-1] != "due":
                 tags = [t for t in tags if t != "due"] + ["due"]
                 tv.item(iid, tags=tuple(tags))
-        
+
+        if getattr(self, "_show_all_past", False):
+            self._append_load_more_row(tv, window_start)
+
         self._update_sort_headers()
 
     def _todo_click(self, event):
@@ -759,6 +775,9 @@ class DashboardPage:
         col = tv.identify_column(event.x)
         if not row:
             tv.selection_remove(tv.selection())
+            return "break"
+        if self._is_load_more_row(row):
+            self._load_more_past()
             return "break"
         if col == "#1":
             i_task, d = self._todo_rows[row]
@@ -772,7 +791,11 @@ class DashboardPage:
     def _todo_open_client(self, _e=None):
         tv = self.todo_tv
         sel = tv.selection()
-        if not sel: return
+        if not sel:
+            return
+        if self._is_load_more_row(sel[0]):
+            self._load_more_past()
+            return
         i_task, _d = self._todo_rows[sel[0]]
         self._navigate_client(self.store.tasks[i_task])
 
@@ -1060,25 +1083,22 @@ class DashboardPage:
         for t in self.store.tasks:
             comp = set(t.get("completed", []) or [])
             canc = set(t.get("cancelled", []) or [])
-            d = month_first
-            while d <= scan_end:
-                if self.store.occurs_on(t, d):
-                    disp = display_date_for(t, d)
-                    if disp.year == y and disp.month == m:
-                        d_iso   = d.isoformat()
-                        disp_iso = disp.isoformat()
-                        is_done = (d_iso in comp) or (disp_iso in comp)
-                        is_cancelled = (d_iso in canc) or (disp_iso in canc) 
-                        
-                        if is_cancelled:
-                            state = "cancelled"
-                        elif is_done:
-                            state = "done"
-                        else:
-                            state = "todo"
+            for d, disp, is_done in self.store.iter_occurrences(t, month_first, scan_end):
+                if disp.year != y or disp.month != m:
+                    continue
+                d_iso = d.isoformat()
+                disp_iso = disp.isoformat()
+                is_done = (d_iso in comp) or (disp_iso in comp)
+                is_cancelled = (d_iso in canc) or (disp_iso in canc)
 
-                        dot_map[disp.day].append((state, t, d)) 
-                d += _dt.timedelta(days=1)
+                if is_cancelled:
+                    state = "cancelled"
+                elif is_done:
+                    state = "done"
+                else:
+                    state = "todo"
+
+                dot_map[disp.day].append((state, t, d))
 
         cal = _cal.Calendar(firstweekday=0)
         for r, week in enumerate(cal.monthdayscalendar(y, m), start=2):
@@ -1331,10 +1351,14 @@ class DashboardPage:
             sel = tv.selection()
             if sel:
                 iid = sel[0]
+                if self._is_load_more_row(iid):
+                    return None
                 i_task, _ = self._todo_rows.get(iid, (None, None))
                 return i_task
             focus = tv.focus()
             if focus:
+                if self._is_load_more_row(focus):
+                    return None
                 i_task, _ = self._todo_rows.get(focus, (None, None))
                 return i_task
         return None
@@ -1345,9 +1369,13 @@ class DashboardPage:
             sel = tv.selection()
             if sel:
                 iid = sel[0]
+                if self._is_load_more_row(iid):
+                    return (None, None)
                 return self._todo_rows.get(iid, (None, None))
             focus = tv.focus()
             if focus:
+                if self._is_load_more_row(focus):
+                    return (None, None)
                 return self._todo_rows.get(focus, (None, None))
         return (None, None)
 
@@ -2062,6 +2090,8 @@ class DashboardPage:
     def _stripe_and_merge(self, tv: ttk.Treeview) -> None:
         # Merge zebra striping tags with our semantic tags so colors persist
         for iid in tv.get_children(""):
+            if self._is_load_more_row(iid):
+                continue
             semantic = list(self._row_tags.get(iid, ()))
             current = list(tv.item(iid, "tags") or ())
             # keep any stripe tags but ensure semantic tags remain
@@ -2081,6 +2111,8 @@ class DashboardPage:
         # ensure selection follows cursor
         tv.selection_set(row)
 
+        if self._is_load_more_row(row):
+            return "break"
         i_task, date_obj = self._todo_rows.get(row, (None, None))
         if i_task is None or date_obj is None:
             return "break"
