@@ -91,14 +91,32 @@ SKIP_PATTERNS = [
 
 
 def _extract_check_number(description: str) -> str:
-    """Extract check number from description. Returns empty string if not found."""
+    """Extract check number from CHECK/CHK description lines."""
     if not description or not description.strip():
         return ""
-    for pat in (RE_CHECK_NO, RE_CHECK_HASH, RE_CHK, RE_HASH_NUM):
+    for pat in (RE_CHECK_NO, RE_CHECK_HASH, RE_CHK):
         m = pat.search(description)
         if m:
             return m.group(1)
     return ""
+
+
+def _extract_reference_number(description: str) -> str:
+    """Extract non-check reference numbers (e.g. SEQ#) from description."""
+    if not description or not description.strip():
+        return ""
+    m = RE_HASH_NUM.search(description)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _transaction_reference_fields(description: str) -> tuple[str, str]:
+    """Return (reference_number, check_number) for vendor_match output."""
+    check_number = _extract_check_number(description)
+    if check_number:
+        return "", check_number
+    return _extract_reference_number(description), ""
 
 
 def _is_skip_line(line: str) -> bool:
@@ -252,11 +270,13 @@ def parse_fremont_checking_text(text: str) -> list[dict]:
             try:
                 amount = float(amount_str)
                 normalized_date = _normalize_date_to_mm_dd_yyyy(date_str, year, period)
+                ref_num, check_num = _transaction_reference_fields(desc_str)
                 rows.append({
                     "date": normalized_date,
                     "description": desc_str,
                     "amount": amount,
-                    "reference_number": _extract_check_number(desc_str),
+                    "reference_number": ref_num,
+                    "check_number": check_num,
                 })
             except ValueError:
                 pass
@@ -303,11 +323,13 @@ def parse_fremont_checking_text(text: str) -> list[dict]:
                     amount = float(amount_str)
                     full_desc = " ".join(desc_parts).strip()
                     normalized_date = _normalize_date_to_mm_dd_yyyy(date_str, year, period)
+                    ref_num, check_num = _transaction_reference_fields(full_desc)
                     rows.append({
                         "date": normalized_date,
                         "description": full_desc,
                         "amount": amount,
-                        "reference_number": _extract_check_number(full_desc),
+                        "reference_number": ref_num,
+                        "check_number": check_num,
                     })
                 except ValueError:
                     pass
@@ -346,7 +368,7 @@ def main():
         print(f"{r['date']:<{col_widths[0]}} {r['description'][:col_widths[1]]:<{col_widths[1]}} {r['amount']:>{col_widths[2]}.2f}")
     if out_csv:
         with open(out_csv, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=["date", "description", "amount"])
+            w = csv.DictWriter(f, fieldnames=["date", "description", "amount", "reference_number", "check_number"])
             w.writeheader()
             w.writerows(rows)
         print(f"\nWrote {len(rows)} rows to {out_csv}")

@@ -13,6 +13,16 @@ from tkinter import ttk, filedialog, messagebox
 DEFAULT_SSN = "000000000"
 DEFAULT_WAGE_PLAN_CODE = "S"
 
+STATE_CALIFORNIA = "California"
+STATE_NEW_YORK = "New York"
+STATE_HAWAII = "Hawaii"
+STATE_OPTIONS = (STATE_CALIFORNIA, STATE_NEW_YORK, STATE_HAWAII)
+
+STRICT_SSN_LINE_RE = re.compile(r"^\d{9}$")
+MONEY_LINE_RE = re.compile(r"^\d+(?:,\d{3})*\.\d{2}$")
+COMMA_NAME_LINE_RE = re.compile(r"^[A-Za-z][A-Za-z\s'\-]+,\s*[A-Za-z].*$")
+CITY_STATE_ZIP_COMMA_RE = re.compile(r"^.+,\s*[A-Z]{2}\s*\d", re.IGNORECASE)
+
 # match CA address lines like "BRENTWOOD CA 94513"
 ADDRESS_LINE_RE = re.compile(
     r"^[A-Z0-9 .,'/-]+ CA \d{5}(?:-\d{4})?$"
@@ -33,6 +43,13 @@ FORBIDDEN_NAME_PHRASES = [
     "l. grand total subject wages", "m. grand total pit wages", "n. grand total pit withheld",
     # Addresses / companies (generic)
     "address", "po box", "zip", "california", "inc", "llc", "corp", "company", "co.", "ltd",
+    # Hawaii UC-B6 / UC-B6A
+    "state of hawaii", "form uc-b6", "unemployment insurance", "federal id number",
+    "account number", "for quarter ending", "delinquent after", "do not write",
+    "total wages this page", "add to form uc-b6", "employee's ssa",
+    # New York NYS-45
+    "state of new york", "nys-45", "quarterly combined withholding",
+    "wage reporting", "unemployment insurance return", "employer registration",
 ]
 
 # column/header variants we've actually seen in your PDFs
@@ -144,7 +161,7 @@ def _is_nameish(line: str) -> bool:
     if not line or _is_forbidden_name_line(line) or _is_de9c_colhead(line):
         return False
     low = line.lower()
-    if any(kw in low for kw in STOP_KEYWORDS_NAMEISH):
+    if _contains_stop_keyword(line):
         return False
     toks = re.findall(r"[A-Za-z][A-Za-z\-']*", line)
     return 1 <= len(toks) <= 6
@@ -233,6 +250,356 @@ def _enforce_lastname_limit(name: str) -> str:
         first_part = name.split()[0]
         return first_part if len(first_part) <= 19 else first_part[:19]
     return name[:19]
+
+def _parse_comma_name(name_line: str) -> tuple[str, str, str]:
+    """Parse 'LAST, FIRST [MIDDLE]' names used on HI UC-B6A and NY NYS-45."""
+    name_line = _clean_spaces(name_line)
+    if "," not in name_line:
+        return _extract_name([name_line])
+
+    last_part, rest = name_line.split(",", 1)
+    last = _enforce_lastname_limit(_titlecase_name_preserve_hyphens(last_part.strip()))
+    tokens = re.findall(r"[A-Za-z][A-Za-z\-']*", rest.strip())
+    if not tokens:
+        return "", "", last
+
+    first_raw = tokens[0]
+    mi = ""
+    idx = 1
+    if idx < len(tokens) and _is_mi_token(tokens[idx]):
+        mi = tokens[idx][0].upper()
+        idx += 1
+    elif idx < len(tokens) and len(tokens[idx]) == 1:
+        mi = tokens[idx].upper()
+        idx += 1
+    if idx < len(tokens):
+        first_raw = " ".join([first_raw] + tokens[idx:])
+
+    first = _enforce_firstname_limit(_titlecase_name_preserve_hyphens(first_raw))
+    return first, mi, last
+
+def _next_nonempty(lines: list[str], start: int) -> int:
+    i = start
+    while i < len(lines) and not lines[i]:
+        i += 1
+    return i
+
+def _collect_money_lines(lines: list[str], start: int, *, max_count: int = 5) -> tuple[list[str], int]:
+    amounts: list[str] = []
+    i = start
+    while i < len(lines) and len(amounts) < max_count:
+        if not lines[i]:
+            i += 1
+            continue
+        if MONEY_LINE_RE.match(lines[i]):
+            amounts.append(lines[i])
+            i += 1
+            continue
+        break
+    return amounts, i
+
+def _row_from_employee(ssn: str, first: str, mi: str, last: str, amounts: list[str], *, capture: str, name_line: str, block_idx: int):
+    F = amounts[0] if len(amounts) >= 1 else ""
+    G = amounts[1] if len(amounts) >= 2 else ""
+    H = amounts[2] if len(amounts) >= 3 else ""
+    row = {
+        "SSN": ssn,
+        "First Name": first,
+        "Middle Initial": mi,
+        "Last Name": last,
+        "Total Subject Wages": F,
+        "Personal Income Tax Wages": G,
+        "Personal Income Tax Withheld": H,
+        "Wage Plan Code": DEFAULT_WAGE_PLAN_CODE,
+        "_dbg_name_lines": name_line,
+    }
+    dbg = {
+        "block": block_idx,
+        "capture": capture,
+        "ssn": ssn,
+        "name_lines": name_line,
+        "first": first,
+        "mi": mi,
+        "last": last,
+        "F": F,
+        "G": G,
+        "H": H,
+    }
+    return row, dbg
+
+def parse_ssn_comma_name_amounts_text_with_debug(
+    text: str,
+    *,
+    capture_label: str,
+    min_amounts: int = 1,
+    max_amounts: int = 5,
+):
+    """Parse Intuit-style state wage reports: SSN, LAST,FIRST name, then money column(s)."""
+    lines = [ln.strip() for ln in text.split("\n")]
+    rows = []
+    debug_rows = []
+    block_idx = 0
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        if not STRICT_SSN_LINE_RE.match(lines[i]):
+            i += 1
+            continue
+
+        ssn = lines[i]
+        j = _next_nonempty(lines, i + 1)
+        if j >= n:
+            break
+
+        name_line = lines[j]
+        if not _is_comma_person_name_line(name_line):
+            i += 1
+            continue
+
+        k = _next_nonempty(lines, j + 1)
+        if k >= n:
+            break
+
+        amounts, next_idx = _collect_money_lines(lines, k, max_count=max_amounts)
+        if len(amounts) < min_amounts:
+            i += 1
+            continue
+
+        first, mi, last = _parse_comma_name(name_line)
+        if not (first and last):
+            i += 1
+            continue
+
+        row, dbg = _row_from_employee(
+            ssn, first, mi, last, amounts,
+            capture=capture_label,
+            name_line=name_line,
+            block_idx=block_idx,
+        )
+        rows.append(row)
+        debug_rows.append(dbg)
+        block_idx += 1
+        i = next_idx
+
+    return rows, debug_rows
+
+def parse_hawaii_ucb6a_text_with_debug(text: str):
+    return parse_ssn_comma_name_amounts_text_with_debug(
+        text,
+        capture_label="hawaii-ucb6a",
+        min_amounts=1,
+        max_amounts=1,
+    )
+
+def _is_comma_person_name_line(s: str) -> bool:
+    s = _clean_spaces(s)
+    if not COMMA_NAME_LINE_RE.match(s) or _is_forbidden_name_line(s):
+        return False
+    if CITY_STATE_ZIP_COMMA_RE.match(s):
+        return False
+    _left, right = s.split(",", 1)
+    right = right.strip()
+    if re.fullmatch(r"[A-Za-z]{2}", right):
+        return False
+    return True
+
+def _is_nys45_wage_type(s: str) -> bool:
+    return (s or "").upper() in {"R", "O"}
+
+def _is_single_letter_token(s: str) -> bool:
+    return len((s or "").strip()) == 1 and s.isalpha()
+
+def _contains_stop_keyword(s: str) -> bool:
+    low = (s or "").lower()
+    return any(re.search(rf"\b{re.escape(kw)}\b", low) for kw in STOP_KEYWORDS_NAMEISH)
+
+def _looks_like_nys45_name_part(s: str) -> bool:
+    s = _clean_spaces(s)
+    if not s or STRICT_SSN_LINE_RE.match(s) or MONEY_LINE_RE.match(s):
+        return False
+    if _is_nys45_wage_type(s) or _is_forbidden_name_line(s):
+        return False
+    if _contains_stop_keyword(s):
+        return False
+    return bool(re.search(r"[A-Za-z]", s))
+
+def parse_ny_nys45_ssn_names_text_with_debug(text: str):
+    """Parse Intuit NYS-45 Part C PDFs: SSN, last name, first name, R/O, optional MI, wages."""
+    lines = [ln.strip() for ln in text.split("\n")]
+    rows = []
+    debug_rows = []
+    block_idx = 0
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        if not STRICT_SSN_LINE_RE.match(lines[i]):
+            i += 1
+            continue
+
+        ssn = lines[i]
+        j = _next_nonempty(lines, i + 1)
+        if j >= n - 1:
+            i += 1
+            continue
+        if not (_looks_like_nys45_name_part(lines[j]) and _looks_like_nys45_name_part(lines[j + 1])):
+            i += 1
+            continue
+
+        last_raw = lines[j]
+        first_raw = lines[j + 1]
+        k = j + 2
+        if k >= n or not _is_nys45_wage_type(lines[k]):
+            i += 1
+            continue
+        k += 1
+
+        mi = ""
+        if k < n and _is_single_letter_token(lines[k]) and k + 1 < n and MONEY_LINE_RE.match(lines[k + 1]):
+            mi = lines[k].upper()
+            k += 1
+
+        amounts, next_k = _collect_money_lines(lines, k, max_count=3)
+        if len(amounts) < 2:
+            i += 1
+            continue
+
+        f_val = _money_to_float(amounts[0])
+        if not (f_val > 0 and f_val < 500000):
+            i += 1
+            continue
+
+        first = _enforce_firstname_limit(_titlecase_name_preserve_hyphens(first_raw))
+        last = _enforce_lastname_limit(_titlecase_name_preserve_hyphens(last_raw))
+        if not (first and last):
+            i += 1
+            continue
+
+        padded = (amounts + ["", ""])[:3]
+        row, dbg = _row_from_employee(
+            ssn,
+            first,
+            mi,
+            last,
+            padded,
+            capture="ny-nys45-ssn",
+            name_line=f"{last_raw}, {first_raw}",
+            block_idx=block_idx,
+        )
+        rows.append(row)
+        debug_rows.append(dbg)
+        block_idx += 1
+        i = next_k
+
+    return rows, debug_rows
+
+def _part_c_start_index(lines: list[str]) -> int:
+    for idx, ln in enumerate(lines):
+        low = ln.lower()
+        if "part c" in low and ("wage reporting" in low or "employee/payee" in low):
+            return idx
+    return 0
+
+def _collect_part_c_ssns(lines: list[str], start: int) -> list[str]:
+    ssns: list[str] = []
+    for ln in lines[start:]:
+        if STRICT_SSN_LINE_RE.match(ln):
+            ssns.append(ln)
+    return ssns
+
+def parse_ny_nys45_partc_text_with_debug(text: str):
+    """Parse modern NYS-45 Part C PDFs where names and SSNs extract in separate columns."""
+    lines = [ln.strip() for ln in text.split("\n")]
+    start = _part_c_start_index(lines)
+    employees: list[dict] = []
+    i = start
+    n = len(lines)
+
+    while i < n - 2:
+        if not (_looks_like_nys45_name_part(lines[i]) and _looks_like_nys45_name_part(lines[i + 1])):
+            i += 1
+            continue
+
+        last_raw = lines[i]
+        first_raw = lines[i + 1]
+        j = i + 2
+        mi = ""
+        if j < n and _is_nys45_wage_type(lines[j]):
+            j += 1
+        if j < n and _is_single_letter_token(lines[j]) and j + 1 < n and MONEY_LINE_RE.match(lines[j + 1]):
+            mi = lines[j].upper()
+            j += 1
+
+        amounts, next_j = _collect_money_lines(lines, j, max_count=5)
+        if len(amounts) < 3:
+            i += 1
+            continue
+
+        f_val = _money_to_float(amounts[0])
+        if not (f_val > 0 and f_val < 500000):
+            i += 1
+            continue
+
+        first = _enforce_firstname_limit(_titlecase_name_preserve_hyphens(first_raw))
+        last = _enforce_lastname_limit(_titlecase_name_preserve_hyphens(last_raw))
+        if not (first and last):
+            i += 1
+            continue
+
+        employees.append({
+            "first": first,
+            "mi": mi,
+            "last": last,
+            "amounts": amounts,
+            "name_line": f"{last_raw}, {first_raw}",
+        })
+        i = next_j
+
+    ssns = _collect_part_c_ssns(lines, start)
+    rows = []
+    debug_rows = []
+    for idx, emp in enumerate(employees):
+        ssn = ssns[idx] if idx < len(ssns) else DEFAULT_SSN
+        row, dbg = _row_from_employee(
+            ssn,
+            emp["first"],
+            emp["mi"],
+            emp["last"],
+            emp["amounts"],
+            capture="ny-nys45-partc",
+            name_line=emp["name_line"],
+            block_idx=idx,
+        )
+        rows.append(row)
+        debug_rows.append(dbg)
+
+    return rows, debug_rows
+
+def parse_ny_nys45_text_with_debug(text: str):
+    rows, dbg = parse_ny_nys45_ssn_names_text_with_debug(text)
+    if rows:
+        return rows, dbg
+    rows, dbg = parse_ssn_comma_name_amounts_text_with_debug(
+        text,
+        capture_label="ny-nys45-comma",
+        min_amounts=3,
+        max_amounts=3,
+    )
+    if rows:
+        return rows, dbg
+    rows, dbg = parse_ny_nys45_partc_text_with_debug(text)
+    if rows:
+        return rows, dbg
+    return parse_de9c_text_with_debug(text)
+
+def parse_payroll_text_with_debug(text: str, state: str):
+    state = (state or STATE_CALIFORNIA).strip()
+    if state == STATE_HAWAII:
+        return parse_hawaii_ucb6a_text_with_debug(text)
+    if state == STATE_NEW_YORK:
+        return parse_ny_nys45_text_with_debug(text)
+    return parse_de9c_text_with_debug(text)
 
 def _extract_name(name_lines: list[str]) -> tuple[str, str, str]:
     if not name_lines:
@@ -551,26 +918,53 @@ def write_csv_no_header(out_path: Path, rows):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("DE9C → CSV")
-        self.geometry("800x480")
+        self.title("DE9 / Payroll → CSV")
+        self.geometry("800x500")
         self.resizable(True, True)
 
         frm = ttk.Frame(self, padding=12)
         frm.pack(fill="both", expand=True)
 
+        self.state_var = tk.StringVar(value=STATE_CALIFORNIA)
+        ttk.Label(frm, text="State:").grid(row=0, column=0, sticky="w")
+        state_cb = ttk.Combobox(
+            frm,
+            textvariable=self.state_var,
+            values=STATE_OPTIONS,
+            state="readonly",
+            width=18,
+        )
+        state_cb.grid(row=0, column=1, sticky="w", pady=(0, 8))
+        state_cb.bind("<<ComboboxSelected>>", self._on_state_change)
+
         self.path_var = tk.StringVar(value="")
-        ttk.Label(frm, text="DE9C PDF file:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.path_var, width=70).grid(row=1, column=0, sticky="we", pady=(2, 8))
-        ttk.Button(frm, text="Browse…", command=self.pick_pdf).grid(row=1, column=1, padx=(8, 0))
-        ttk.Button(frm, text="Convert to CSV", command=self.convert).grid(row=1, column=2, padx=(8, 0))
+        self.pdf_label = ttk.Label(frm, text=self._pdf_label_text())
+        self.pdf_label.grid(row=1, column=0, sticky="w")
+        ttk.Entry(frm, textvariable=self.path_var, width=70).grid(row=2, column=0, sticky="we", pady=(2, 8))
+        ttk.Button(frm, text="Browse…", command=self.pick_pdf).grid(row=2, column=1, padx=(8, 0))
+        ttk.Button(frm, text="Convert to CSV", command=self.convert).grid(row=2, column=2, padx=(8, 0))
 
         self.log = tk.Text(frm, height=24)
-        self.log.grid(row=2, column=0, columnspan=3, sticky="nsew")
-        frm.rowconfigure(2, weight=1)
+        self.log.grid(row=3, column=0, columnspan=3, sticky="nsew")
+        frm.rowconfigure(3, weight=1)
         frm.columnconfigure(0, weight=1)
 
+    def _pdf_label_text(self) -> str:
+        state = self.state_var.get()
+        if state == STATE_HAWAII:
+            return "Hawaii UC-B6 / UC-B6A PDF file:"
+        if state == STATE_NEW_YORK:
+            return "New York NYS-45 PDF file:"
+        return "California DE9C PDF file:"
+
+    def _on_state_change(self, _event=None):
+        self.pdf_label.configure(text=self._pdf_label_text())
+
     def pick_pdf(self):
-        p = filedialog.askopenfilename(title="Select DE9C PDF", filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
+        p = filedialog.askopenfilename(
+            title=f"Select {self.state_var.get()} payroll PDF",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        )
         if p:
             self.path_var.set(p)
 
@@ -590,8 +984,9 @@ class App(tk.Tk):
             return
         
         try:
+            state = self.state_var.get()
             text = extract_text_from_pdf(pdf_path)
-            rows, dbg = parse_de9c_text_with_debug(text)
+            rows, dbg = parse_payroll_text_with_debug(text, state)
             rows, dropped_header, dropped_non_employee = _filter_out_header_rows(rows)
         except Exception as e:
             self.logln("[ERROR] " + str(e))
@@ -603,8 +998,9 @@ class App(tk.Tk):
 
         self.log.delete("1.0", "end")
         self.logln(
-            f"Parsed {len(rows)} employee rows. Removed {dropped_header} header rows and "
-            f"{dropped_non_employee} non-employee rows. Saved to: {out_path}"
+            f"State: {self.state_var.get()}. Parsed {len(rows)} employee rows. "
+            f"Removed {dropped_header} header rows and {dropped_non_employee} non-employee rows. "
+            f"Saved to: {out_path}"
         )
         self.logln("")
         for d in dbg[:80]:
@@ -618,10 +1014,11 @@ class App(tk.Tk):
 # =========================
 # CLI
 # =========================
-def _print_debug_to_console(pdf_path: Path):
+def _print_debug_to_console(pdf_path: Path, state: str = STATE_CALIFORNIA):
     text = extract_text_from_pdf(pdf_path)
-    rows, dbg = parse_de9c_text_with_debug(text)
+    rows, dbg = parse_payroll_text_with_debug(text, state)
     rows, dropped_header, dropped_non_employee = _filter_out_header_rows(rows)
+    print(f"State: {state}")
     print(f"Rows: {len(rows)} (removed {dropped_header} header rows, {dropped_non_employee} non-employee rows)")
 
     for r in rows:
@@ -633,11 +1030,18 @@ if __name__ == "__main__":
             pdf_idx = sys.argv.index("--pdf") + 1
             pdf_path = Path(sys.argv[pdf_idx])
         except Exception:
-            print("Usage: python de9c_to_csv.py --debug --pdf <PDF_PATH>")  # noqa
+            print("Usage: python de9c_to_csv.py --debug --pdf <PDF_PATH> [--state California|New York|Hawaii]")  # noqa
             sys.exit(2)
+        state = STATE_CALIFORNIA
+        if "--state" in sys.argv:
+            try:
+                state = sys.argv[sys.argv.index("--state") + 1]
+            except Exception:
+                print("Usage: python de9c_to_csv.py --debug --pdf <PDF_PATH> [--state California|New York|Hawaii]")  # noqa
+                sys.exit(2)
         if not pdf_path.is_file():
             print(f"PDF not found: {pdf_path}")
             sys.exit(2)
-        _print_debug_to_console(pdf_path)
+        _print_debug_to_console(pdf_path, state)
     else:
         App().mainloop()
