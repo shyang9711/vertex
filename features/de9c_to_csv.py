@@ -84,6 +84,33 @@ CSV_HEADERS = [
     "Wage Plan Code",
 ]
 
+# NYS-45 Web File CSV layout (column order; file has no header row)
+NYS45_CSV_HEADERS = [
+    "SSN",
+    "Last Name",
+    "First Name",
+    "Middle Initial",
+    "Total UI Remuneration",
+    "Gross Wages",
+    "Total NYS Tax Withheld",
+    "Total NYC Tax Withheld",
+    "Total Yonkers Tax Withheld",
+    "Wage Type",
+]
+
+DEFAULT_NYS45_WAGE_TYPE = "R"
+
+# Hawaii UC-B6 / UC-B6A HUI Express CSV import layout (column order; no header row)
+HAWAII_UCB6_CSV_HEADERS = [
+    "SSN",
+    "Last Name",
+    "First Name",
+    "Middle Initial",
+    "Quarter Wages",
+    "Out-of-State Wages",
+    "State",
+]
+
 HEADER_NAME_PAT = re.compile(r"^\s*e\.\s*employee\s+name", re.IGNORECASE)
 SSN_LINE_RE = re.compile(r"^\s*(\d{9})(?:\s+(.*))?$")
 
@@ -251,6 +278,68 @@ def _enforce_lastname_limit(name: str) -> str:
         return first_part if len(first_part) <= 19 else first_part[:19]
     return name[:19]
 
+def _enforce_ny_firstname_limit(name: str) -> str:
+    name = (name or "").strip()
+    return name if len(name) <= 15 else name[:15]
+
+def _enforce_ny_lastname_limit(name: str) -> str:
+    name = (name or "").strip()
+    return name if len(name) <= 30 else name[:30]
+
+def _format_ny_money(val: str) -> str:
+    if val is None or not str(val).strip():
+        return "0.00"
+    try:
+        return f"{float(str(val).replace(',', '')):.2f}"
+    except ValueError:
+        return "0.00"
+
+def _normalize_nys45_wage_type(val: str) -> str:
+    wt = (val or DEFAULT_NYS45_WAGE_TYPE).strip().upper()
+    return wt if wt in {"R", "O"} else DEFAULT_NYS45_WAGE_TYPE
+
+def _row_from_nys45_employee(
+    ssn: str,
+    first: str,
+    mi: str,
+    last: str,
+    amounts: list[str],
+    *,
+    wage_type: str = DEFAULT_NYS45_WAGE_TYPE,
+    capture: str,
+    name_line: str,
+    block_idx: int,
+):
+    """Build a row for NYS-45 Web File CSV export."""
+    padded = (amounts + ["", "", "", "", ""])[:5]
+    ui, gross, nys, nyc, yonkers = padded
+    row = {
+        "SSN": ssn,
+        "Last Name": _enforce_ny_lastname_limit(last),
+        "First Name": _enforce_ny_firstname_limit(first),
+        "Middle Initial": (mi or "")[:1].upper(),
+        "Total UI Remuneration": _format_ny_money(ui),
+        "Gross Wages": _format_ny_money(gross),
+        "Total NYS Tax Withheld": _format_ny_money(nys),
+        "Total NYC Tax Withheld": _format_ny_money(nyc),
+        "Total Yonkers Tax Withheld": _format_ny_money(yonkers),
+        "Wage Type": _normalize_nys45_wage_type(wage_type),
+        "_dbg_name_lines": name_line,
+    }
+    dbg = {
+        "block": block_idx,
+        "capture": capture,
+        "ssn": ssn,
+        "name_lines": name_line,
+        "first": row["First Name"],
+        "mi": row["Middle Initial"],
+        "last": row["Last Name"],
+        "F": row["Total UI Remuneration"],
+        "G": row["Gross Wages"],
+        "H": row["Total NYS Tax Withheld"],
+    }
+    return row, dbg
+
 def _parse_comma_name(name_line: str) -> tuple[str, str, str]:
     """Parse 'LAST, FIRST [MIDDLE]' names used on HI UC-B6A and NY NYS-45."""
     name_line = _clean_spaces(name_line)
@@ -327,6 +416,53 @@ def _row_from_employee(ssn: str, first: str, mi: str, last: str, amounts: list[s
     }
     return row, dbg
 
+def _format_hawaii_money(val: str) -> str:
+    if val is None or not str(val).strip():
+        return "0.00"
+    try:
+        return f"{float(str(val).replace(',', '')):.2f}"
+    except ValueError:
+        return "0.00"
+
+def _row_from_hawaii_employee(
+    ssn: str,
+    first: str,
+    mi: str,
+    last: str,
+    amounts: list[str],
+    *,
+    capture: str,
+    name_line: str,
+    block_idx: int,
+    state: str = "",
+):
+    """Build a row for Hawaii UC-B6 HUI Express CSV import."""
+    quarter = amounts[0] if len(amounts) >= 1 else ""
+    out_of_state = amounts[1] if len(amounts) >= 2 else ""
+    row = {
+        "SSN": ssn,
+        "Last Name": _enforce_ny_lastname_limit(last),
+        "First Name": _enforce_ny_firstname_limit(first),
+        "Middle Initial": (mi or "")[:1].upper(),
+        "Quarter Wages": _format_hawaii_money(quarter),
+        "Out-of-State Wages": _format_hawaii_money(out_of_state),
+        "State": (state or "").strip().upper()[:2],
+        "_dbg_name_lines": name_line,
+    }
+    dbg = {
+        "block": block_idx,
+        "capture": capture,
+        "ssn": ssn,
+        "name_lines": name_line,
+        "first": row["First Name"],
+        "mi": row["Middle Initial"],
+        "last": row["Last Name"],
+        "F": row["Quarter Wages"],
+        "G": row["Out-of-State Wages"],
+        "H": row["State"],
+    }
+    return row, dbg
+
 def parse_ssn_comma_name_amounts_text_with_debug(
     text: str,
     *,
@@ -385,12 +521,59 @@ def parse_ssn_comma_name_amounts_text_with_debug(
     return rows, debug_rows
 
 def parse_hawaii_ucb6a_text_with_debug(text: str):
-    return parse_ssn_comma_name_amounts_text_with_debug(
-        text,
-        capture_label="hawaii-ucb6a",
-        min_amounts=1,
-        max_amounts=1,
-    )
+    """Parse Hawaii UC-B6A PDFs: SSN, LAST,FIRST, quarter wages (optional out-of-state)."""
+    lines = [ln.strip() for ln in text.split("\n")]
+    rows = []
+    debug_rows = []
+    block_idx = 0
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        if not STRICT_SSN_LINE_RE.match(lines[i]):
+            i += 1
+            continue
+
+        ssn = lines[i]
+        j = _next_nonempty(lines, i + 1)
+        if j >= n:
+            break
+
+        name_line = lines[j]
+        if not _is_comma_person_name_line(name_line):
+            i += 1
+            continue
+
+        k = _next_nonempty(lines, j + 1)
+        if k >= n:
+            break
+
+        amounts, next_idx = _collect_money_lines(lines, k, max_count=2)
+        if not amounts:
+            i += 1
+            continue
+
+        first, mi, last = _parse_comma_name(name_line)
+        if not (first and last):
+            i += 1
+            continue
+
+        row, dbg = _row_from_hawaii_employee(
+            ssn,
+            first,
+            mi,
+            last,
+            amounts,
+            capture="hawaii-ucb6a",
+            name_line=name_line,
+            block_idx=block_idx,
+        )
+        rows.append(row)
+        debug_rows.append(dbg)
+        block_idx += 1
+        i = next_idx
+
+    return rows, debug_rows
 
 def _is_comma_person_name_line(s: str) -> bool:
     s = _clean_spaces(s)
@@ -453,14 +636,23 @@ def parse_ny_nys45_ssn_names_text_with_debug(text: str):
         if k >= n or not _is_nys45_wage_type(lines[k]):
             i += 1
             continue
+        wage_type = lines[k].upper()
         k += 1
+        while k < n and _is_nys45_wage_type(lines[k]):
+            k += 1
 
         mi = ""
-        if k < n and _is_single_letter_token(lines[k]) and k + 1 < n and MONEY_LINE_RE.match(lines[k + 1]):
+        if (
+            k < n
+            and _is_single_letter_token(lines[k])
+            and not _is_nys45_wage_type(lines[k])
+            and k + 1 < n
+            and MONEY_LINE_RE.match(lines[k + 1])
+        ):
             mi = lines[k].upper()
             k += 1
 
-        amounts, next_k = _collect_money_lines(lines, k, max_count=3)
+        amounts, next_k = _collect_money_lines(lines, k, max_count=5)
         if len(amounts) < 2:
             i += 1
             continue
@@ -470,19 +662,19 @@ def parse_ny_nys45_ssn_names_text_with_debug(text: str):
             i += 1
             continue
 
-        first = _enforce_firstname_limit(_titlecase_name_preserve_hyphens(first_raw))
-        last = _enforce_lastname_limit(_titlecase_name_preserve_hyphens(last_raw))
+        first = _titlecase_name_preserve_hyphens(first_raw)
+        last = _titlecase_name_preserve_hyphens(last_raw)
         if not (first and last):
             i += 1
             continue
 
-        padded = (amounts + ["", ""])[:3]
-        row, dbg = _row_from_employee(
+        row, dbg = _row_from_nys45_employee(
             ssn,
             first,
             mi,
             last,
-            padded,
+            amounts,
+            wage_type=wage_type,
             capture="ny-nys45-ssn",
             name_line=f"{last_raw}, {first_raw}",
             block_idx=block_idx,
@@ -524,15 +716,25 @@ def parse_ny_nys45_partc_text_with_debug(text: str):
         last_raw = lines[i]
         first_raw = lines[i + 1]
         j = i + 2
-        mi = ""
+        wage_type = DEFAULT_NYS45_WAGE_TYPE
         if j < n and _is_nys45_wage_type(lines[j]):
+            wage_type = lines[j].upper()
             j += 1
-        if j < n and _is_single_letter_token(lines[j]) and j + 1 < n and MONEY_LINE_RE.match(lines[j + 1]):
+        while j < n and _is_nys45_wage_type(lines[j]):
+            j += 1
+        mi = ""
+        if (
+            j < n
+            and _is_single_letter_token(lines[j])
+            and not _is_nys45_wage_type(lines[j])
+            and j + 1 < n
+            and MONEY_LINE_RE.match(lines[j + 1])
+        ):
             mi = lines[j].upper()
             j += 1
 
         amounts, next_j = _collect_money_lines(lines, j, max_count=5)
-        if len(amounts) < 3:
+        if len(amounts) < 2:
             i += 1
             continue
 
@@ -541,8 +743,8 @@ def parse_ny_nys45_partc_text_with_debug(text: str):
             i += 1
             continue
 
-        first = _enforce_firstname_limit(_titlecase_name_preserve_hyphens(first_raw))
-        last = _enforce_lastname_limit(_titlecase_name_preserve_hyphens(last_raw))
+        first = _titlecase_name_preserve_hyphens(first_raw)
+        last = _titlecase_name_preserve_hyphens(last_raw)
         if not (first and last):
             i += 1
             continue
@@ -552,6 +754,7 @@ def parse_ny_nys45_partc_text_with_debug(text: str):
             "mi": mi,
             "last": last,
             "amounts": amounts,
+            "wage_type": wage_type,
             "name_line": f"{last_raw}, {first_raw}",
         })
         i = next_j
@@ -561,12 +764,13 @@ def parse_ny_nys45_partc_text_with_debug(text: str):
     debug_rows = []
     for idx, emp in enumerate(employees):
         ssn = ssns[idx] if idx < len(ssns) else DEFAULT_SSN
-        row, dbg = _row_from_employee(
+        row, dbg = _row_from_nys45_employee(
             ssn,
             emp["first"],
             emp["mi"],
             emp["last"],
             emp["amounts"],
+            wage_type=emp.get("wage_type", DEFAULT_NYS45_WAGE_TYPE),
             capture="ny-nys45-partc",
             name_line=emp["name_line"],
             block_idx=idx,
@@ -576,16 +780,66 @@ def parse_ny_nys45_partc_text_with_debug(text: str):
 
     return rows, debug_rows
 
+def parse_ny_nys45_comma_name_text_with_debug(text: str):
+    """Parse NYS-45-ATT style PDFs: SSN, LAST,FIRST, then f/g/h(/i/j) amounts."""
+    lines = [ln.strip() for ln in text.split("\n")]
+    rows = []
+    debug_rows = []
+    block_idx = 0
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        if not STRICT_SSN_LINE_RE.match(lines[i]):
+            i += 1
+            continue
+
+        ssn = lines[i]
+        j = _next_nonempty(lines, i + 1)
+        if j >= n:
+            break
+
+        name_line = lines[j]
+        if not _is_comma_person_name_line(name_line):
+            i += 1
+            continue
+
+        k = _next_nonempty(lines, j + 1)
+        if k >= n:
+            break
+
+        amounts, next_idx = _collect_money_lines(lines, k, max_count=3)
+        if len(amounts) < 2:
+            i += 1
+            continue
+
+        first, mi, last = _parse_comma_name(name_line)
+        if not (first and last):
+            i += 1
+            continue
+
+        row, dbg = _row_from_nys45_employee(
+            ssn,
+            first,
+            mi,
+            last,
+            amounts,
+            capture="ny-nys45-comma",
+            name_line=name_line,
+            block_idx=block_idx,
+        )
+        rows.append(row)
+        debug_rows.append(dbg)
+        block_idx += 1
+        i = next_idx
+
+    return rows, debug_rows
+
 def parse_ny_nys45_text_with_debug(text: str):
     rows, dbg = parse_ny_nys45_ssn_names_text_with_debug(text)
     if rows:
         return rows, dbg
-    rows, dbg = parse_ssn_comma_name_amounts_text_with_debug(
-        text,
-        capture_label="ny-nys45-comma",
-        min_amounts=3,
-        max_amounts=3,
-    )
+    rows, dbg = parse_ny_nys45_comma_name_text_with_debug(text)
     if rows:
         return rows, dbg
     rows, dbg = parse_ny_nys45_partc_text_with_debug(text)
@@ -876,6 +1130,9 @@ def _filter_out_header_rows(rows):
             (r.get("Total Subject Wages") or "").strip()
             or (r.get("Personal Income Tax Wages") or "").strip()
             or (r.get("Personal Income Tax Withheld") or "").strip()
+            or (r.get("Total UI Remuneration") or "").strip()
+            or (r.get("Gross Wages") or "").strip()
+            or (r.get("Quarter Wages") or "").strip()
         )
 
         # Extra guard against addresses/boilerplate accidentally being captured as a name line
@@ -906,11 +1163,21 @@ def _filter_out_header_rows(rows):
 # =========================
 # csv writer
 # =========================
-def write_csv_no_header(out_path: Path, rows):
+def csv_headers_for_state(state: str) -> list[str]:
+    state = (state or "").strip()
+    if state == STATE_NEW_YORK:
+        return NYS45_CSV_HEADERS
+    if state == STATE_HAWAII:
+        return HAWAII_UCB6_CSV_HEADERS
+    return CSV_HEADERS
+
+
+def write_csv_no_header(out_path: Path, rows, state: str = STATE_CALIFORNIA):
+    headers = csv_headers_for_state(state)
     with open(out_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+        w = csv.DictWriter(f, fieldnames=headers)
         for r in rows:
-            w.writerow({k: (r.get(k, "") or "") for k in CSV_HEADERS})
+            w.writerow({k: (r.get(k, "") or "") for k in headers})
 
 # =========================
 # GUI
@@ -994,7 +1261,7 @@ class App(tk.Tk):
             return
 
         out_path = pdf_path.with_name(pdf_path.stem + " CSV.csv")
-        write_csv_no_header(out_path, rows)
+        write_csv_no_header(out_path, rows, state)
 
         self.log.delete("1.0", "end")
         self.logln(
