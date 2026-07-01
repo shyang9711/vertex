@@ -83,6 +83,13 @@ def _extract_beginning_balance(text: str) -> float | None:
         v = _parse_balance_value(m.group(1))
         if v is not None:
             return v
+    lines = [ln.strip() for ln in text.split("\n")]
+    for i, line in enumerate(lines):
+        if re.search(r"(?:Beginning|Opening|Previous|Prior)\s+Balance\s*:?\s*$", line, re.I):
+            if i + 1 < len(lines):
+                v = _parse_balance_value(lines[i + 1].lstrip("$"))
+                if v is not None:
+                    return v
     return None
 
 
