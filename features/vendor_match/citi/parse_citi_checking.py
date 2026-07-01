@@ -359,7 +359,7 @@ def parse_citi_checking_text(text: str) -> list[dict]:
         row["date"] = _normalize_date_to_mm_dd_yyyy(row.get("date") or "", year, period)
         check_no = _extract_check_number(row.get("description") or "")
         if check_no:
-            row["reference_number"] = check_no
+            row["check_number"] = check_no
     return rows
 
 
