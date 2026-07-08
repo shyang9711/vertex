@@ -67,12 +67,16 @@ def _extract_check_number(description: str) -> str:
 
 
 def _parse_balance_value(s: str) -> float | None:
-    """Parse balance string (e.g. '3,361.81' or '4,554.48-') to float."""
+    """Parse balance string (e.g. '3,361.81' or '4,554.48-') to float. Trailing '-' = negative."""
     if not s:
         return None
-    s = s.replace(",", "").strip().rstrip("-")
+    s = s.replace(",", "").strip()
+    negative = s.endswith("-")
+    if negative:
+        s = s[:-1].strip()
     try:
-        return float(s)
+        val = float(s)
+        return -val if negative else val
     except ValueError:
         return None
 
@@ -248,7 +252,7 @@ def _parse_citi_multiline(lines: list, in_section_start: int) -> list[dict]:
                         amt_str = cur.replace(",", "").rstrip("-").strip()
                         i += 1
                         if i < len(lines) and re.match(r"^[\d,]+\.\d{2}-?\s*$", lines[i].strip()):
-                            balance_str = lines[i].strip().replace(",", "").rstrip("-").strip()
+                            balance_str = lines[i].strip().replace(",", "").strip()
                             i += 1
                         while i < len(lines):
                             cont = lines[i].strip()
