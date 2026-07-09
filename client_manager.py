@@ -17,6 +17,13 @@ if "functions" not in sys.modules:
 if str(_BASE) not in sys.path:
     sys.path.insert(0, str(_BASE))
 
+# Register "vertex" as a namespace package pointing at this folder so
+# "from vertex.pages ..." works when the repo root IS the vertex tree.
+if "vertex" not in sys.modules:
+    _vertex_pkg = types.ModuleType("vertex")
+    _vertex_pkg.__path__ = [str(_BASE)]
+    sys.modules["vertex"] = _vertex_pkg
+
 # Keep legacy behavior (in case you still run from <Scripts>/)
 _PARENT = _BASE.parent
 if str(_PARENT) not in sys.path:
