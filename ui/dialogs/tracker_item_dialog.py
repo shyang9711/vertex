@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -34,26 +33,37 @@ except ModuleNotFoundError:
         today_str,
     )
 
+_MIN_SIZE = {
+    "file": (560, 460),
+    "reminder": (520, 380),
+    "issue": (560, 460),
+}
+
 
 class TrackerItemDialog(tk.Toplevel):
     """Modal dialog for add/edit of tracker items (file, reminder, issue)."""
 
+    _active: "TrackerItemDialog | None" = None
+
     def __init__(self, master, title: str = "Tracker Item", kind: str = "file", initial: dict | None = None):
         super().__init__(master)
         self.title(title)
-        self.resizable(True, False)
+        self.resizable(True, True)
         self.result = None
         self.kind = (kind or "file").strip().lower()
         init = dict(initial or {})
         is_edit = bool(init.get("id"))
+        self._initial_id = init.get("id")
 
-        frm = ttk.Frame(self, padding=10)
-        frm.pack(fill="both", expand=True)
+        self._frm = ttk.Frame(self, padding=10)
+        self._frm.pack(fill="both", expand=True)
+        frm = self._frm
         frm.columnconfigure(1, weight=1)
         frm.columnconfigure(3, weight=1)
 
         self._vars: dict[str, tk.Variable] = {}
         row = 0
+        self._first_focus: tk.Widget | None = None
 
         def _lbl(text: str, r: int, c: int = 0):
             ttk.Label(frm, text=text).grid(row=r, column=c, sticky="w", padx=(0, 4), pady=2)
@@ -61,9 +71,10 @@ class TrackerItemDialog(tk.Toplevel):
         def _entry(key: str, r: int, c: int = 1, default: str = "", colspan: int = 1):
             var = tk.StringVar(value=str(init.get(key, default) or ""))
             self._vars[key] = var
-            ttk.Entry(frm, textvariable=var, width=22).grid(
-                row=r, column=c, columnspan=colspan, sticky="we", padx=(0, 10), pady=2
-            )
+            w = ttk.Entry(frm, textvariable=var, width=22)
+            w.grid(row=r, column=c, columnspan=colspan, sticky="we", padx=(0, 10), pady=2)
+            if self._first_focus is None:
+                self._first_focus = w
             return var
 
         def _combo(key: str, r: int, c: int, values: list[str], default: str = "", colspan: int = 1):
@@ -71,6 +82,8 @@ class TrackerItemDialog(tk.Toplevel):
             self._vars[key] = var
             cb = ttk.Combobox(frm, textvariable=var, values=values, state="readonly", width=20)
             cb.grid(row=r, column=c, columnspan=colspan, sticky="we", padx=(0, 10), pady=2)
+            if self._first_focus is None:
+                self._first_focus = cb
             return var
 
         def _check(key: str, r: int, c: int, text: str, default: bool = False):
@@ -80,7 +93,6 @@ class TrackerItemDialog(tk.Toplevel):
             return var
 
         if self.kind == "file":
-            self.geometry("560x340")
             v_template = tk.StringVar(value="— Custom —")
             _lbl("Template", row)
             cb_tpl = ttk.Combobox(frm, textvariable=v_template, values=FILE_TEMPLATE_LABELS, state="readonly", width=28)
@@ -113,7 +125,7 @@ class TrackerItemDialog(tk.Toplevel):
             row += 1
 
             _lbl("Priority", row)
-            _combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
+            _combo("priority", row, 1, PRIORITIES, default=init.get("priority", "Normal"))
             _check("repeat_next_year", row, 2, "Repeat next year", default=bool(init.get("repeat_next_year", True)))
             row += 1
 
@@ -130,19 +142,18 @@ class TrackerItemDialog(tk.Toplevel):
             cb_tpl.bind("<<ComboboxSelected>>", _on_template)
 
         elif self.kind == "reminder":
-            self.geometry("520x300")
             _lbl("Title", row)
             _entry("title", row, colspan=3)
             row += 1
 
             _lbl("Category", row)
-            _combo("category", row, CATEGORIES, default=init.get("category", "Other"))
+            _combo("category", row, 1, CATEGORIES, default=init.get("category", "Other"))
             _lbl("Status", row, 2)
             _combo("status", row, 3, REMINDER_STATUSES, default=init.get("status", "Active"))
             row += 1
 
             _lbl("Priority", row)
-            _combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
+            _combo("priority", row, 1, PRIORITIES, default=init.get("priority", "Normal"))
             _check("applies_every_year", row, 2, "Applies every year", default=bool(init.get("applies_every_year", True)))
             row += 1
 
@@ -152,9 +163,8 @@ class TrackerItemDialog(tk.Toplevel):
             row += 1
 
         elif self.kind == "issue":
-            self.geometry("560x340")
             _lbl("Type", row)
-            _combo("type", row, ISSUE_TYPES, default=init.get("type", "Other"))
+            _combo("type", row, 1, ISSUE_TYPES, default=init.get("type", "Other"))
             _lbl("Category", row, 2)
             _combo("category", row, 3, CATEGORIES, default=init.get("category", "Other"))
             row += 1
@@ -171,7 +181,7 @@ class TrackerItemDialog(tk.Toplevel):
             row += 1
 
             _lbl("Priority", row)
-            _combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
+            _combo("priority", row, 1, PRIORITIES, default=init.get("priority", "Normal"))
             _lbl("Opened", row, 2)
             _entry("opened_date", row, 3, default=init.get("opened_date") or today_str())
             row += 1
@@ -189,12 +199,57 @@ class TrackerItemDialog(tk.Toplevel):
 
         btns = ttk.Frame(frm)
         btns.grid(row=row, column=0, columnspan=4, sticky="e", pady=(10, 0))
-        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(btns, text="Cancel", command=self._cancel).pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(btns, text="Save", command=self._save).pack(side=tk.RIGHT)
 
-        self.bind("<Escape>", lambda _e: self.destroy())
-        self.grab_set()
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        self._fit_and_center(master)
+        self._make_modal(master)
+
+    def _fit_and_center(self, master) -> None:
+        min_w, min_h = _MIN_SIZE.get(self.kind, (520, 400))
+        self.update_idletasks()
+        req_w = self._frm.winfo_reqwidth() + 24
+        req_h = self._frm.winfo_reqheight() + 24
+        w = max(req_w, min_w)
+        h = max(req_h, min_h)
+        self.minsize(min_w, min_h)
+        try:
+            mx = master.winfo_rootx()
+            my = master.winfo_rooty()
+            mw = max(master.winfo_width(), 1)
+            mh = max(master.winfo_height(), 1)
+            x = mx + max(0, (mw - w) // 2)
+            y = my + max(0, (mh - h) // 2)
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            self.geometry(f"{w}x{h}")
+
+    def _make_modal(self, master) -> None:
         self.transient(master)
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+        self.lift()
+        self.focus_force()
+        if self._first_focus is not None:
+            self.after(50, lambda: self._first_focus.focus_set())
+
+    def _release_modal(self) -> None:
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        if TrackerItemDialog._active is self:
+            TrackerItemDialog._active = None
+
+    def _cancel(self):
+        self.result = None
+        self._release_modal()
+        self.destroy()
 
     def _save(self):
         out: dict = {}
@@ -215,18 +270,30 @@ class TrackerItemDialog(tk.Toplevel):
                 messagebox.showerror("Validation", "Title is required.", parent=self)
                 return
 
-        if init_id := (getattr(self, "_initial_id", None)):
-            out["id"] = init_id
+        if self._initial_id:
+            out["id"] = self._initial_id
 
         self.result = out
+        self._release_modal()
         self.destroy()
 
     @classmethod
     def open(cls, master, title: str, kind: str, initial: dict | None = None) -> dict | None:
+        # Only one tracker dialog at a time — focus existing instead of stacking.
+        if cls._active is not None:
+            try:
+                if cls._active.winfo_exists():
+                    cls._active.lift()
+                    cls._active.focus_force()
+                    return None
+            except tk.TclError:
+                cls._active = None
+
         dlg = cls(master, title=title, kind=kind, initial=initial)
-        if initial and initial.get("id"):
-            dlg._initial_id = initial["id"]
+        cls._active = dlg
         master.wait_window(dlg)
+        cls._active = None
+
         if dlg.result and initial:
             dlg.result.setdefault("id", initial.get("id", ""))
             dlg.result.setdefault("created_ts", initial.get("created_ts", ""))

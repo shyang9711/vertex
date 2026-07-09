@@ -80,6 +80,24 @@ def _configure_tracker_tags(tv: ttk.Treeview) -> None:
     tv.tag_configure("tr_default", foreground="")
 
 
+def _file_action_labels(status: str) -> tuple[str, str, str]:
+    st = str(status or "").strip()
+    return (
+        "▸ Need" if st == "Needed" else "Need",
+        "▸ Req" if st == "Requested" else "Req",
+        "▸ Rcv" if st == "Received" else "Rcv",
+    )
+
+
+def _issue_action_labels(status: str) -> tuple[str, str]:
+    st = str(status or "").strip()
+    open_st = st in ("Open", "Waiting on Client", "Waiting on Government")
+    closed_st = st in ("Closed", "Resolved", "Archived")
+    return (
+        "▸ Open" if open_st else "Open",
+        "▸ Close" if closed_st else "Close",
+    )
+
 def init_client_tracker_tab(
     notebook: ttk.Notebook,
     app,
@@ -138,7 +156,9 @@ def init_client_tracker_tab(
     inner_nb.add(reminders_tab, text="Annual Reminders")
     inner_nb.add(issues_tab, text="Issues / Notices")
 
-    def _make_tree(parent, columns: tuple[str, ...], headings: dict[str, str], widths: dict[str, int]):
+    def _make_tree(parent, columns: tuple[str, ...], headings: dict[str, str], widths: dict[str, int],
+                   center_cols: frozenset[str] | None = None):
+        center_cols = center_cols or frozenset()
         tv = ttk.Treeview(
             parent,
             columns=columns,
@@ -149,7 +169,13 @@ def init_client_tracker_tab(
         )
         for col in columns:
             tv.heading(col, text=headings.get(col, col))
-            tv.column(col, width=widths.get(col, 100), anchor="w", stretch=(col in ("name", "title", "note")))
+            anchor = "center" if col in center_cols else "w"
+            tv.column(
+                col,
+                width=widths.get(col, 100),
+                anchor=anchor,
+                stretch=(col in ("name", "title", "note")),
+            )
         yscr = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
         tv.configure(yscrollcommand=yscr.set)
         tv.grid(row=0, column=0, sticky="nsew")
@@ -159,16 +185,22 @@ def init_client_tracker_tab(
         _configure_tracker_tags(tv)
         return tv
 
+    _file_act_cols = frozenset({"act_need", "act_req", "act_rcvd"})
+    _issue_act_cols = frozenset({"act_open", "act_close"})
+
     files_tv = _make_tree(
         files_tab,
-        ("status", "year", "category", "name", "requested", "received", "repeat", "priority", "note"),
+        ("act_need", "act_req", "act_rcvd", "status", "year", "category", "name",
+         "requested", "received", "repeat", "priority", "note"),
         {
+            "act_need": "Need", "act_req": "Req", "act_rcvd": "Rcv",
             "status": "Status", "year": "Year", "category": "Category", "name": "File / Item",
             "requested": "Requested", "received": "Received", "repeat": "Repeat",
             "priority": "Priority", "note": "Note",
         },
-        {"status": 100, "year": 56, "category": 100, "name": 140, "requested": 88, "received": 88,
-         "repeat": 52, "priority": 72, "note": 160},
+        {"act_need": 52, "act_req": 44, "act_rcvd": 44, "status": 100, "year": 56, "category": 100,
+         "name": 140, "requested": 88, "received": 88, "repeat": 52, "priority": 72, "note": 140},
+        center_cols=_file_act_cols,
     )
 
     reminders_tv = _make_tree(
@@ -183,13 +215,15 @@ def init_client_tracker_tab(
 
     issues_tv = _make_tree(
         issues_tab,
-        ("status", "year", "type", "title", "opened", "closed", "priority", "note"),
+        ("act_open", "act_close", "status", "year", "type", "title", "opened", "closed", "priority", "note"),
         {
+            "act_open": "Open", "act_close": "Close",
             "status": "Status", "year": "Year", "type": "Type", "title": "Title",
             "opened": "Opened", "closed": "Closed", "priority": "Priority", "note": "Note",
         },
-        {"status": 100, "year": 56, "type": 110, "title": 160, "opened": 88, "closed": 88,
-         "priority": 72, "note": 140},
+        {"act_open": 52, "act_close": 52, "status": 100, "year": 56, "type": 110, "title": 160,
+         "opened": 88, "closed": 88, "priority": 72, "note": 120},
+        center_cols=_issue_act_cols,
     )
 
     files_row_meta: dict[str, str] = {}
@@ -292,6 +326,25 @@ def init_client_tracker_tab(
             vals[1] = message
         tv.insert("", "end", iid=_EMPTY_IID, values=tuple(vals), tags=("empty",))
 
+    def _file_row_values(it: dict) -> tuple:
+        st = str(it.get("status", "") or "")
+        need, req, rcv = _file_action_labels(st)
+        return (
+            need, req, rcv, st, it.get("tax_year", ""), it.get("category", ""), it.get("name", ""),
+            it.get("requested_date", ""), it.get("received_date", ""),
+            "Yes" if it.get("repeat_next_year") else "No",
+            it.get("priority", ""), it.get("note", ""),
+        )
+
+    def _issue_row_values(it: dict) -> tuple:
+        st = str(it.get("status", "") or "")
+        opn, cls = _issue_action_labels(st)
+        return (
+            opn, cls, st, it.get("tax_year", ""), it.get("type", ""), it.get("title", ""),
+            it.get("opened_date", ""), it.get("closed_date", ""),
+            it.get("priority", ""), it.get("note", ""),
+        )
+
     def _refresh_files_tv():
         files_tv.delete(*files_tv.get_children())
         files_row_meta.clear()
@@ -304,17 +357,12 @@ def init_client_tracker_tab(
             iid = files_tv.insert(
                 "",
                 "end",
-                values=(
-                    st, it.get("tax_year", ""), it.get("category", ""), it.get("name", ""),
-                    it.get("requested_date", ""), it.get("received_date", ""),
-                    "Yes" if it.get("repeat_next_year") else "No",
-                    it.get("priority", ""), it.get("note", ""),
-                ),
+                values=_file_row_values(it),
                 tags=(file_status_tag(st),),
             )
             files_row_meta[iid] = str(it.get("id", "") or "")
         if rows == 0:
-            _insert_empty(files_tv, "(no file requests yet)", 9)
+            _insert_empty(files_tv, "(no file requests yet)", 12)
 
     def _refresh_reminders_tv():
         reminders_tv.delete(*reminders_tv.get_children())
@@ -351,16 +399,12 @@ def init_client_tracker_tab(
             iid = issues_tv.insert(
                 "",
                 "end",
-                values=(
-                    st, it.get("tax_year", ""), it.get("type", ""), it.get("title", ""),
-                    it.get("opened_date", ""), it.get("closed_date", ""),
-                    it.get("priority", ""), it.get("note", ""),
-                ),
+                values=_issue_row_values(it),
                 tags=(issue_status_tag(st),),
             )
             issues_row_meta[iid] = str(it.get("id", "") or "")
         if rows == 0:
-            _insert_empty(issues_tv, "(no issues yet)", 8)
+            _insert_empty(issues_tv, "(no issues yet)", 10)
 
     def _refresh_current_tree():
         _refresh_filter_combos()
@@ -390,6 +434,154 @@ def init_client_tracker_tab(
             if isinstance(it, dict) and str(it.get("id", "") or "") == item_id:
                 return it
         return None
+
+    def _apply_file_status(item_id: str, status: str, *, log: bool = True) -> bool:
+        cur = _find_by_id("file_requests", item_id)
+        if not cur:
+            return False
+        if str(cur.get("status", "") or "").strip() == status:
+            return False
+        patch: dict = {"status": status, "updated_ts": now_ts()}
+        if status == "Requested":
+            if not str(cur.get("requested_date", "") or "").strip():
+                patch["requested_date"] = today_str()
+        elif status == "Received":
+            patch["received_date"] = today_str()
+            if not str(cur.get("requested_date", "") or "").strip():
+                patch["requested_date"] = today_str()
+        update_file_request(client, item_id, patch)
+        if log:
+            if status == "Requested":
+                append_tracker_log(
+                    client,
+                    f"Requested tracker file: {cur.get('tax_year', '')} {cur.get('name', '')}".strip(),
+                )
+            elif status == "Received":
+                append_tracker_log(
+                    client,
+                    f"Received tracker file: {cur.get('tax_year', '')} {cur.get('name', '')}".strip(),
+                )
+            elif status == "Needed":
+                append_tracker_log(
+                    client,
+                    f"Set tracker file to Needed: {cur.get('tax_year', '')} {cur.get('name', '')}".strip(),
+                )
+        return True
+
+    def _apply_issue_status(item_id: str, status: str, *, log: bool = True) -> bool:
+        cur = _find_by_id("client_issues", item_id)
+        if not cur:
+            return False
+        cur_st = str(cur.get("status", "") or "").strip()
+        if status == "Open" and cur_st in ("Open", "Waiting on Client", "Waiting on Government"):
+            return False
+        if status == "Closed" and cur_st in ("Closed", "Resolved"):
+            return False
+        patch: dict = {"status": status, "updated_ts": now_ts()}
+        if status == "Open":
+            patch["closed_date"] = ""
+            if not str(cur.get("opened_date", "") or "").strip():
+                patch["opened_date"] = today_str()
+        elif status == "Closed":
+            if not str(cur.get("closed_date", "") or "").strip():
+                patch["closed_date"] = today_str()
+        update_client_issue(client, item_id, patch)
+        if log:
+            title = cur.get("title", "")
+            if status == "Open":
+                append_tracker_log(client, f"Reopened tracker issue: {title}")
+            elif status == "Closed":
+                append_tracker_log(client, f"Closed tracker issue: {title}")
+        return True
+
+    def _update_file_tree_row(row_iid: str):
+        item_id = files_row_meta.get(row_iid)
+        if not item_id:
+            return
+        cur = _find_by_id("file_requests", item_id)
+        if not cur:
+            return
+        st = str(cur.get("status", "") or "")
+        files_tv.item(row_iid, values=_file_row_values(cur), tags=(file_status_tag(st),))
+
+    def _update_issue_tree_row(row_iid: str):
+        item_id = issues_row_meta.get(row_iid)
+        if not item_id:
+            return
+        cur = _find_by_id("client_issues", item_id)
+        if not cur:
+            return
+        st = str(cur.get("status", "") or "")
+        issues_tv.item(row_iid, values=_issue_row_values(cur), tags=(issue_status_tag(st),))
+
+    def _persist_file_row(row_iid: str):
+        save_clients_cb(app.items)
+        _refresh_summary()
+        _update_file_tree_row(row_iid)
+        _refresh_logs_tab()
+        _refresh_external_summaries()
+
+    def _persist_issue_row(row_iid: str):
+        save_clients_cb(app.items)
+        _refresh_summary()
+        _update_issue_tree_row(row_iid)
+        _refresh_logs_tab()
+        _refresh_external_summaries()
+
+    def _col_name(tv: ttk.Treeview, column_id: str) -> str | None:
+        try:
+            idx = int(column_id.replace("#", "")) - 1
+            cols = tv["columns"]
+            if 0 <= idx < len(cols):
+                return cols[idx]
+        except (ValueError, tk.TclError):
+            pass
+        return None
+
+    def _on_file_row_click(e):
+        if files_tv.identify_region(e.x, e.y) != "cell":
+            return
+        row_iid = files_tv.identify_row(e.y)
+        if not row_iid or row_iid == _EMPTY_IID:
+            return
+        col = _col_name(files_tv, files_tv.identify_column(e.x))
+        action_map = {
+            "act_need": "Needed",
+            "act_req": "Requested",
+            "act_rcvd": "Received",
+        }
+        if col not in action_map:
+            return
+        item_id = files_row_meta.get(row_iid)
+        if not item_id:
+            return
+        files_tv.selection_set(row_iid)
+        files_tv.focus(row_iid)
+        if _apply_file_status(item_id, action_map[col]):
+            _persist_file_row(row_iid)
+        return "break"
+
+    def _on_issue_row_click(e):
+        if issues_tv.identify_region(e.x, e.y) != "cell":
+            return
+        row_iid = issues_tv.identify_row(e.y)
+        if not row_iid or row_iid == _EMPTY_IID:
+            return
+        col = _col_name(issues_tv, issues_tv.identify_column(e.x))
+        action_map = {
+            "act_open": "Open",
+            "act_close": "Closed",
+        }
+        if col not in action_map:
+            return
+        item_id = issues_row_meta.get(row_iid)
+        if not item_id:
+            return
+        issues_tv.selection_set(row_iid)
+        issues_tv.focus(row_iid)
+        if _apply_issue_status(item_id, action_map[col]):
+            _persist_issue_row(row_iid)
+        return "break"
 
     def _add_file():
         result = TrackerItemDialog.open(
@@ -428,30 +620,26 @@ def init_client_tracker_tab(
         if not iid:
             messagebox.showinfo("Mark Requested", "Select a file request first.")
             return
-        cur = _find_by_id("file_requests", iid)
-        if not cur:
-            return
-        patch = {"status": "Requested", "updated_ts": now_ts()}
-        if not str(cur.get("requested_date", "") or "").strip():
-            patch["requested_date"] = today_str()
-        update_file_request(client, iid, patch)
-        append_tracker_log(client, f"Requested tracker file: {cur.get('tax_year', '')} {cur.get('name', '')}".strip())
-        _persist()
+        sel = files_tv.selection()
+        row_iid = sel[0] if sel else None
+        if _apply_file_status(iid, "Requested"):
+            if row_iid:
+                _persist_file_row(row_iid)
+            else:
+                _persist()
 
     def _mark_received():
         iid = _selected_item_id(files_tv, files_row_meta)
         if not iid:
             messagebox.showinfo("Mark Received", "Select a file request first.")
             return
-        cur = _find_by_id("file_requests", iid)
-        if not cur:
-            return
-        patch = {"status": "Received", "received_date": today_str(), "updated_ts": now_ts()}
-        if not str(cur.get("requested_date", "") or "").strip():
-            patch["requested_date"] = today_str()
-        update_file_request(client, iid, patch)
-        append_tracker_log(client, f"Received tracker file: {cur.get('tax_year', '')} {cur.get('name', '')}".strip())
-        _persist()
+        sel = files_tv.selection()
+        row_iid = sel[0] if sel else None
+        if _apply_file_status(iid, "Received"):
+            if row_iid:
+                _persist_file_row(row_iid)
+            else:
+                _persist()
 
     def _roll_forward():
         today = datetime.date.today()
@@ -576,19 +764,24 @@ def init_client_tracker_tab(
             patch["closed_date"] = today_str()
         update_client_issue(client, iid, patch)
         append_tracker_log(client, f"Resolved tracker issue: {cur.get('title', '')}")
-        _persist()
+        sel = issues_tv.selection()
+        if sel:
+            _persist_issue_row(sel[0])
+        else:
+            _persist()
 
     def _reopen_issue():
         iid = _selected_item_id(issues_tv, issues_row_meta)
         if not iid:
             messagebox.showinfo("Reopen", "Select an issue first.")
             return
-        cur = _find_by_id("client_issues", iid)
-        if not cur:
-            return
-        update_client_issue(client, iid, {"status": "Open", "closed_date": ""})
-        append_tracker_log(client, f"Reopened tracker issue: {cur.get('title', '')}")
-        _persist()
+        sel = issues_tv.selection()
+        row_iid = sel[0] if sel else None
+        if _apply_issue_status(iid, "Open"):
+            if row_iid:
+                _persist_issue_row(row_iid)
+            else:
+                _persist()
 
     _ACTION_SETS = {
         "file": [
@@ -626,8 +819,12 @@ def init_client_tracker_tab(
 
     inner_nb.bind("<<NotebookTabChanged>>", _on_inner_tab_changed)
 
-    def _on_edit_dbl(tv, meta, kind):
-        def handler(_e=None):
+    def _on_edit_dbl(tv, meta, kind, skip_cols: frozenset[str]):
+        def handler(e=None):
+            if e is not None:
+                col = _col_name(tv, tv.identify_column(e.x))
+                if col in skip_cols:
+                    return
             if _selected_item_id(tv, meta):
                 if kind == "file":
                     _edit_file()
@@ -637,9 +834,11 @@ def init_client_tracker_tab(
                     _edit_issue()
         return handler
 
-    files_tv.bind("<Double-1>", _on_edit_dbl(files_tv, files_row_meta, "file"))
-    reminders_tv.bind("<Double-1>", _on_edit_dbl(reminders_tv, reminders_row_meta, "reminder"))
-    issues_tv.bind("<Double-1>", _on_edit_dbl(issues_tv, issues_row_meta, "issue"))
+    files_tv.bind("<ButtonRelease-1>", _on_file_row_click)
+    issues_tv.bind("<ButtonRelease-1>", _on_issue_row_click)
+    files_tv.bind("<Double-1>", _on_edit_dbl(files_tv, files_row_meta, "file", _file_act_cols))
+    reminders_tv.bind("<Double-1>", _on_edit_dbl(reminders_tv, reminders_row_meta, "reminder", frozenset()))
+    issues_tv.bind("<Double-1>", _on_edit_dbl(issues_tv, issues_row_meta, "issue", _issue_act_cols))
 
     _sync_action_bar()
     refresh_tracker()
