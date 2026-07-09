@@ -38,6 +38,7 @@ try:
     from vertex.pages.profile_tab import init_profile_tab
     from vertex.pages.documents_tab import init_documents_tab
     from vertex.pages.logs_tab import init_logs_tab
+    from vertex.pages.client_tracker_tab import init_client_tracker_tab
     from vertex.pages.checklist_page import ChecklistPage
     from vertex.pages.action_page import ActionRunnerPage
     from vertex.pages.reports_page import ReportsPage
@@ -92,6 +93,7 @@ except ModuleNotFoundError:
     from pages.profile_tab import init_profile_tab
     from pages.documents_tab import init_documents_tab
     from pages.logs_tab import init_logs_tab
+    from pages.client_tracker_tab import init_client_tracker_tab
     from pages.checklist_page import ChecklistPage
     from pages.action_page import ActionRunnerPage
     from pages.reports_page import ReportsPage
@@ -1592,6 +1594,8 @@ class App(ttk.Frame):
             messagebox.showerror("Documents Tab Error", f"{type(ex).__name__}: {ex}")
 
         init_logs_tab(nb, self, c, _save_clients, client_idx=idx)
+
+        init_client_tracker_tab(nb, self, c, _save_clients, client_idx=idx)
 
         # Analysis tab
         ana = ttk.Frame(nb, padding=8); nb.add(ana, text="Analysis")

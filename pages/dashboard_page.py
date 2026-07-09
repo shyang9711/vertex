@@ -470,6 +470,50 @@ class DashboardPage:
         else:
             ttk.Label(left, text="No unchecked memos.", style="Subtle.TLabel").pack(anchor="w")
 
+        # ---- Open tracker items by client
+        try:
+            from vertex.utils.client_tracker import count_open_tracker_items
+        except ModuleNotFoundError:
+            from utils.client_tracker import count_open_tracker_items
+
+        tracker_pending = []
+        for i, c in enumerate(items):
+            if not isinstance(c, dict):
+                continue
+            files, reminders, issues = count_open_tracker_items(c)
+            total_open = files + reminders + issues
+            if total_open > 0:
+                tracker_pending.append(((c.get("name") or "").strip(), files, reminders, issues, i))
+
+        tracker_pending.sort(key=lambda x: (-(x[1] + x[2] + x[3]), x[0].casefold()))
+        ttk.Separator(left).pack(fill="x", pady=10)
+        total_tracker = sum(f + r + iss for _n, f, r, iss, _i in tracker_pending)
+        ttk.Label(
+            left,
+            text=f"Open Tracker Items: {total_tracker}",
+            style="Header.TLabel",
+        ).pack(anchor="w")
+        if tracker_pending:
+            MAX_TRACKER_SHOW = 20
+            for name, files, reminders, issues, _idx in tracker_pending[:MAX_TRACKER_SHOW]:
+                parts = []
+                if files:
+                    parts.append(f"{files} missing/requested")
+                if issues:
+                    parts.append(f"{issues} issue" + ("s" if issues != 1 else ""))
+                if reminders:
+                    parts.append(f"{reminders} reminder" + ("s" if reminders != 1 else ""))
+                detail = ", ".join(parts) if parts else "open items"
+                ttk.Label(left, text=f"• {name} — {detail}", style="Subtle.TLabel").pack(anchor="w")
+            if len(tracker_pending) > MAX_TRACKER_SHOW:
+                ttk.Label(
+                    left,
+                    text=f"(+{len(tracker_pending) - MAX_TRACKER_SHOW} more)",
+                    style="Subtle.TLabel",
+                ).pack(anchor="w")
+        else:
+            ttk.Label(left, text="No open tracker items.", style="Subtle.TLabel").pack(anchor="w")
+
         # ---- Middle card: To‑Do
         mid = ttk.Frame(root, padding=12, style="Card.TFrame")
         mid.grid(row=1, column=1, sticky="nsew")

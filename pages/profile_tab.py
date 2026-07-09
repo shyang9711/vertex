@@ -1457,6 +1457,7 @@ def init_profile_tab(
             if nb.select() == str(prof):
                 _refresh_people_tree()
                 _refresh_client_tasks_tv()
+                _refresh_tracker_summary()
         except Exception:
             pass
 
@@ -1506,6 +1507,45 @@ def init_profile_tab(
     line2 = ", ".join(p for p in [city, st] if p)
     if line2 or zp:
         ttk.Label(addr, text=f"{line2} {zp}".strip()).pack(anchor="w")
+
+    # ---------- LEFT: Tracker Summary ----------
+    try:
+        from vertex.utils.client_tracker import count_tracker_summary
+    except ModuleNotFoundError:
+        from utils.client_tracker import count_tracker_summary
+
+    ttk.Label(left, text="Tracker Summary", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(8, 0))
+    tracker_card = ttk.Frame(left, style="Card.TFrame")
+    tracker_card.pack(fill=tk.X, pady=(4, 8))
+
+    lbl_missing = ttk.Label(tracker_card, text="Missing files: —")
+    lbl_missing.pack(anchor="w")
+    lbl_requested = ttk.Label(tracker_card, text="Requested not received: —")
+    lbl_requested.pack(anchor="w")
+    lbl_issues = ttk.Label(tracker_card, text="Open issues: —")
+    lbl_issues.pack(anchor="w")
+    lbl_ipp = ttk.Label(tracker_card, text="IPP open items: —")
+    lbl_ipp.pack(anchor="w")
+
+    def _refresh_tracker_summary():
+        c = _get_live_client()
+        try:
+            s = count_tracker_summary(c)
+            lbl_missing.config(text=f"Missing files: {s['missing']}")
+            lbl_requested.config(text=f"Requested not received: {s['requested']}")
+            lbl_issues.config(text=f"Open issues: {s['open_issues']}")
+            lbl_ipp.config(text=f"IPP open items: {s['ipp_open']}")
+        except Exception:
+            pass
+
+    def _open_tracker_tab():
+        ci = _resolve_client_idx_from_client()
+        if ci is not None:
+            app.navigate("detail", (ci, "Tracker"), push=True)
+
+    ttk.Button(tracker_card, text="Open Tracker", command=_open_tracker_tab).pack(anchor="w", pady=(4, 0))
+    _refresh_tracker_summary()
+    prof._refresh_tracker_summary = _refresh_tracker_summary
 
     ttk.Label(left, text="Memo", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     memo_txt = ScrolledText(left, width=56, height=4, wrap="word")
