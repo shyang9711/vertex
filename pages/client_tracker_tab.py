@@ -37,6 +37,7 @@ try:
         now_ts,
     )
     from vertex.ui.dialogs.tracker_item_dialog import TrackerItemDialog
+    from vertex.ui.components.scrollframe import ScrollFrame
 except ModuleNotFoundError:
     from utils.client_tracker import (
         ensure_tracker_fields,
@@ -62,9 +63,12 @@ except ModuleNotFoundError:
         now_ts,
     )
     from ui.dialogs.tracker_item_dialog import TrackerItemDialog
+    from ui.components.scrollframe import ScrollFrame
 
 TRACKER_TAB_LABEL = "Tracker"
 _EMPTY_IID = "__empty__"
+_ROW_SEL_BG = "#EEF2FF"
+_ROW_BG = "#FFFFFF"
 
 
 def _configure_tracker_tags(tv: ttk.Treeview) -> None:
@@ -80,23 +84,40 @@ def _configure_tracker_tags(tv: ttk.Treeview) -> None:
     tv.tag_configure("tr_default", foreground="")
 
 
-def _file_action_labels(status: str) -> tuple[str, str, str]:
-    st = str(status or "").strip()
-    return (
-        "▸ Need" if st == "Needed" else "Need",
-        "▸ Req" if st == "Requested" else "Req",
-        "▸ Rcv" if st == "Received" else "Rcv",
+def _configure_pill_styles(style: ttk.Style) -> None:
+    """Rounded-outline pill buttons like the reference mockup."""
+    style.configure(
+        "Tracker.Pill.TButton",
+        padding=(12, 5),
+        background="#FFFFFF",
+        foreground="#111827",
+        borderwidth=1,
+        relief="solid",
+        bordercolor="#D1D5DB",
+        lightcolor="#D1D5DB",
+        darkcolor="#D1D5DB",
+    )
+    style.map(
+        "Tracker.Pill.TButton",
+        background=[("active", "#F9FAFB"), ("pressed", "#F3F4F6")],
+        bordercolor=[("active", "#9CA3AF"), ("pressed", "#6B7280")],
+    )
+    style.configure(
+        "Tracker.Pill.Active.TButton",
+        padding=(12, 5),
+        background="#F8FAFC",
+        foreground="#111827",
+        borderwidth=2,
+        relief="solid",
+        bordercolor="#6366F1",
+        lightcolor="#6366F1",
+        darkcolor="#6366F1",
+    )
+    style.map(
+        "Tracker.Pill.Active.TButton",
+        background=[("active", "#EEF2FF"), ("pressed", "#E0E7FF")],
     )
 
-
-def _issue_action_labels(status: str) -> tuple[str, str]:
-    st = str(status or "").strip()
-    open_st = st in ("Open", "Waiting on Client", "Waiting on Government")
-    closed_st = st in ("Closed", "Resolved", "Archived")
-    return (
-        "▸ Open" if open_st else "Open",
-        "▸ Close" if closed_st else "Close",
-    )
 
 def init_client_tracker_tab(
     notebook: ttk.Notebook,
@@ -148,6 +169,7 @@ def init_client_tracker_tab(
 
     _style = ttk.Style(tracker_tab)
     _style.configure("Tracker.Treeview", rowheight=26)
+    _configure_pill_styles(_style)
 
     files_tab = ttk.Frame(inner_nb, padding=4)
     reminders_tab = ttk.Frame(inner_nb, padding=4)
@@ -156,9 +178,15 @@ def init_client_tracker_tab(
     inner_nb.add(reminders_tab, text="Annual Reminders")
     inner_nb.add(issues_tab, text="Issues / Notices")
 
-    def _make_tree(parent, columns: tuple[str, ...], headings: dict[str, str], widths: dict[str, int],
-                   center_cols: frozenset[str] | None = None):
-        center_cols = center_cols or frozenset()
+    files_scroll = ScrollFrame(files_tab, height=360)
+    files_scroll.pack(fill="both", expand=True)
+    files_inner = files_scroll.inner
+
+    issues_scroll = ScrollFrame(issues_tab, height=360)
+    issues_scroll.pack(fill="both", expand=True)
+    issues_inner = issues_scroll.inner
+
+    def _make_tree(parent, columns: tuple[str, ...], headings: dict[str, str], widths: dict[str, int]):
         tv = ttk.Treeview(
             parent,
             columns=columns,
@@ -169,11 +197,10 @@ def init_client_tracker_tab(
         )
         for col in columns:
             tv.heading(col, text=headings.get(col, col))
-            anchor = "center" if col in center_cols else "w"
             tv.column(
                 col,
                 width=widths.get(col, 100),
-                anchor=anchor,
+                anchor="w",
                 stretch=(col in ("name", "title", "note")),
             )
         yscr = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
@@ -185,24 +212,6 @@ def init_client_tracker_tab(
         _configure_tracker_tags(tv)
         return tv
 
-    _file_act_cols = frozenset({"act_need", "act_req", "act_rcvd"})
-    _issue_act_cols = frozenset({"act_open", "act_close"})
-
-    files_tv = _make_tree(
-        files_tab,
-        ("act_need", "act_req", "act_rcvd", "status", "year", "category", "name",
-         "requested", "received", "repeat", "priority", "note"),
-        {
-            "act_need": "Need", "act_req": "Req", "act_rcvd": "Rcv",
-            "status": "Status", "year": "Year", "category": "Category", "name": "File / Item",
-            "requested": "Requested", "received": "Received", "repeat": "Repeat",
-            "priority": "Priority", "note": "Note",
-        },
-        {"act_need": 52, "act_req": 44, "act_rcvd": 44, "status": 100, "year": 56, "category": 100,
-         "name": 140, "requested": 88, "received": 88, "repeat": 52, "priority": 72, "note": 140},
-        center_cols=_file_act_cols,
-    )
-
     reminders_tv = _make_tree(
         reminders_tab,
         ("status", "category", "title", "priority", "every_year", "note"),
@@ -213,22 +222,11 @@ def init_client_tracker_tab(
         {"status": 100, "category": 100, "title": 200, "priority": 72, "every_year": 72, "note": 180},
     )
 
-    issues_tv = _make_tree(
-        issues_tab,
-        ("act_open", "act_close", "status", "year", "type", "title", "opened", "closed", "priority", "note"),
-        {
-            "act_open": "Open", "act_close": "Close",
-            "status": "Status", "year": "Year", "type": "Type", "title": "Title",
-            "opened": "Opened", "closed": "Closed", "priority": "Priority", "note": "Note",
-        },
-        {"act_open": 52, "act_close": 52, "status": 100, "year": 56, "type": 110, "title": 160,
-         "opened": 88, "closed": 88, "priority": 72, "note": 120},
-        center_cols=_issue_act_cols,
-    )
-
-    files_row_meta: dict[str, str] = {}
+    files_selected_id: dict[str, str | None] = {"id": None}
+    issues_selected_id: dict[str, str | None] = {"id": None}
+    files_row_refs: dict[str, dict] = {}
+    issues_row_refs: dict[str, dict] = {}
     reminders_row_meta: dict[str, str] = {}
-    issues_row_meta: dict[str, str] = {}
 
     def _refresh_logs_tab():
         try:
@@ -326,43 +324,204 @@ def init_client_tracker_tab(
             vals[1] = message
         tv.insert("", "end", iid=_EMPTY_IID, values=tuple(vals), tags=("empty",))
 
-    def _file_row_values(it: dict) -> tuple:
-        st = str(it.get("status", "") or "")
-        need, req, rcv = _file_action_labels(st)
-        return (
-            need, req, rcv, st, it.get("tax_year", ""), it.get("category", ""), it.get("name", ""),
-            it.get("requested_date", ""), it.get("received_date", ""),
-            "Yes" if it.get("repeat_next_year") else "No",
-            it.get("priority", ""), it.get("note", ""),
-        )
+    def _insert_empty(tv: ttk.Treeview, message: str, ncols: int):
+        vals = [""] * ncols
+        vals[0] = "—"
+        if ncols > 1:
+            vals[1] = message
+        tv.insert("", "end", iid=_EMPTY_IID, values=tuple(vals), tags=("empty",))
 
-    def _issue_row_values(it: dict) -> tuple:
-        st = str(it.get("status", "") or "")
-        opn, cls = _issue_action_labels(st)
-        return (
-            opn, cls, st, it.get("tax_year", ""), it.get("type", ""), it.get("title", ""),
-            it.get("opened_date", ""), it.get("closed_date", ""),
-            it.get("priority", ""), it.get("note", ""),
-        )
+    def _pill_style(active: bool) -> str:
+        return "Tracker.Pill.Active.TButton" if active else "Tracker.Pill.TButton"
 
-    def _refresh_files_tv():
-        files_tv.delete(*files_tv.get_children())
-        files_row_meta.clear()
+    def _update_file_row_highlight():
+        sel = files_selected_id.get("id")
+        for item_id, ref in files_row_refs.items():
+            bg = _ROW_SEL_BG if item_id == sel else _ROW_BG
+            ref["frame"].configure(bg=bg)
+            for lbl in ref.get("labels", []):
+                lbl.configure(bg=bg)
+
+    def _update_issue_row_highlight():
+        sel = issues_selected_id.get("id")
+        for item_id, ref in issues_row_refs.items():
+            bg = _ROW_SEL_BG if item_id == sel else _ROW_BG
+            ref["frame"].configure(bg=bg)
+            for lbl in ref.get("labels", []):
+                lbl.configure(bg=bg)
+
+    def _toggle_file_selection(item_id: str):
+        if files_selected_id.get("id") == item_id:
+            files_selected_id["id"] = None
+        else:
+            files_selected_id["id"] = item_id
+        _update_file_row_highlight()
+
+    def _toggle_issue_selection(item_id: str):
+        if issues_selected_id.get("id") == item_id:
+            issues_selected_id["id"] = None
+        else:
+            issues_selected_id["id"] = item_id
+        _update_issue_row_highlight()
+
+    def _clear_file_selection():
+        files_selected_id["id"] = None
+        _update_file_row_highlight()
+
+    def _clear_issue_selection():
+        issues_selected_id["id"] = None
+        _update_issue_row_highlight()
+
+    def _file_info_text(it: dict) -> str:
+        parts = [
+            str(it.get("tax_year", "") or ""),
+            str(it.get("category", "") or ""),
+            str(it.get("name", "") or ""),
+            str(it.get("status", "") or ""),
+        ]
+        if it.get("requested_date"):
+            parts.append(f"req {it.get('requested_date')}")
+        if it.get("received_date"):
+            parts.append(f"rcv {it.get('received_date')}")
+        if it.get("note"):
+            parts.append(str(it.get("note", ""))[:40])
+        return "  ·  ".join(p for p in parts if p)
+
+    def _issue_info_text(it: dict) -> str:
+        parts = [
+            str(it.get("tax_year", "") or ""),
+            str(it.get("type", "") or ""),
+            str(it.get("title", "") or ""),
+            str(it.get("status", "") or ""),
+        ]
+        if it.get("note"):
+            parts.append(str(it.get("note", ""))[:40])
+        return "  ·  ".join(p for p in parts if p)
+
+    def _sync_file_row_buttons(item_id: str):
+        ref = files_row_refs.get(item_id)
+        cur = _find_by_id("file_requests", item_id)
+        if not ref or not cur:
+            return
+        st = str(cur.get("status", "") or "").strip()
+        for status, btn in ref.get("buttons", {}).items():
+            btn.configure(style=_pill_style(st == status))
+        if ref.get("info"):
+            ref["info"].configure(text=_file_info_text(cur))
+
+    def _sync_issue_row_buttons(item_id: str):
+        ref = issues_row_refs.get(item_id)
+        cur = _find_by_id("client_issues", item_id)
+        if not ref or not cur:
+            return
+        st = str(cur.get("status", "") or "").strip()
+        open_active = st in ("Open", "Waiting on Client", "Waiting on Government")
+        closed_active = st in ("Closed", "Resolved", "Archived")
+        ref["buttons"]["Open"].configure(style=_pill_style(open_active))
+        ref["buttons"]["Closed"].configure(style=_pill_style(closed_active))
+        if ref.get("info"):
+            ref["info"].configure(text=_issue_info_text(cur))
+
+    def _build_file_row(it: dict):
+        item_id = str(it.get("id", "") or "").strip()
+        if not item_id:
+            return
+        st = str(it.get("status", "") or "").strip()
+        row = tk.Frame(files_inner, bg=_ROW_BG, padx=2, pady=3)
+        row.pack(fill="x")
+
+        btn_frm = ttk.Frame(row)
+        btn_frm.pack(side=tk.LEFT, padx=(0, 8))
+
+        buttons: dict[str, ttk.Button] = {}
+        for label, status in (("Needed", "Needed"), ("Requested", "Requested"), ("Received", "Received")):
+            b = ttk.Button(
+                btn_frm,
+                text=label,
+                style=_pill_style(st == status),
+                width=max(8, len(label)),
+                command=lambda s=status, iid=item_id: _file_status_click(iid, s),
+            )
+            b.pack(side=tk.LEFT, padx=(0, 4))
+            buttons[status] = b
+
+        info = tk.Label(row, text=_file_info_text(it), anchor="w", bg=_ROW_BG, fg="#374151")
+        info.pack(side=tk.LEFT, fill="x", expand=True)
+
+        def _row_body_click(_e, iid=item_id):
+            _toggle_file_selection(iid)
+
+        def _row_dbl_click(_e, iid=item_id):
+            files_selected_id["id"] = iid
+            _update_file_row_highlight()
+            _edit_file()
+
+        for w in (row, info):
+            w.bind("<Button-1>", _row_body_click)
+            w.bind("<Double-1>", _row_dbl_click)
+
+        files_row_refs[item_id] = {"frame": row, "buttons": buttons, "info": info, "labels": [info]}
+
+    def _build_issue_row(it: dict):
+        item_id = str(it.get("id", "") or "").strip()
+        if not item_id:
+            return
+        st = str(it.get("status", "") or "").strip()
+        open_active = st in ("Open", "Waiting on Client", "Waiting on Government")
+        closed_active = st in ("Closed", "Resolved", "Archived")
+
+        row = tk.Frame(issues_inner, bg=_ROW_BG, padx=2, pady=3)
+        row.pack(fill="x")
+
+        btn_frm = ttk.Frame(row)
+        btn_frm.pack(side=tk.LEFT, padx=(0, 8))
+
+        btn_open = ttk.Button(
+            btn_frm, text="Open", style=_pill_style(open_active), width=7,
+            command=lambda iid=item_id: _issue_status_click(iid, "Open"),
+        )
+        btn_open.pack(side=tk.LEFT, padx=(0, 4))
+        btn_close = ttk.Button(
+            btn_frm, text="Close", style=_pill_style(closed_active), width=7,
+            command=lambda iid=item_id: _issue_status_click(iid, "Closed"),
+        )
+        btn_close.pack(side=tk.LEFT, padx=(0, 4))
+
+        info = tk.Label(row, text=_issue_info_text(it), anchor="w", bg=_ROW_BG, fg="#374151")
+        info.pack(side=tk.LEFT, fill="x", expand=True)
+
+        def _row_body_click(_e, iid=item_id):
+            _toggle_issue_selection(iid)
+
+        def _row_dbl_click(_e, iid=item_id):
+            issues_selected_id["id"] = iid
+            _update_issue_row_highlight()
+            _edit_issue()
+
+        for w in (row, info):
+            w.bind("<Button-1>", _row_body_click)
+            w.bind("<Double-1>", _row_dbl_click)
+
+        issues_row_refs[item_id] = {
+            "frame": row,
+            "buttons": {"Open": btn_open, "Closed": btn_close},
+            "info": info,
+            "labels": [info],
+        }
+
+    def _refresh_files_list():
+        for w in files_inner.winfo_children():
+            w.destroy()
+        files_row_refs.clear()
         rows = 0
         for it in client.get("file_requests") or []:
             if not isinstance(it, dict) or not _matches_filter(it):
                 continue
+            _build_file_row(it)
             rows += 1
-            st = str(it.get("status", "") or "")
-            iid = files_tv.insert(
-                "",
-                "end",
-                values=_file_row_values(it),
-                tags=(file_status_tag(st),),
-            )
-            files_row_meta[iid] = str(it.get("id", "") or "")
         if rows == 0:
-            _insert_empty(files_tv, "(no file requests yet)", 12)
+            ttk.Label(files_inner, text="(no file requests yet)", foreground="#6B7280").pack(anchor="w", pady=8)
+        _update_file_row_highlight()
 
     def _refresh_reminders_tv():
         reminders_tv.delete(*reminders_tv.get_children())
@@ -387,30 +546,25 @@ def init_client_tracker_tab(
         if rows == 0:
             _insert_empty(reminders_tv, "(no annual reminders yet)", 6)
 
-    def _refresh_issues_tv():
-        issues_tv.delete(*issues_tv.get_children())
-        issues_row_meta.clear()
+    def _refresh_issues_list():
+        for w in issues_inner.winfo_children():
+            w.destroy()
+        issues_row_refs.clear()
         rows = 0
         for it in client.get("client_issues") or []:
             if not isinstance(it, dict) or not _matches_filter(it):
                 continue
+            _build_issue_row(it)
             rows += 1
-            st = str(it.get("status", "") or "")
-            iid = issues_tv.insert(
-                "",
-                "end",
-                values=_issue_row_values(it),
-                tags=(issue_status_tag(st),),
-            )
-            issues_row_meta[iid] = str(it.get("id", "") or "")
         if rows == 0:
-            _insert_empty(issues_tv, "(no issues yet)", 10)
+            ttk.Label(issues_inner, text="(no issues yet)", foreground="#6B7280").pack(anchor="w", pady=8)
+        _update_issue_row_highlight()
 
     def _refresh_current_tree():
         _refresh_filter_combos()
-        _refresh_files_tv()
+        _refresh_files_list()
         _refresh_reminders_tv()
-        _refresh_issues_tv()
+        _refresh_issues_list()
 
     def refresh_tracker():
         _refresh_summary()
@@ -423,11 +577,17 @@ def init_client_tracker_tab(
     except Exception:
         pass
 
-    def _selected_item_id(tv: ttk.Treeview, meta: dict) -> str | None:
-        sel = tv.selection()
+    def _selected_file_id() -> str | None:
+        return files_selected_id.get("id")
+
+    def _selected_issue_id() -> str | None:
+        return issues_selected_id.get("id")
+
+    def _selected_reminder_id() -> str | None:
+        sel = reminders_tv.selection()
         if not sel or sel[0] == _EMPTY_IID:
             return None
-        return meta.get(sel[0]) or None
+        return reminders_row_meta.get(sel[0]) or None
 
     def _find_by_id(collection: str, item_id: str) -> dict | None:
         for it in client.get(collection) or []:
@@ -442,6 +602,8 @@ def init_client_tracker_tab(
         if str(cur.get("status", "") or "").strip() == status:
             return False
         patch: dict = {"status": status, "updated_ts": now_ts()}
+        if status in ("Needed", "Requested"):
+            patch["received_date"] = ""
         if status == "Requested":
             if not str(cur.get("requested_date", "") or "").strip():
                 patch["requested_date"] = today_str()
@@ -494,94 +656,27 @@ def init_client_tracker_tab(
                 append_tracker_log(client, f"Closed tracker issue: {title}")
         return True
 
-    def _update_file_tree_row(row_iid: str):
-        item_id = files_row_meta.get(row_iid)
-        if not item_id:
-            return
-        cur = _find_by_id("file_requests", item_id)
-        if not cur:
-            return
-        st = str(cur.get("status", "") or "")
-        files_tv.item(row_iid, values=_file_row_values(cur), tags=(file_status_tag(st),))
-
-    def _update_issue_tree_row(row_iid: str):
-        item_id = issues_row_meta.get(row_iid)
-        if not item_id:
-            return
-        cur = _find_by_id("client_issues", item_id)
-        if not cur:
-            return
-        st = str(cur.get("status", "") or "")
-        issues_tv.item(row_iid, values=_issue_row_values(cur), tags=(issue_status_tag(st),))
-
-    def _persist_file_row(row_iid: str):
+    def _persist_file_item(item_id: str):
         save_clients_cb(app.items)
         _refresh_summary()
-        _update_file_tree_row(row_iid)
+        _sync_file_row_buttons(item_id)
         _refresh_logs_tab()
         _refresh_external_summaries()
 
-    def _persist_issue_row(row_iid: str):
+    def _persist_issue_item(item_id: str):
         save_clients_cb(app.items)
         _refresh_summary()
-        _update_issue_tree_row(row_iid)
+        _sync_issue_row_buttons(item_id)
         _refresh_logs_tab()
         _refresh_external_summaries()
 
-    def _col_name(tv: ttk.Treeview, column_id: str) -> str | None:
-        try:
-            idx = int(column_id.replace("#", "")) - 1
-            cols = tv["columns"]
-            if 0 <= idx < len(cols):
-                return cols[idx]
-        except (ValueError, tk.TclError):
-            pass
-        return None
+    def _file_status_click(item_id: str, status: str):
+        if _apply_file_status(item_id, status):
+            _persist_file_item(item_id)
 
-    def _on_file_row_click(e):
-        if files_tv.identify_region(e.x, e.y) != "cell":
-            return
-        row_iid = files_tv.identify_row(e.y)
-        if not row_iid or row_iid == _EMPTY_IID:
-            return
-        col = _col_name(files_tv, files_tv.identify_column(e.x))
-        action_map = {
-            "act_need": "Needed",
-            "act_req": "Requested",
-            "act_rcvd": "Received",
-        }
-        if col not in action_map:
-            return
-        item_id = files_row_meta.get(row_iid)
-        if not item_id:
-            return
-        files_tv.selection_set(row_iid)
-        files_tv.focus(row_iid)
-        if _apply_file_status(item_id, action_map[col]):
-            _persist_file_row(row_iid)
-        return "break"
-
-    def _on_issue_row_click(e):
-        if issues_tv.identify_region(e.x, e.y) != "cell":
-            return
-        row_iid = issues_tv.identify_row(e.y)
-        if not row_iid or row_iid == _EMPTY_IID:
-            return
-        col = _col_name(issues_tv, issues_tv.identify_column(e.x))
-        action_map = {
-            "act_open": "Open",
-            "act_close": "Closed",
-        }
-        if col not in action_map:
-            return
-        item_id = issues_row_meta.get(row_iid)
-        if not item_id:
-            return
-        issues_tv.selection_set(row_iid)
-        issues_tv.focus(row_iid)
-        if _apply_issue_status(item_id, action_map[col]):
-            _persist_issue_row(row_iid)
-        return "break"
+    def _issue_status_click(item_id: str, status: str):
+        if _apply_issue_status(item_id, status):
+            _persist_issue_item(item_id)
 
     def _add_file():
         result = TrackerItemDialog.open(
@@ -593,7 +688,7 @@ def init_client_tracker_tab(
             _persist()
 
     def _edit_file():
-        iid = _selected_item_id(files_tv, files_row_meta)
+        iid = _selected_file_id()
         if not iid:
             messagebox.showinfo("Edit", "Select a file request first.")
             return
@@ -606,7 +701,7 @@ def init_client_tracker_tab(
             _persist()
 
     def _archive_file():
-        iid = _selected_item_id(files_tv, files_row_meta)
+        iid = _selected_file_id()
         if not iid:
             messagebox.showinfo("Archive", "Select a file request first.")
             return
@@ -616,30 +711,20 @@ def init_client_tracker_tab(
             _persist()
 
     def _mark_requested():
-        iid = _selected_item_id(files_tv, files_row_meta)
+        iid = _selected_file_id()
         if not iid:
             messagebox.showinfo("Mark Requested", "Select a file request first.")
             return
-        sel = files_tv.selection()
-        row_iid = sel[0] if sel else None
         if _apply_file_status(iid, "Requested"):
-            if row_iid:
-                _persist_file_row(row_iid)
-            else:
-                _persist()
+            _persist_file_item(iid)
 
     def _mark_received():
-        iid = _selected_item_id(files_tv, files_row_meta)
+        iid = _selected_file_id()
         if not iid:
             messagebox.showinfo("Mark Received", "Select a file request first.")
             return
-        sel = files_tv.selection()
-        row_iid = sel[0] if sel else None
         if _apply_file_status(iid, "Received"):
-            if row_iid:
-                _persist_file_row(row_iid)
-            else:
-                _persist()
+            _persist_file_item(iid)
 
     def _roll_forward():
         today = datetime.date.today()
@@ -669,7 +754,7 @@ def init_client_tracker_tab(
             _persist()
 
     def _edit_reminder():
-        iid = _selected_item_id(reminders_tv, reminders_row_meta)
+        iid = _selected_reminder_id()
         if not iid:
             messagebox.showinfo("Edit", "Select a reminder first.")
             return
@@ -682,7 +767,7 @@ def init_client_tracker_tab(
             _persist()
 
     def _archive_reminder():
-        iid = _selected_item_id(reminders_tv, reminders_row_meta)
+        iid = _selected_reminder_id()
         if not iid:
             messagebox.showinfo("Archive", "Select a reminder first.")
             return
@@ -694,7 +779,7 @@ def init_client_tracker_tab(
             _persist()
 
     def _mark_done_year():
-        iid = _selected_item_id(reminders_tv, reminders_row_meta)
+        iid = _selected_reminder_id()
         if not iid:
             messagebox.showinfo("Mark Done", "Select a reminder first.")
             return
@@ -706,7 +791,7 @@ def init_client_tracker_tab(
         _persist()
 
     def _reactivate_reminder():
-        iid = _selected_item_id(reminders_tv, reminders_row_meta)
+        iid = _selected_reminder_id()
         if not iid:
             messagebox.showinfo("Reactivate", "Select a reminder first.")
             return
@@ -727,7 +812,7 @@ def init_client_tracker_tab(
             _persist()
 
     def _edit_issue():
-        iid = _selected_item_id(issues_tv, issues_row_meta)
+        iid = _selected_issue_id()
         if not iid:
             messagebox.showinfo("Edit", "Select an issue first.")
             return
@@ -740,7 +825,7 @@ def init_client_tracker_tab(
             _persist()
 
     def _archive_issue():
-        iid = _selected_item_id(issues_tv, issues_row_meta)
+        iid = _selected_issue_id()
         if not iid:
             messagebox.showinfo("Archive", "Select an issue first.")
             return
@@ -752,7 +837,7 @@ def init_client_tracker_tab(
             _persist()
 
     def _mark_resolved():
-        iid = _selected_item_id(issues_tv, issues_row_meta)
+        iid = _selected_issue_id()
         if not iid:
             messagebox.showinfo("Mark Resolved", "Select an issue first.")
             return
@@ -764,24 +849,15 @@ def init_client_tracker_tab(
             patch["closed_date"] = today_str()
         update_client_issue(client, iid, patch)
         append_tracker_log(client, f"Resolved tracker issue: {cur.get('title', '')}")
-        sel = issues_tv.selection()
-        if sel:
-            _persist_issue_row(sel[0])
-        else:
-            _persist()
+        _persist_issue_item(iid)
 
     def _reopen_issue():
-        iid = _selected_item_id(issues_tv, issues_row_meta)
+        iid = _selected_issue_id()
         if not iid:
             messagebox.showinfo("Reopen", "Select an issue first.")
             return
-        sel = issues_tv.selection()
-        row_iid = sel[0] if sel else None
         if _apply_issue_status(iid, "Open"):
-            if row_iid:
-                _persist_issue_row(row_iid)
-            else:
-                _persist()
+            _persist_issue_item(iid)
 
     _ACTION_SETS = {
         "file": [
@@ -819,26 +895,34 @@ def init_client_tracker_tab(
 
     inner_nb.bind("<<NotebookTabChanged>>", _on_inner_tab_changed)
 
-    def _on_edit_dbl(tv, meta, kind, skip_cols: frozenset[str]):
-        def handler(e=None):
-            if e is not None:
-                col = _col_name(tv, tv.identify_column(e.x))
-                if col in skip_cols:
-                    return
-            if _selected_item_id(tv, meta):
-                if kind == "file":
-                    _edit_file()
-                elif kind == "reminder":
-                    _edit_reminder()
-                else:
-                    _edit_issue()
-        return handler
+    def _reminder_tree_release(e):
+        row = reminders_tv.identify_row(e.y)
+        if not row or row == _EMPTY_IID:
+            reminders_tv.selection_remove(reminders_tv.selection())
+            reminders_tv.focus("")
+            return "break"
+        cur_sel = reminders_tv.selection()
+        if cur_sel and cur_sel[0] == row:
+            reminders_tv.selection_remove(cur_sel)
+            reminders_tv.focus("")
+        else:
+            reminders_tv.selection_set(row)
+            reminders_tv.focus(row)
 
-    files_tv.bind("<ButtonRelease-1>", _on_file_row_click)
-    issues_tv.bind("<ButtonRelease-1>", _on_issue_row_click)
-    files_tv.bind("<Double-1>", _on_edit_dbl(files_tv, files_row_meta, "file", _file_act_cols))
-    reminders_tv.bind("<Double-1>", _on_edit_dbl(reminders_tv, reminders_row_meta, "reminder", frozenset()))
-    issues_tv.bind("<Double-1>", _on_edit_dbl(issues_tv, issues_row_meta, "issue", _issue_act_cols))
+    def _clear_reminder_selection(_e=None):
+        reminders_tv.selection_remove(reminders_tv.selection())
+        reminders_tv.focus("")
+
+    reminders_tv.unbind("<ButtonRelease-1>")
+    reminders_tv.bind("<ButtonRelease-1>", _reminder_tree_release)
+    reminders_tv.bind("<Double-1>", lambda _e: _edit_reminder() if _selected_reminder_id() else None)
+    reminders_tab.bind("<Button-1>", lambda e: _clear_reminder_selection() if e.widget is reminders_tab else None)
+
+    files_scroll.canvas.bind("<Button-1>", lambda e: _clear_file_selection() if e.widget is files_scroll.canvas else None)
+    files_tab.bind("<Button-1>", lambda e: _clear_file_selection() if e.widget is files_tab else None)
+
+    issues_scroll.canvas.bind("<Button-1>", lambda e: _clear_issue_selection() if e.widget is issues_scroll.canvas else None)
+    issues_tab.bind("<Button-1>", lambda e: _clear_issue_selection() if e.widget is issues_tab else None)
 
     _sync_action_bar()
     refresh_tracker()
