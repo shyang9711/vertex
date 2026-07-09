@@ -63,6 +63,73 @@ OPEN_ISSUE_STATUSES = frozenset({"Open", "Waiting on Client", "Waiting on Govern
 FILE_SOURCES = ["Client", "Third Party", "Government", "Internal", "Other"]
 PRIORITIES = ["Low", "Normal", "High", "Urgent"]
 
+# Common file templates: (display label, default category)
+FILE_TEMPLATES: list[tuple[str, str]] = [
+    ("— Custom —", ""),
+    ("W-2", "Income Tax"),
+    ("1099-NEC", "Income Tax"),
+    ("1099-MISC", "Income Tax"),
+    ("1099-INT", "Income Tax"),
+    ("1099-DIV", "Income Tax"),
+    ("1098 (Mortgage)", "Income Tax"),
+    ("K-1", "Income Tax"),
+    ("Schedule C P&L", "Income Tax"),
+    ("Charitable donations", "Income Tax"),
+    ("Property tax bill", "Income Tax"),
+    ("Driver license / ID", "Income Tax"),
+    ("Bank statements", "Bookkeeping"),
+    ("Credit card statements", "Bookkeeping"),
+    ("Payroll reports", "Payroll"),
+    ("W-3 / 941", "Payroll"),
+    ("Sales tax return", "Sales Tax"),
+    ("IPP valuation / actuarial", "IPP"),
+    ("Form 5500", "Retirement"),
+    ("Government notice", "Government Notice"),
+    ("Prior-year tax return", "Income Tax"),
+]
+
+FILE_TEMPLATE_LABELS = [t[0] for t in FILE_TEMPLATES]
+
+
+def default_tax_year() -> str:
+    return str(datetime.date.today().year)
+
+
+def file_status_tag(status: str) -> str:
+    st = str(status or "").strip()
+    return {
+        "Needed": "tr_needed",
+        "Requested": "tr_requested",
+        "Received": "tr_received",
+        "Waiting on Client": "tr_waiting",
+        "Waiting on Third Party": "tr_waiting",
+        "Waiting on Government": "tr_waiting",
+        "Not Needed": "tr_closed",
+        "Archived": "tr_archived",
+    }.get(st, "tr_default")
+
+
+def reminder_status_tag(status: str) -> str:
+    st = str(status or "").strip()
+    return {
+        "Active": "tr_active",
+        "Done This Year": "tr_received",
+        "Inactive": "tr_closed",
+        "Archived": "tr_archived",
+    }.get(st, "tr_default")
+
+
+def issue_status_tag(status: str) -> str:
+    st = str(status or "").strip()
+    return {
+        "Open": "tr_open",
+        "Waiting on Client": "tr_waiting",
+        "Waiting on Government": "tr_waiting",
+        "Resolved": "tr_received",
+        "Closed": "tr_closed",
+        "Archived": "tr_archived",
+    }.get(st, "tr_default")
+
 
 def now_ts() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -120,6 +187,7 @@ def count_tracker_summary(client: dict) -> dict[str, int]:
     received = 0
     open_issues = 0
     ipp_open = 0
+    active_reminders = 0
 
     for fr in client.get("file_requests") or []:
         if not isinstance(fr, dict) or fr.get("archived"):
@@ -137,7 +205,9 @@ def count_tracker_summary(client: dict) -> dict[str, int]:
     for rem in client.get("annual_reminders") or []:
         if not isinstance(rem, dict) or rem.get("archived"):
             continue
-        if str(rem.get("status", "") or "") == "Active":
+        st = str(rem.get("status", "") or "")
+        if st == "Active":
+            active_reminders += 1
             if (rem.get("category") or "").strip() == "IPP":
                 ipp_open += 1
 
@@ -156,6 +226,7 @@ def count_tracker_summary(client: dict) -> dict[str, int]:
         "received": received,
         "open_issues": open_issues,
         "ipp_open": ipp_open,
+        "active_reminders": active_reminders,
     }
 
 

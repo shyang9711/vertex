@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -13,6 +14,9 @@ try:
         ISSUE_TYPES,
         FILE_SOURCES,
         PRIORITIES,
+        FILE_TEMPLATES,
+        FILE_TEMPLATE_LABELS,
+        default_tax_year,
         today_str,
     )
 except ModuleNotFoundError:
@@ -24,6 +28,9 @@ except ModuleNotFoundError:
         ISSUE_TYPES,
         FILE_SOURCES,
         PRIORITIES,
+        FILE_TEMPLATES,
+        FILE_TEMPLATE_LABELS,
+        default_tax_year,
         today_str,
     )
 
@@ -34,149 +41,154 @@ class TrackerItemDialog(tk.Toplevel):
     def __init__(self, master, title: str = "Tracker Item", kind: str = "file", initial: dict | None = None):
         super().__init__(master)
         self.title(title)
-        self.resizable(False, False)
+        self.resizable(True, False)
         self.result = None
         self.kind = (kind or "file").strip().lower()
         init = dict(initial or {})
+        is_edit = bool(init.get("id"))
 
-        frm = ttk.Frame(self, padding=12)
+        frm = ttk.Frame(self, padding=10)
         frm.pack(fill="both", expand=True)
         frm.columnconfigure(1, weight=1)
+        frm.columnconfigure(3, weight=1)
 
-        row = 0
         self._vars: dict[str, tk.Variable] = {}
+        row = 0
 
-        def _add_label(text: str, r: int):
-            ttk.Label(frm, text=text).grid(row=r, column=0, sticky="w", pady=(4, 0))
+        def _lbl(text: str, r: int, c: int = 0):
+            ttk.Label(frm, text=text).grid(row=r, column=c, sticky="w", padx=(0, 4), pady=2)
 
-        def _add_entry(key: str, r: int, default: str = "", width: int = 32):
+        def _entry(key: str, r: int, c: int = 1, default: str = "", colspan: int = 1):
             var = tk.StringVar(value=str(init.get(key, default) or ""))
             self._vars[key] = var
-            ttk.Entry(frm, textvariable=var, width=width).grid(row=r, column=1, sticky="we", padx=(8, 0), pady=(4, 0))
+            ttk.Entry(frm, textvariable=var, width=22).grid(
+                row=r, column=c, columnspan=colspan, sticky="we", padx=(0, 10), pady=2
+            )
             return var
 
-        def _add_combo(key: str, r: int, values: list[str], default: str = ""):
+        def _combo(key: str, r: int, c: int, values: list[str], default: str = "", colspan: int = 1):
             var = tk.StringVar(value=str(init.get(key, default) or (values[0] if values else "")))
             self._vars[key] = var
-            cb = ttk.Combobox(frm, textvariable=var, values=values, state="readonly", width=30)
-            cb.grid(row=r, column=1, sticky="we", padx=(8, 0), pady=(4, 0))
+            cb = ttk.Combobox(frm, textvariable=var, values=values, state="readonly", width=20)
+            cb.grid(row=r, column=c, columnspan=colspan, sticky="we", padx=(0, 10), pady=2)
             return var
 
-        def _add_check(key: str, r: int, text: str, default: bool = False):
+        def _check(key: str, r: int, c: int, text: str, default: bool = False):
             var = tk.BooleanVar(value=bool(init.get(key, default)))
             self._vars[key] = var
-            ttk.Checkbutton(frm, text=text, variable=var).grid(row=r, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
+            ttk.Checkbutton(frm, text=text, variable=var).grid(row=r, column=c, columnspan=2, sticky="w", pady=2)
             return var
 
         if self.kind == "file":
-            _add_label("Tax year", row)
-            _add_entry("tax_year", row, default=str(init.get("tax_year") or ""))
+            self.geometry("560x340")
+            v_template = tk.StringVar(value="— Custom —")
+            _lbl("Template", row)
+            cb_tpl = ttk.Combobox(frm, textvariable=v_template, values=FILE_TEMPLATE_LABELS, state="readonly", width=28)
+            cb_tpl.grid(row=row, column=1, columnspan=3, sticky="we", pady=2)
             row += 1
 
-            _add_label("Category", row)
-            _add_combo("category", row, CATEGORIES, default=init.get("category", "Income Tax"))
+            ty_default = init.get("tax_year") or (default_tax_year() if not is_edit else "")
+            _lbl("Tax year", row)
+            _entry("tax_year", row, default=str(ty_default))
+            _lbl("Category", row, 2)
+            _combo("category", row, 3, CATEGORIES, default=init.get("category", "Income Tax"))
             row += 1
 
-            _add_label("Name", row)
-            _add_entry("name", row)
+            _lbl("File / Item", row)
+            _entry("name", row)
+            _lbl("Status", row, 2)
+            _combo("status", row, 3, FILE_REQUEST_STATUSES, default=init.get("status", "Needed"))
             row += 1
 
-            _add_label("Status", row)
-            _add_combo("status", row, FILE_REQUEST_STATUSES, default=init.get("status", "Needed"))
+            _lbl("Requested", row)
+            _entry("requested_date", row)
+            _lbl("Received", row, 2)
+            _entry("received_date", row, 3)
             row += 1
 
-            _add_label("Requested date", row)
-            _add_entry("requested_date", row)
+            _lbl("Due date", row)
+            _entry("due_date", row)
+            _lbl("Source", row, 2)
+            _combo("source", row, 3, FILE_SOURCES, default=init.get("source", "Client"))
             row += 1
 
-            _add_label("Received date", row)
-            _add_entry("received_date", row)
+            _lbl("Priority", row)
+            _combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
+            _check("repeat_next_year", row, 2, "Repeat next year", default=bool(init.get("repeat_next_year", True)))
             row += 1
 
-            _add_label("Due date", row)
-            _add_entry("due_date", row)
-            row += 1
+            def _on_template(_e=None):
+                label = v_template.get()
+                for tpl_label, cat in FILE_TEMPLATES:
+                    if tpl_label == label and tpl_label != "— Custom —":
+                        if "name" in self._vars:
+                            self._vars["name"].set(tpl_label)
+                        if cat and "category" in self._vars:
+                            self._vars["category"].set(cat)
+                        break
 
-            _add_label("Repeat next year", row)
-            _add_check("repeat_next_year", row, "Repeat next year", default=bool(init.get("repeat_next_year", True)))
-            row += 1
-
-            _add_label("Source", row)
-            _add_combo("source", row, FILE_SOURCES, default=init.get("source", "Client"))
-            row += 1
-
-            _add_label("Priority", row)
-            _add_combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
-            row += 1
+            cb_tpl.bind("<<ComboboxSelected>>", _on_template)
 
         elif self.kind == "reminder":
-            _add_label("Title", row)
-            _add_entry("title", row)
+            self.geometry("520x300")
+            _lbl("Title", row)
+            _entry("title", row, colspan=3)
             row += 1
 
-            _add_label("Category", row)
-            _add_combo("category", row, CATEGORIES, default=init.get("category", "Other"))
+            _lbl("Category", row)
+            _combo("category", row, CATEGORIES, default=init.get("category", "Other"))
+            _lbl("Status", row, 2)
+            _combo("status", row, 3, REMINDER_STATUSES, default=init.get("status", "Active"))
             row += 1
 
-            _add_label("Status", row)
-            _add_combo("status", row, REMINDER_STATUSES, default=init.get("status", "Active"))
+            _lbl("Priority", row)
+            _combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
+            _check("applies_every_year", row, 2, "Applies every year", default=bool(init.get("applies_every_year", True)))
             row += 1
 
-            _add_label("Priority", row)
-            _add_combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
-            row += 1
-
-            _add_label("Applies every year", row)
-            _add_check("applies_every_year", row, "Applies every year", default=bool(init.get("applies_every_year", True)))
-            row += 1
-
-            _add_label("Tax year (optional)", row)
-            _add_entry("tax_year", row)
+            _lbl("Tax year", row)
+            ty = init.get("tax_year") or (default_tax_year() if not is_edit else "")
+            _entry("tax_year", row, default=str(ty), colspan=3)
             row += 1
 
         elif self.kind == "issue":
-            _add_label("Type", row)
-            _add_combo("type", row, ISSUE_TYPES, default=init.get("type", "Other"))
+            self.geometry("560x340")
+            _lbl("Type", row)
+            _combo("type", row, ISSUE_TYPES, default=init.get("type", "Other"))
+            _lbl("Category", row, 2)
+            _combo("category", row, 3, CATEGORIES, default=init.get("category", "Other"))
             row += 1
 
-            _add_label("Category", row)
-            _add_combo("category", row, CATEGORIES, default=init.get("category", "Other"))
+            ty_default = init.get("tax_year") or (default_tax_year() if not is_edit else "")
+            _lbl("Tax year", row)
+            _entry("tax_year", row, default=str(ty_default))
+            _lbl("Status", row, 2)
+            _combo("status", row, 3, ISSUE_STATUSES, default=init.get("status", "Open"))
             row += 1
 
-            _add_label("Tax year", row)
-            _add_entry("tax_year", row)
+            _lbl("Title", row)
+            _entry("title", row, colspan=3)
             row += 1
 
-            _add_label("Title", row)
-            _add_entry("title", row)
+            _lbl("Priority", row)
+            _combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
+            _lbl("Opened", row, 2)
+            _entry("opened_date", row, 3, default=init.get("opened_date") or today_str())
             row += 1
 
-            _add_label("Status", row)
-            _add_combo("status", row, ISSUE_STATUSES, default=init.get("status", "Open"))
+            _lbl("Closed", row)
+            _entry("closed_date", row, colspan=3)
             row += 1
 
-            _add_label("Priority", row)
-            _add_combo("priority", row, PRIORITIES, default=init.get("priority", "Normal"))
-            row += 1
-
-            _add_label("Opened date", row)
-            _add_entry("opened_date", row, default=init.get("opened_date") or today_str())
-            row += 1
-
-            _add_label("Closed date", row)
-            _add_entry("closed_date", row)
-            row += 1
-
-        # Note (all kinds)
-        ttk.Label(frm, text="Note").grid(row=row, column=0, sticky="nw", pady=(8, 0))
-        self._note = ScrolledText(frm, width=40, height=4, wrap="word")
-        self._note.grid(row=row, column=1, sticky="we", padx=(8, 0), pady=(8, 0))
+        ttk.Label(frm, text="Note").grid(row=row, column=0, sticky="nw", pady=(6, 0))
+        self._note = ScrolledText(frm, width=52, height=3, wrap="word")
+        self._note.grid(row=row, column=1, columnspan=3, sticky="we", pady=(6, 0))
         if init.get("note"):
             self._note.insert("1.0", str(init.get("note")))
         row += 1
 
         btns = ttk.Frame(frm)
-        btns.grid(row=row, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        btns.grid(row=row, column=0, columnspan=4, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(btns, text="Save", command=self._save).pack(side=tk.RIGHT)
 
@@ -196,7 +208,7 @@ class TrackerItemDialog(tk.Toplevel):
 
         if self.kind == "file":
             if not out.get("name"):
-                messagebox.showerror("Validation", "Name is required.", parent=self)
+                messagebox.showerror("Validation", "File / Item is required.", parent=self)
                 return
         else:
             if not out.get("title"):
