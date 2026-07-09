@@ -786,13 +786,21 @@ def parse_citi_text(text: str, transaction_filter: str = "both") -> pd.DataFrame
 
 
 def _vendor_match_dir():
-    """Directory containing this script (vendor_match folder). Prefer __file__, else sys.argv[0]."""
+    """Directory containing vendor_match package (dev, script launch, and PyInstaller onefile)."""
     try:
-        return os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        here = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        if os.path.isfile(os.path.join(here, "vendor_match.py")) or os.path.isdir(os.path.join(here, "us_bank")):
+            return here
     except NameError:
         pass
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        mei_vm = os.path.normpath(os.path.join(sys._MEIPASS, "features", "vendor_match"))
+        if os.path.isdir(mei_vm):
+            return mei_vm
     if sys.argv and sys.argv[0]:
-        return os.path.normpath(os.path.dirname(os.path.abspath(sys.argv[0])))
+        cand = os.path.normpath(os.path.dirname(os.path.abspath(sys.argv[0])))
+        if os.path.isdir(os.path.join(cand, "us_bank")) or os.path.isfile(os.path.join(cand, "vendor_match.py")):
+            return cand
     return os.path.normpath(os.getcwd())
 
 
@@ -1043,21 +1051,34 @@ def parse_us_bank_cc_text(text: str, transaction_filter: str = "both") -> pd.Dat
 
 
 def _get_capital_one_cc_parser():
+    _vm_dir = _vendor_match_dir()
+    if _vm_dir not in sys.path:
+        sys.path.insert(0, _vm_dir)
+    elif sys.path[0] != _vm_dir:
+        try:
+            sys.path.remove(_vm_dir)
+        except ValueError:
+            pass
+        sys.path.insert(0, _vm_dir)
+    try:
+        from capital_one.parse_capital_one_cc import parse_capital_one_cc_text
+        return parse_capital_one_cc_text
+    except ImportError:
+        pass
     try:
         from vertex.features.vendor_match.capital_one.parse_capital_one_cc import parse_capital_one_cc_text
         return parse_capital_one_cc_text
     except ImportError:
         pass
     try:
-        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
-        if _vm_dir not in sys.path:
-            sys.path.insert(0, _vm_dir)
-        from capital_one.parse_capital_one_cc import parse_capital_one_cc_text
+        _features_dir = os.path.dirname(_vm_dir)
+        if _features_dir not in sys.path:
+            sys.path.insert(0, _features_dir)
+        from vendor_match.capital_one.parse_capital_one_cc import parse_capital_one_cc_text
         return parse_capital_one_cc_text
     except ImportError:
         pass
     try:
-        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
         _path = os.path.normpath(os.path.join(_vm_dir, "capital_one", "parse_capital_one_cc.py"))
         if os.path.isfile(_path):
             spec = importlib.util.spec_from_file_location("parse_capital_one_cc", _path)
