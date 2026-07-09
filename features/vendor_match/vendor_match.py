@@ -251,6 +251,17 @@ def detect_bank_from_document(path: str) -> str | None:
         if "credit card" in path_lower or " cc " in path_lower:
             return "US Bank (Credit Card)" if "US Bank (Credit Card)" in bank_keys else None
         return "US Bank (Bank)" if "US Bank (Bank)" in bank_keys else None
+    if "capital one" in text_sample or "capitalone.com" in text_sample:
+        if (
+            "credit card" in text_sample
+            or "spark cash" in text_sample
+            or "mastercard" in text_sample
+            or "payments, credits and adjustments" in text_sample
+        ):
+            return "Capital One (Credit Card)" if "Capital One (Credit Card)" in bank_keys else None
+        path_lower = path.lower()
+        if "credit card" in path_lower or " cc " in path_lower or "capital one cc" in path_lower:
+            return "Capital One (Credit Card)" if "Capital One (Credit Card)" in bank_keys else None
     return None
 
 def load_rules_from_disk(rules_path):
@@ -1031,6 +1042,60 @@ def parse_us_bank_cc_text(text: str, transaction_filter: str = "both") -> pd.Dat
     return _bofa_rows_to_dataframe(rows)
 
 
+def _get_capital_one_cc_parser():
+    try:
+        from vertex.features.vendor_match.capital_one.parse_capital_one_cc import parse_capital_one_cc_text
+        return parse_capital_one_cc_text
+    except ImportError:
+        pass
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        if _vm_dir not in sys.path:
+            sys.path.insert(0, _vm_dir)
+        from capital_one.parse_capital_one_cc import parse_capital_one_cc_text
+        return parse_capital_one_cc_text
+    except ImportError:
+        pass
+    try:
+        _vm_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)))
+        _path = os.path.normpath(os.path.join(_vm_dir, "capital_one", "parse_capital_one_cc.py"))
+        if os.path.isfile(_path):
+            spec = importlib.util.spec_from_file_location("parse_capital_one_cc", _path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return getattr(mod, "parse_capital_one_cc_text", None)
+    except Exception:
+        pass
+    return None
+
+
+def parse_capital_one_cc_pdf(pdf_path: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse Capital One credit card statement PDF. transaction_filter: debits, credits, or both."""
+    text = extract_text_from_pdf(pdf_path)
+    parser = _get_capital_one_cc_parser()
+    if parser is None:
+        raise ValueError("Capital One (Credit Card) parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
+def parse_capital_one_cc_text(text: str, transaction_filter: str = "both") -> pd.DataFrame:
+    """Parse Capital One credit card statement pasted text. transaction_filter: debits, credits, or both."""
+    parser = _get_capital_one_cc_parser()
+    if parser is None:
+        raise ValueError("Capital One (Credit Card) parser not available.")
+    rows = parser(text)
+    if transaction_filter == "credits":
+        rows = [r for r in rows if r.get("amount", 0) > 0]
+    elif transaction_filter == "debits":
+        rows = [r for r in rows if r.get("amount", 0) < 0]
+    return _bofa_rows_to_dataframe(rows)
+
+
 # Bank parser registry for PDF files
 BANK_PARSERS_PDF = {
     "Bank of America (Bank)": parse_bank_of_america_bank_pdf,
@@ -1040,6 +1105,7 @@ BANK_PARSERS_PDF = {
     "Comerica": parse_comerica_pdf,
     "US Bank (Bank)": parse_us_bank_checking_pdf,
     "US Bank (Credit Card)": parse_us_bank_cc_pdf,
+    "Capital One (Credit Card)": parse_capital_one_cc_pdf,
 }
 
 # Bank parser registry for pasted text
@@ -1051,6 +1117,7 @@ BANK_PARSERS_TEXT = {
     "Comerica": parse_comerica_text,
     "US Bank (Bank)": parse_us_bank_checking_text,
     "US Bank (Credit Card)": parse_us_bank_cc_text,
+    "Capital One (Credit Card)": parse_capital_one_cc_text,
 }
 
 # Combined registry for UI (shows same banks for both PDF and text)
@@ -1063,7 +1130,7 @@ def load_table(path: str = None, bank_parser: str = None, pasted_text: str = Non
     transaction_filter: "debits", "credits", or "both" (used for Bank of America parsers only).
     """
     boa_parsers = ("Bank of America (Bank)", "Bank of America (Credit Card)")
-    parsers_with_filter = ("Bank of America (Bank)", "Bank of America (Credit Card)", "Citi", "Fremont Bank", "Comerica", "US Bank (Bank)", "US Bank (Credit Card)")
+    parsers_with_filter = ("Bank of America (Bank)", "Bank of America (Credit Card)", "Citi", "Fremont Bank", "Comerica", "US Bank (Bank)", "US Bank (Credit Card)", "Capital One (Credit Card)")
     if pasted_text:
         if not bank_parser or bank_parser not in BANK_PARSERS_TEXT:
             raise ValueError(f"Bank parser required for pasted text. Available: {', '.join(BANK_PARSERS_TEXT.keys())}")
