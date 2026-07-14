@@ -506,8 +506,11 @@ def parse_edd(pdf_path, tax_year, tax_quarter):
 
         # Prefer Applied Amount; fallback to Orig
         amt_str = m.group("applied") or m.group("orig")
-        amt = float(amt_str.replace(",", ""))
-        payments.append(amt)
+        amt = round(float(amt_str.replace(",", "")), 2)
+        payments.append({
+            "PayDate": pay_dt,
+            "Amount": amt,
+        })
 
     return payments, company_name
 
@@ -688,8 +691,8 @@ AMT_TOL = 0.00  # keep strict unless you want 0.01
 excel_rows = excel_df.copy()
 excel_rows["EDD_Total"] = excel_rows["EDD_Total"].astype(float).round(2)
 
-# PDF amounts
-pdf_amounts = [round(float(x), 2) for x in edd_payments]
+# PDF amounts (keep dated records for mismatch reporting)
+pdf_amounts = [round(float(x["Amount"]), 2) for x in edd_payments]
 
 sum_edd_excel = round(float(excel_rows["EDD_Total"].sum()), 2)
 sum_edd_pdf   = round(float(sum(pdf_amounts)), 2)
@@ -821,10 +824,18 @@ else:
     # ------------------------------------------------------------
     # Phase 3) Build mismatch diagnostics AFTER split matching
     # ------------------------------------------------------------
-    remaining_pdf = []
-    for k, cnt in pdf_counter.items():
-        remaining_pdf.extend([k] * cnt)
-    remaining_pdf = sorted(remaining_pdf)
+    # Map remaining Counter amounts back to dated PDF payments
+    rem_for_dates = Counter(pdf_counter)
+    remaining_pdf_items = []
+    for p in edd_payments:
+        amt = round(float(p["Amount"]), 2)
+        if rem_for_dates.get(amt, 0) > 0:
+            remaining_pdf_items.append(p)
+            rem_for_dates[amt] -= 1
+            if rem_for_dates[amt] <= 0:
+                del rem_for_dates[amt]
+    remaining_pdf_items = sorted(remaining_pdf_items, key=lambda x: (x["PayDate"], x["Amount"]))
+    remaining_pdf = [round(float(x["Amount"]), 2) for x in remaining_pdf_items]
 
     remaining_excel = sorted([round2(x) for x in excel_unmatched["EDD_Total"].tolist() if round2(x) is not None])
     remaining_excel_nonzero = [a for a in remaining_excel if a != 0.0]
@@ -838,8 +849,10 @@ else:
             d = pd.to_datetime(row["Date"]).date()
             edd_flags.append(f"{BAD} Missing/unmatched in EDD PDF: {d} amount {amt}")
 
-        for amt in remaining_pdf:
-            edd_flags.append(f"{BAD} Unexpected EDD PDF payment: {amt}")
+        for p in remaining_pdf_items:
+            d = pd.to_datetime(p["PayDate"]).date()
+            amt = round(float(p["Amount"]), 2)
+            edd_flags.append(f"{BAD} Unexpected EDD PDF payment: {d} amount {amt}")
 
         sum_excel_unmatched = round(sum(remaining_excel_nonzero), 2)
         sum_pdf_unmatched   = round(sum(remaining_pdf), 2)
