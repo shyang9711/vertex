@@ -324,11 +324,19 @@ def parse_eftps(pdf_path, tax_year, tax_quarter):
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     company_name = ""
-    for line in lines:
-        m = re.match(r"TAXPAYER\s+NAME:\s*(.+)", line, re.IGNORECASE)
-        if m:
-            company_name = m.group(1).strip()
-            break
+    for i, line in enumerate(lines):
+        m = re.match(r"TAXPAYER\s+NAME:\s*(.*)$", line, re.IGNORECASE)
+        if not m:
+            continue
+        name = m.group(1).strip()
+        if name:
+            company_name = name
+        elif i + 1 < len(lines):
+            # EFTPS often puts the name on the next line after the label
+            nxt = lines[i + 1].strip()
+            if nxt and not re.match(r"^TIN\s*:", nxt, re.IGNORECASE):
+                company_name = nxt
+        break
 
     records = []
     for i in range(len(lines) - 5):
@@ -465,15 +473,19 @@ def parse_edd(pdf_path, tax_year, tax_quarter):
     text = "\n".join(page.get_text() for page in doc)
 
     company_name = ""
-    note_m = re.search(
-        r"NOTE:\s*Your original payment may differ from the applied amount",
+    # Business name appears just above the payments table headers (not nav "My Profile" above NOTE)
+    hdr_m = re.search(
+        r"([^\n]+)\s*\n\s*Period\s*\n\s*Payment\s+Type\s*\n\s*Pay\s+Date",
         text,
         re.IGNORECASE,
     )
-    if note_m:
-        before_lines = [l.strip() for l in text[:note_m.start()].splitlines() if l.strip()]
-        if before_lines:
-            company_name = before_lines[-1]
+    if hdr_m:
+        company_name = re.sub(r"[\ue000-\uf8ff]", "", hdr_m.group(1)).strip()
+    if not company_name or company_name.lower() in {
+        "my profile", "my payments", "filter", "employer services online",
+        "e-services faqs", "e-services tutorials", "contact payroll taxes",
+    }:
+        company_name = ""
 
     q_start, q_end = quarter_date_range(tax_year, tax_quarter)
 
