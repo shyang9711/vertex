@@ -323,6 +323,13 @@ def parse_eftps(pdf_path, tax_year, tax_quarter):
     text = "\n".join(page.get_text() for page in doc)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
+    company_name = ""
+    for line in lines:
+        m = re.match(r"TAXPAYER\s+NAME:\s*(.+)", line, re.IGNORECASE)
+        if m:
+            company_name = m.group(1).strip()
+            break
+
     records = []
     for i in range(len(lines) - 5):
         try:
@@ -352,7 +359,7 @@ def parse_eftps(pdf_path, tax_year, tax_quarter):
     df = pd.DataFrame(records)
     if not df.empty:
         df = df.sort_values(["SettlementDate", "InitiationDate"], ascending=[True, True]).reset_index(drop=True)
-    return df
+    return df, company_name
 
 def reconcile_eftps_returns(eftps_df: pd.DataFrame):
     """
@@ -457,6 +464,17 @@ def parse_edd(pdf_path, tax_year, tax_quarter):
     doc = fitz.open(pdf_path)
     text = "\n".join(page.get_text() for page in doc)
 
+    company_name = ""
+    note_m = re.search(
+        r"NOTE:\s*Your original payment may differ from the applied amount",
+        text,
+        re.IGNORECASE,
+    )
+    if note_m:
+        before_lines = [l.strip() for l in text[:note_m.start()].splitlines() if l.strip()]
+        if before_lines:
+            company_name = before_lines[-1]
+
     q_start, q_end = quarter_date_range(tax_year, tax_quarter)
 
     # Typical row in extracted text looks like:
@@ -491,10 +509,10 @@ def parse_edd(pdf_path, tax_year, tax_quarter):
         amt = float(amt_str.replace(",", ""))
         payments.append(amt)
 
-    return payments
+    return payments, company_name
 
 
-eftps_raw_df = parse_eftps(eftps_path, tax_year, tax_quarter)
+eftps_raw_df, eftps_company_name = parse_eftps(eftps_path, tax_year, tax_quarter)
 if eftps_raw_df.empty:
     print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
     sys.exit(1)
@@ -505,10 +523,14 @@ if eftps_df.empty:
     print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
     sys.exit(1)
 
-edd_payments = parse_edd(edd_path, tax_year, tax_quarter)
+edd_payments, edd_company_name = parse_edd(edd_path, tax_year, tax_quarter)
 if not edd_payments:
     print(f"\n{RED}{BAD} No EDD records found for {tax_year} {tax_quarter}.{RESET}")
     sys.exit(1)
+
+company_name = eftps_company_name or edd_company_name or "(unknown)"
+eftps_loaded_count = int((eftps_raw_df["Status"].isin(["Settled", "Scheduled"])).sum())
+edd_loaded_count = len(edd_payments)
 
 # --- Step 6: Validation ---
 eftps_flags = []
@@ -574,8 +596,10 @@ if r is not None and not r.empty and "CanceledPaymentDate" in r.columns and "Amo
 # --- EFTPS per-date multiset validation (supports multiple payments same date) ---
 
 # Build Excel paid amounts grouped by date (exclude returned/canceled rows)
+# Skip 0.0 totals - Excel "-" / empty EFTPS rows are not real payments and won't appear in the PDF.
 excel_paid = excel_df.loc[~excel_is_returned, ["Date", "Total"]].copy()
 excel_paid["Total"] = excel_paid["Total"].astype(float).round(2)
+excel_paid = excel_paid[excel_paid["Total"] != 0.0]
 
 # Build EFTPS paid amounts grouped by date
 eftps_paid = eftps_df[["SettlementDate", "Amount"]].copy()
@@ -803,59 +827,86 @@ else:
     remaining_pdf = sorted(remaining_pdf)
 
     remaining_excel = sorted([round2(x) for x in excel_unmatched["EDD_Total"].tolist() if round2(x) is not None])
+    remaining_excel_nonzero = [a for a in remaining_excel if a != 0.0]
 
-    # If still mismatched, show which values are off (count-aware)
-    if remaining_excel or remaining_pdf:
-        excel_counter = Counter(remaining_excel)
-        pdf_rem_counter = Counter(remaining_pdf)
+    # If still mismatched, show only unmatched/missing date + amount (no OK noise)
+    if remaining_excel_nonzero or remaining_pdf:
+        for _, row in excel_unmatched.iterrows():
+            amt = round2(row["EDD_Total"])
+            if amt is None or amt == 0.0:
+                continue  # Excel blank/dash EDD rows are not real payments
+            d = pd.to_datetime(row["Date"]).date()
+            edd_flags.append(f"{BAD} Missing/unmatched in EDD PDF: {d} amount {amt}")
 
-        # Show which values have different counts
-        all_vals = sorted(set(excel_counter.keys()) | set(pdf_rem_counter.keys()))
-        for val in all_vals:
-            excel_count = excel_counter.get(val, 0)
-            pdf_count   = pdf_rem_counter.get(val, 0)
-            if excel_count != pdf_count:
-                edd_flags.append(
-                    f"{BAD} Unmatched EDD amount {val} count mismatch — Excel(unmatched): {excel_count}, EDD PDF(unmatched): {pdf_count}"
-                )
+        for amt in remaining_pdf:
+            edd_flags.append(f"{BAD} Unexpected EDD PDF payment: {amt}")
 
-        # Updated effective sums after split matching:
-        # (Matched total = total excel - remaining excel)
-        sum_excel_unmatched = round(sum(remaining_excel), 2)
+        sum_excel_unmatched = round(sum(remaining_excel_nonzero), 2)
         sum_pdf_unmatched   = round(sum(remaining_pdf), 2)
-
         edd_flags.append(
-            f"{BAD} EDD unresolved mismatch after split-matching — "
+            f"{BAD} EDD unresolved mismatch after split-matching - "
             f"Excel(unmatched sum): {sum_excel_unmatched}, EDD PDF(unmatched sum): {sum_pdf_unmatched}"
         )
 
     # also keep the original top-level sum mismatch line (helps quick glance)
-    edd_flags.append(f"{BAD} EDD sum mismatch — Excel: {sum_edd_excel}, EDD PDF: {sum_edd_pdf}")
+    edd_flags.append(f"{BAD} EDD sum mismatch - Excel: {sum_edd_excel}, EDD PDF: {sum_edd_pdf}")
 
-
-
-
-# Optional: Uncomment to print tables
-print("\nEFTPS Data:")
-print(eftps_df)
-print("\nEFTPS Returned Bucket:")
-print(eftps_returned_df if not eftps_returned_df.empty else "[]")
-print("\nEDD Data:")
-print(edd_payments)
 
 # --- Step 7: Print Results ---
-print("\n--- EFTPS Validation ---")
 eftps_flags.extend(eftps_return_flags)
+
+eftps_pass = not eftps_flags
+edd_pass = not edd_flags
+
+def _summary_line(label, passed, flags):
+    if passed:
+        return f"{label:<7} [PASS]  All payments matched"
+    n = len(flags)
+    detail = f"{n} issue{'s' if n != 1 else ''} found"
+    # Prefer a short hint for common EDD case
+    if label == "EDD" and any("Unexpected EDD PDF payment" in f for f in flags):
+        unexpected = sum(1 for f in flags if "Unexpected EDD PDF payment" in f)
+        detail = f"{unexpected} unexpected payment{'s' if unexpected != 1 else ''} found"
+    elif label == "EDD" and any("Missing/unmatched in EDD PDF" in f for f in flags):
+        missing = sum(1 for f in flags if "Missing/unmatched in EDD PDF" in f)
+        detail = f"{missing} missing/unmatched payment{'s' if missing != 1 else ''} found"
+    return f"{label:<7} [REVIEW] {detail}"
+
+print(f"\nCompany: {company_name}")
+print(f"Period:  {tax_year} {tax_quarter}")
+print(f"EFTPS PDF loaded: {eftps_loaded_count} settled payments")
+print(f"EDD PDF loaded:   {edd_loaded_count} payments")
+
+print("\n" + "-" * 70)
+print("VALIDATION SUMMARY")
+print("-" * 70)
+print(_summary_line("EFTPS", eftps_pass, eftps_flags))
+print(_summary_line("EDD", edd_pass, edd_flags))
+print()
+print(f"Overall result: {'PASSED' if (eftps_pass and edd_pass) else 'NEEDS REVIEW'}")
+
+if eftps_returned_df is not None and not eftps_returned_df.empty:
+    print("\nEFTPS Returned Bucket:")
+    print(eftps_returned_df)
+
+print("\n--- EFTPS Validation ---")
 if eftps_flags:
-    print(RED + f"{BAD} " + ("\n" + f"{BAD} ").join(eftps_flags) + RESET)
+    print(RED + "\n".join(eftps_flags) + RESET)
 else:
     print(GREEN + f"{OK} All EFTPS records match." + RESET)
 
 print("\n--- EDD Validation ---")
-if 'edd_split_paid_logs' in globals() and edd_split_paid_logs:
+# Only show "paid separately" OK logs when EDD fully passes (no review needed)
+if edd_pass and edd_split_paid_logs:
     print(GREEN + "\n".join(edd_split_paid_logs) + RESET)
 
 if edd_flags:
-    print(RED + f"{BAD} " + ("\n" + f"{BAD} ").join(edd_flags) + RESET)
+    print(RED + "\n".join(edd_flags) + RESET)
 else:
     print(GREEN + f"{OK} All EDD payments match." + RESET)
+
+print("\n" + "-" * 70)
+print("FINAL RESULT")
+print("-" * 70)
+print(f"EFTPS: {'PASSED' if eftps_pass else 'NEEDS REVIEW'}")
+print(f"EDD:   {'PASSED' if edd_pass else 'NEEDS REVIEW'}")
