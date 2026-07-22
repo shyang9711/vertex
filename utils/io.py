@@ -674,12 +674,15 @@ def export_selected_to_json(out_path: Path, clients: list[dict], selections: dic
 
     selections keys (bool):
       - clients
+      - include_logs
+      - include_trackers
       - match_rules
       - monthly_data
       - tasks
       - vendor_lists
     Notes:
       - "clients" includes account_managers.json too.
+      - include_trackers controls file_requests / annual_reminders / client_issues.
       - vendor_lists are stored as filename -> csv text.
       - match_rules are stored as filename -> json content.
     """
@@ -694,16 +697,21 @@ def export_selected_to_json(out_path: Path, clients: list[dict], selections: dic
     # Clients (+ account managers)
     if selections.get("clients"):
         include_logs = bool(selections.get("include_logs", True))
+        include_trackers = bool(selections.get("include_trackers", True))
 
-        if include_logs:
+        if include_logs and include_trackers:
             payload["clients"] = clients
         else:
             cleaned = copy.deepcopy(clients)
             for c in cleaned:
                 if isinstance(c, dict):
-                    c["logs"] = []
+                    if not include_logs:
+                        c["logs"] = []
+                    if not include_trackers:
+                        c["file_requests"] = []
+                        c["annual_reminders"] = []
+                        c["client_issues"] = []
             payload["clients"] = cleaned
-
 
         if ACCOUNT_MANAGERS_FILE.exists():
             payload["account_managers"] = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])

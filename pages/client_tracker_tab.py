@@ -277,8 +277,8 @@ def init_client_tracker_tab(
     files_tab = ttk.Frame(inner_nb, padding=4)
     reminders_tab = ttk.Frame(inner_nb, padding=4)
     issues_tab = ttk.Frame(inner_nb, padding=4)
-    inner_nb.add(files_tab, text="File Requests")
     inner_nb.add(reminders_tab, text="Annual Reminders")
+    inner_nb.add(files_tab, text="File Requests")
     inner_nb.add(issues_tab, text="Issues / Notices")
 
     files_scroll = _build_table_panel(files_tab, _FILE_HEADERS)

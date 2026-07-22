@@ -2648,6 +2648,7 @@ class App(ttk.Frame):
         var_all = tk.BooleanVar(value=True)
         var_clients = tk.BooleanVar(value=True)
         var_include_logs = tk.BooleanVar(value=True)
+        var_include_trackers = tk.BooleanVar(value=True)
         var_rules = tk.BooleanVar(value=True)
         var_monthly = tk.BooleanVar(value=True)
         var_tasks = tk.BooleanVar(value=True)
@@ -2678,9 +2679,12 @@ class App(ttk.Frame):
 
             if var_clients.get():
                 cb_logs.config(state="normal")
+                cb_trackers.config(state="normal")
             else:
                 cb_logs.config(state="disabled")
                 var_include_logs.set(False)
+                cb_trackers.config(state="disabled")
+                var_include_trackers.set(False)
         def choose_folder():
             folder = filedialog.askdirectory(title="Choose export folder")
             if folder:
@@ -2697,6 +2701,8 @@ class App(ttk.Frame):
         tk.Checkbutton(frm, text="Clients (includes Account Managers)", variable=var_clients, command=on_child_toggle).pack(anchor="w")
         cb_logs = tk.Checkbutton(frm, text="↳ Include Client Logs", variable=var_include_logs, command=on_child_toggle)
         cb_logs.pack(anchor="w", padx=24)
+        cb_trackers = tk.Checkbutton(frm, text="↳ Include Trackers", variable=var_include_trackers, command=on_child_toggle)
+        cb_trackers.pack(anchor="w", padx=24)
         tk.Checkbutton(frm, text="Match Rules", variable=var_rules, command=on_child_toggle).pack(anchor="w")
         tk.Checkbutton(frm, text="Monthly Data", variable=var_monthly, command=on_child_toggle).pack(anchor="w")
         tk.Checkbutton(frm, text="Tasks", variable=var_tasks, command=on_child_toggle).pack(anchor="w")
@@ -2722,6 +2728,7 @@ class App(ttk.Frame):
             selections = {
                 "clients": var_clients.get(),
                 "include_logs": var_include_logs.get(),
+                "include_trackers": var_include_trackers.get(),
                 "match_rules": var_rules.get(),
                 "monthly_data": var_monthly.get(),
                 "tasks": var_tasks.get(),
