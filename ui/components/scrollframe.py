@@ -47,10 +47,11 @@ class ScrollFrame(ttk.Frame):
         self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
 
         def _on_inner_configure(_e=None):
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            self._sync_scrollregion()
 
         def _on_canvas_configure(e):
             self.canvas.itemconfigure(self._win, width=e.width)
+            self._sync_scrollregion()
 
         self.inner.bind("<Configure>", _on_inner_configure)
         self.canvas.bind("<Configure>", _on_canvas_configure)
@@ -67,6 +68,27 @@ class ScrollFrame(ttk.Frame):
         try:
             _SCROLLFRAMES.remove(self)
         except ValueError:
+            pass
+
+    def _content_overflows(self) -> bool:
+        """True when inner content is taller than the canvas viewport."""
+        try:
+            bbox = self.canvas.bbox("all")
+            if not bbox:
+                return False
+            return (bbox[3] - bbox[1]) > self.canvas.winfo_height()
+        except Exception:
+            return False
+
+    def _sync_scrollregion(self):
+        """Update scrollregion; pin to top when content fits the viewport."""
+        try:
+            if not self.canvas.winfo_exists():
+                return
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            if not self._content_overflows():
+                self.canvas.yview_moveto(0)
+        except Exception:
             pass
 
     _router_installed = False
@@ -100,6 +122,10 @@ class ScrollFrame(ttk.Frame):
 
     def _do_scroll(self, event):
         if not self.canvas.winfo_exists():
+            return
+        # Keep list stuck to top when there is nothing to scroll
+        if not self._content_overflows():
+            self.canvas.yview_moveto(0)
             return
         if event.delta:
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
