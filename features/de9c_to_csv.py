@@ -416,13 +416,13 @@ def _row_from_employee(ssn: str, first: str, mi: str, last: str, amounts: list[s
     }
     return row, dbg
 
-def _format_hawaii_money(val: str) -> str:
+def _format_hawaii_money(val: str, *, default: str = "0.00") -> str:
     if val is None or not str(val).strip():
-        return "0.00"
+        return default
     try:
         return f"{float(str(val).replace(',', '')):.2f}"
     except ValueError:
-        return "0.00"
+        return default
 
 def _row_from_hawaii_employee(
     ssn: str,
@@ -445,7 +445,8 @@ def _row_from_hawaii_employee(
         "First Name": _enforce_ny_firstname_limit(first),
         "Middle Initial": (mi or "")[:1].upper(),
         "Quarter Wages": _format_hawaii_money(quarter),
-        "Out-of-State Wages": _format_hawaii_money(out_of_state),
+        # HUI Express expects this blank when the employee has no out-of-state wages.
+        "Out-of-State Wages": _format_hawaii_money(out_of_state, default=""),
         "State": (state or "").strip().upper()[:2],
         "_dbg_name_lines": name_line,
     }
