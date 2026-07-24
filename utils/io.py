@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import copy
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any
 from datetime import datetime
@@ -118,10 +119,101 @@ def _write_json_file(path: Path, obj) -> None:
     path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def load_clients(path: Path | None = None) -> List[Dict[str, Any]]:
-    """Load clients from clients.json file. If path is given, use it (avoids path/cache confusion)."""
+# -------------------- Backups --------------------
+# Number of timestamped copies to retain per file (clients.json, tasks.json).
+BACKUP_KEEP = 7
+
+
+def backup_file(path: Path, keep: int = BACKUP_KEEP) -> Path | None:
+    """
+    Snapshot the current on-disk file into a sibling ``backups/`` folder using a
+    timestamped name, then prune to the newest ``keep`` copies.
+
+    Only an existing, non-empty file is backed up, so we never overwrite good
+    history with an empty/half-written file. Returns the backup path on success,
+    otherwise None. Never raises.
+    """
+    try:
+        path = Path(path)
+        if not path.exists() or path.stat().st_size == 0:
+            return None
+        backups_dir = path.parent / "backups"
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = backups_dir / f"{path.stem}_{ts}{path.suffix}"
+        n = 1
+        while dest.exists():
+            dest = backups_dir / f"{path.stem}_{ts}_{n}{path.suffix}"
+            n += 1
+        shutil.copy2(path, dest)
+        # Keep only the newest `keep` snapshots for this file.
+        existing = sorted(
+            backups_dir.glob(f"{path.stem}_*{path.suffix}"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for old in existing[keep:]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+        return dest
+    except Exception as e:
+        LOG.warning("backup_file failed for %s: %s", path, e)
+        return None
+
+
+def latest_valid_backup(path: Path) -> Path | None:
+    """
+    Return the newest snapshot in the sibling ``backups/`` folder that contains
+    parseable JSON, or None if there is none. Never raises.
+    """
+    try:
+        path = Path(path)
+        backups_dir = path.parent / "backups"
+        if not backups_dir.exists():
+            return None
+        candidates = sorted(
+            backups_dir.glob(f"{path.stem}_*{path.suffix}"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for c in candidates:
+            try:
+                json.loads(c.read_text(encoding="utf-8"))
+                return c
+            except Exception:
+                continue
+        return None
+    except Exception as e:
+        LOG.warning("latest_valid_backup failed for %s: %s", path, e)
+        return None
+
+
+def load_clients(path: Path | None = None, _from_backup: bool = False) -> List[Dict[str, Any]]:
+    """Load clients from clients.json file. If path is given, use it (avoids path/cache confusion).
+
+    If the file is missing or unreadable, attempt automatic recovery from the
+    newest valid backup before falling back to an empty list.
+    """
     target = (path or DATA_FILE).resolve()
     if not target.exists():
+        # File deleted/missing: try to recover from the newest valid backup first.
+        if not _from_backup:
+            bak = latest_valid_backup(target)
+            if bak is not None:
+                LOG.warning("clients.json missing; recovering from backup: %s", bak)
+                recovered = load_clients(bak, _from_backup=True)
+                try:
+                    save_clients(recovered, target)
+                except Exception:
+                    pass
+                if messagebox:
+                    messagebox.showwarning(
+                        "Recovered from backup",
+                        f"clients.json was missing and was restored from a backup:\n{bak.name}",
+                    )
+                return recovered
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("[]", encoding="utf-8")
         return []
@@ -222,6 +314,18 @@ def load_clients(path: Path | None = None) -> List[Dict[str, Any]]:
         return out
     except Exception as e:
         LOG.exception("Failed to load clients.json: %s", e)
+        # Corrupt file: try to recover from the newest valid backup.
+        if not _from_backup:
+            bak = latest_valid_backup(target)
+            if bak is not None:
+                LOG.warning("clients.json unreadable; recovering from backup: %s", bak)
+                recovered = load_clients(bak, _from_backup=True)
+                if messagebox:
+                    messagebox.showwarning(
+                        "Recovered from backup",
+                        f"clients.json could not be read and was restored from a backup:\n{bak.name}",
+                    )
+                return recovered
         if messagebox:
             messagebox.showerror("Load Error", f"Couldn't read clients.json:\n{e}")
         return []
@@ -290,6 +394,8 @@ def save_clients(items: List[Dict[str, Any]], path: Path | None = None) -> None:
     target = (path or DATA_FILE).resolve()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
+        # Snapshot the current good file before overwriting it.
+        backup_file(target)
         data = json.dumps(to_save, indent=2, ensure_ascii=False)
         with target.open("w", encoding="utf-8") as f:
             f.write(data)

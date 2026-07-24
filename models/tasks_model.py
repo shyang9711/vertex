@@ -15,6 +15,11 @@ try:
 except ModuleNotFoundError:
     from utils.app_logging import get_logger
 
+try:
+    from vertex.utils.io import backup_file, latest_valid_backup
+except ModuleNotFoundError:
+    from utils.io import backup_file, latest_valid_backup
+
 WEEKDAY_NAMES = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 WD_NAME_TO_INT = {name: i for i, name in enumerate(WEEKDAY_NAMES)}
 DUE_DATE = 3  # highlight window (used by UI, but harmless here)
@@ -179,7 +184,15 @@ class TasksStore:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception:
+            # Missing/corrupt tasks.json: try to recover from newest valid backup.
             data = []
+            bak = latest_valid_backup(self.path)
+            if bak is not None:
+                try:
+                    data = json.loads(bak.read_text(encoding="utf-8"))
+                    LOG.warning("tasks.json unreadable; recovered from backup: %s", bak)
+                except Exception:
+                    data = []
         name_to_idx: Dict[str, int] = {}
         if self.app:
             for i, c in enumerate(getattr(self.app, "items", []) or []):
@@ -205,6 +218,8 @@ class TasksStore:
 
     def save(self) -> None:
         try:
+            # Snapshot the current good file before overwriting it.
+            backup_file(self.path)
             self.path.write_text(json.dumps(self.tasks, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             # surface errors in UI callers; here we just raise
