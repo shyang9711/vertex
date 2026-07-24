@@ -12,7 +12,7 @@
         "name": "Match Excel Vendors"
     },
     "features/de9c_to_csv.py": {
-        "name": "DE9C to CSV"
+        "name": "Wage Report CSV"
     },
     "features/file_name_change.py": {
         "name": "File Name Change"

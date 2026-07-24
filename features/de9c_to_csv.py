@@ -597,6 +597,42 @@ def _contains_stop_keyword(s: str) -> bool:
     low = (s or "").lower()
     return any(re.search(rf"\b{re.escape(kw)}\b", low) for kw in STOP_KEYWORDS_NAMEISH)
 
+def _read_nys45_mi_and_wage_type(lines: list[str], k: int, *, require_wage_type: bool):
+    """Read the MI (box d) and wage type (box e) that follow a Part C name pair.
+
+    Part C prints the MI before the wage type, and an MI of "R"/"O" is
+    indistinguishable from a wage type on its own, so an MI is only claimed here
+    when a wage type still follows it. Returns None when a required wage type is
+    missing, otherwise (mi, wage_type, next_index).
+    """
+    n = len(lines)
+    mi = ""
+    if k + 1 < n and _is_single_letter_token(lines[k]) and _is_nys45_wage_type(lines[k + 1]):
+        mi = lines[k].upper()
+        k += 1
+
+    if k < n and _is_nys45_wage_type(lines[k]):
+        wage_type = lines[k].upper()
+        k += 1
+        while k < n and _is_nys45_wage_type(lines[k]):
+            k += 1
+    elif require_wage_type:
+        return None
+    else:
+        wage_type = DEFAULT_NYS45_WAGE_TYPE
+
+    # Older layouts print the MI after the wage type instead
+    if (
+        not mi
+        and k + 1 < n
+        and _is_single_letter_token(lines[k])
+        and MONEY_LINE_RE.match(lines[k + 1])
+    ):
+        mi = lines[k].upper()
+        k += 1
+
+    return mi, wage_type, k
+
 def _looks_like_nys45_name_part(s: str) -> bool:
     s = _clean_spaces(s)
     if not s or STRICT_SSN_LINE_RE.match(s) or MONEY_LINE_RE.match(s):
@@ -632,25 +668,11 @@ def parse_ny_nys45_ssn_names_text_with_debug(text: str):
 
         last_raw = lines[j]
         first_raw = lines[j + 1]
-        k = j + 2
-        if k >= n or not _is_nys45_wage_type(lines[k]):
+        parsed = _read_nys45_mi_and_wage_type(lines, j + 2, require_wage_type=True)
+        if parsed is None:
             i += 1
             continue
-        wage_type = lines[k].upper()
-        k += 1
-        while k < n and _is_nys45_wage_type(lines[k]):
-            k += 1
-
-        mi = ""
-        if (
-            k < n
-            and _is_single_letter_token(lines[k])
-            and not _is_nys45_wage_type(lines[k])
-            and k + 1 < n
-            and MONEY_LINE_RE.match(lines[k + 1])
-        ):
-            mi = lines[k].upper()
-            k += 1
+        mi, wage_type, k = parsed
 
         amounts, next_k = _collect_money_lines(lines, k, max_count=5)
         if len(amounts) < 2:
@@ -715,23 +737,7 @@ def parse_ny_nys45_partc_text_with_debug(text: str):
 
         last_raw = lines[i]
         first_raw = lines[i + 1]
-        j = i + 2
-        wage_type = DEFAULT_NYS45_WAGE_TYPE
-        if j < n and _is_nys45_wage_type(lines[j]):
-            wage_type = lines[j].upper()
-            j += 1
-        while j < n and _is_nys45_wage_type(lines[j]):
-            j += 1
-        mi = ""
-        if (
-            j < n
-            and _is_single_letter_token(lines[j])
-            and not _is_nys45_wage_type(lines[j])
-            and j + 1 < n
-            and MONEY_LINE_RE.match(lines[j + 1])
-        ):
-            mi = lines[j].upper()
-            j += 1
+        mi, wage_type, j = _read_nys45_mi_and_wage_type(lines, i + 2, require_wage_type=False)
 
         amounts, next_j = _collect_money_lines(lines, j, max_count=5)
         if len(amounts) < 2:
@@ -1161,6 +1167,197 @@ def _filter_out_header_rows(rows):
 
 
 # =========================
+# New York Part C totals check (lines 23 / 24)
+# =========================
+# Line 23 sometimes prints whole dollars without cents (e.g. "70813")
+_TOTALS_MONEY_RE = re.compile(r"^\d+(?:,\d{3})*(?:\.\d{2})?$")
+_MONEY_EPS = 0.01
+
+
+def _parse_money_amount(s: str) -> float | None:
+    try:
+        return float(str(s).replace(",", ""))
+    except Exception:
+        return None
+
+
+def _money_close(a: float, b: float, *, eps: float = _MONEY_EPS) -> bool:
+    return abs(a - b) <= eps
+
+
+def sum_nys45_employee_totals(rows) -> dict[str, float]:
+    """Sum parsed NYS-45 employee rows into Part C column totals."""
+    def _amt(key: str, row: dict) -> float:
+        v = _money_to_float(row.get(key) or "0")
+        return 0.0 if v != v else v
+
+    ui = gross = nys = nyc = yonkers = 0.0
+    for r in rows:
+        ui += _amt("Total UI Remuneration", r)
+        gross += _amt("Gross Wages", r)
+        nys += _amt("Total NYS Tax Withheld", r)
+        nyc += _amt("Total NYC Tax Withheld", r)
+        yonkers += _amt("Total Yonkers Tax Withheld", r)
+
+    ui, gross, nys, nyc, yonkers = (round(v, 2) for v in (ui, gross, nys, nyc, yonkers))
+    return {
+        "ui": ui,
+        "gross": gross,
+        "nys": nys,
+        "nyc": nyc,
+        "yonkers": yonkers,
+        "tax_total": round(nys + nyc + yonkers, 2),
+    }
+
+
+def extract_nys45_partc_form_totals(text: str) -> dict[str, float] | None:
+    """Extract Part C line 23 (f–j) and line 24 totals from NYS-45 PDF text.
+
+    Line 23 on the first Part C page is the grand total of all Part C pages.
+    Line 24 is NYS + NYC + Yonkers tax withheld (boxes h + i + j).
+    """
+    lines = [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
+    start = _part_c_start_index(lines)
+    amounts: list[float] = []
+    for ln in lines[start:]:
+        if not _TOTALS_MONEY_RE.match(ln):
+            continue
+        digits = re.sub(r"\D", "", ln)
+        # Skip SSNs / phones / EINs (long integers without cents)
+        if "." not in ln and len(digits) >= 7:
+            continue
+        if re.fullmatch(r"\d{9}", ln):
+            continue
+        val = _parse_money_amount(ln)
+        if val is None:
+            continue
+        amounts.append(val)
+
+    best = None
+    for i in range(max(0, len(amounts) - 5)):
+        if i + 5 >= len(amounts):
+            break
+        f, g, h, nyc, yonkers = amounts[i : i + 5]
+        tax_sum = round(h + nyc + yonkers, 2)
+        nxt = amounts[i + 5]
+        if not _money_close(tax_sum, nxt):
+            continue
+        # Ignore tiny accidental windows; grand totals are real wage dollars
+        if max(f, g) < 100:
+            continue
+        score = max(f, g)
+        if best is None or score > best["score"]:
+            best = {
+                "score": score,
+                "ui": round(f, 2),
+                "gross": round(g, 2),
+                "nys": round(h, 2),
+                "nyc": round(nyc, 2),
+                "yonkers": round(yonkers, 2),
+                "tax_total": round(nxt, 2),
+            }
+    if best is None:
+        return None
+    best.pop("score", None)
+    return best
+
+
+def _nys45_field_matches(parsed: float, form: float) -> bool:
+    """True when parsed employee sum matches a form total.
+
+    Some Intuit fills print UI remuneration as whole dollars (no cents); allow
+    that case when the rounded whole-dollar values still agree.
+    """
+    if _money_close(parsed, form):
+        return True
+    if abs(form - round(form)) < _MONEY_EPS and abs(parsed - form) < 1.0:
+        return abs(round(parsed) - round(form)) < _MONEY_EPS
+    return False
+
+
+def verify_nys45_partc_totals(rows, text: str) -> dict:
+    """Compare summed employee rows to Part C lines 23 and 24 on the form."""
+    parsed = sum_nys45_employee_totals(rows)
+    form = extract_nys45_partc_form_totals(text)
+    labels = [
+        ("ui", "23f Total UI remuneration"),
+        ("gross", "23g Gross federal wages"),
+        ("nys", "23h Total NYS tax withheld"),
+        ("nyc", "23i Total NYC tax withheld"),
+        ("yonkers", "23j Total Yonkers tax withheld"),
+        ("tax_total", "24 Total NYS+NYC+Yonkers tax withheld"),
+    ]
+    checks = []
+    if form is None:
+        return {
+            "ok": False,
+            "parsed": parsed,
+            "form": None,
+            "checks": [],
+            "summary": "Could not find Part C line 23/24 totals on the PDF.",
+        }
+
+    all_ok = True
+    for key, label in labels:
+        pval = parsed[key]
+        fval = form[key]
+        matched = _nys45_field_matches(pval, fval)
+        if not matched:
+            all_ok = False
+        checks.append({
+            "key": key,
+            "label": label,
+            "parsed": pval,
+            "form": fval,
+            "ok": matched,
+        })
+
+    # Sanity: employee tax columns should also equal line 24 math
+    tax_from_cols = round(parsed["nys"] + parsed["nyc"] + parsed["yonkers"], 2)
+    cols_ok = _money_close(tax_from_cols, parsed["tax_total"])
+    if not cols_ok:
+        all_ok = False
+
+    if all_ok and cols_ok:
+        summary = (
+            f"Part C totals MATCH ({len(rows)} employees). "
+            f"UI {parsed['ui']:.2f}, Gross {parsed['gross']:.2f}, "
+            f"NYS {parsed['nys']:.2f}, NYC {parsed['nyc']:.2f}, "
+            f"Yonkers {parsed['yonkers']:.2f}, Line 24 {parsed['tax_total']:.2f}."
+        )
+    else:
+        bad = [c["label"] for c in checks if not c["ok"]]
+        summary = "Part C totals MISMATCH: " + (", ".join(bad) if bad else "internal tax sum")
+
+    return {
+        "ok": all_ok and cols_ok,
+        "parsed": parsed,
+        "form": form,
+        "checks": checks,
+        "summary": summary,
+    }
+
+
+def format_nys45_totals_report(result: dict) -> list[str]:
+    """Human-readable lines for the GUI / CLI totals check."""
+    lines = ["", "=== New York Part C totals check (lines 23 & 24) ==="]
+    if result.get("form") is None:
+        lines.append(result.get("summary") or "Form totals not found.")
+        return lines
+
+    lines.append(f"{'Field':<42} {'Parsed':>12} {'Form':>12}  Status")
+    lines.append("-" * 78)
+    for c in result.get("checks") or []:
+        status = "OK" if c["ok"] else "MISMATCH"
+        lines.append(
+            f"{c['label']:<42} {c['parsed']:>12.2f} {c['form']:>12.2f}  {status}"
+        )
+    lines.append("-" * 78)
+    lines.append(result.get("summary") or "")
+    return lines
+
+
+# =========================
 # csv writer
 # =========================
 def csv_headers_for_state(state: str) -> list[str]:
@@ -1185,7 +1382,7 @@ def write_csv_no_header(out_path: Path, rows, state: str = STATE_CALIFORNIA):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("DE9 / Payroll → CSV")
+        self.title("Wage Report CSV")
         self.geometry("800x500")
         self.resizable(True, True)
 
@@ -1263,20 +1460,33 @@ class App(tk.Tk):
         out_path = pdf_path.with_name(pdf_path.stem + " CSV.csv")
         write_csv_no_header(out_path, rows, state)
 
+        totals_result = None
+        if state == STATE_NEW_YORK:
+            totals_result = verify_nys45_partc_totals(rows, text)
+
         self.log.delete("1.0", "end")
         self.logln(
             f"State: {self.state_var.get()}. Parsed {len(rows)} employee rows. "
             f"Removed {dropped_header} header rows and {dropped_non_employee} non-employee rows. "
             f"Saved to: {out_path}"
         )
+        if totals_result is not None:
+            for line in format_nys45_totals_report(totals_result):
+                self.logln(line)
         self.logln("")
         for d in dbg[:80]:
             self.logln(f'[{d["capture"]}] {d["name_lines"]} → {d["first"]} {d["mi"]} {d["last"]} | {d["F"]},{d["G"]},{d["H"]}')
-            
-        messagebox.showinfo(
-            "Done",
-            f"CSV saved:\n{out_path}\n\nRemoved {dropped_header} header rows and {dropped_non_employee} non-employee rows."
+
+        done_msg = (
+            f"CSV saved:\n{out_path}\n\n"
+            f"Removed {dropped_header} header rows and {dropped_non_employee} non-employee rows."
         )
+        if totals_result is not None:
+            done_msg += "\n\n" + totals_result["summary"]
+            if not totals_result["ok"]:
+                messagebox.showwarning("Totals mismatch", done_msg)
+                return
+        messagebox.showinfo("Done", done_msg)
 
 # =========================
 # CLI
@@ -1290,6 +1500,11 @@ def _print_debug_to_console(pdf_path: Path, state: str = STATE_CALIFORNIA):
 
     for r in rows:
         print(r)
+
+    if state == STATE_NEW_YORK:
+        result = verify_nys45_partc_totals(rows, text)
+        for line in format_nys45_totals_report(result):
+            print(line)
 
 if __name__ == "__main__":
     if "--debug" in sys.argv:
