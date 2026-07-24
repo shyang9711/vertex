@@ -521,57 +521,89 @@ def parse_ssn_comma_name_amounts_text_with_debug(
     return rows, debug_rows
 
 def parse_hawaii_ucb6a_text_with_debug(text: str):
-    """Parse Hawaii UC-B6A PDFs: SSN, LAST,FIRST, quarter wages (optional out-of-state)."""
+    """Parse Hawaii UC-B6A PDFs: SSN, LAST,FIRST, quarter wages (optional out-of-state).
+
+    Employees with a blank SSN still appear as LAST,FIRST + wages with no 9-digit
+    line above them. Those rows are kept using DEFAULT_SSN as a placeholder.
+    """
     lines = [ln.strip() for ln in text.split("\n")]
     rows = []
     debug_rows = []
     block_idx = 0
     i = 0
     n = len(lines)
+    seen_employee = False
 
     while i < n:
-        if not STRICT_SSN_LINE_RE.match(lines[i]):
-            i += 1
+        # CASE 1: normal SSN + name + wages
+        if STRICT_SSN_LINE_RE.match(lines[i]):
+            ssn = lines[i]
+            j = _next_nonempty(lines, i + 1)
+            if j >= n:
+                break
+
+            name_line = lines[j]
+            if not _is_comma_person_name_line(name_line):
+                i += 1
+                continue
+
+            k = _next_nonempty(lines, j + 1)
+            if k >= n:
+                break
+
+            amounts, next_idx = _collect_money_lines(lines, k, max_count=2)
+            if not amounts:
+                i += 1
+                continue
+
+            first, mi, last = _parse_comma_name(name_line)
+            if not (first and last):
+                i += 1
+                continue
+
+            row, dbg = _row_from_hawaii_employee(
+                ssn,
+                first,
+                mi,
+                last,
+                amounts,
+                capture="hawaii-ucb6a",
+                name_line=name_line,
+                block_idx=block_idx,
+            )
+            rows.append(row)
+            debug_rows.append(dbg)
+            block_idx += 1
+            seen_employee = True
+            i = next_idx
             continue
 
-        ssn = lines[i]
-        j = _next_nonempty(lines, i + 1)
-        if j >= n:
-            break
+        # CASE 2: floating name + wages (blank SSN on the PDF).
+        # Only after at least one real employee so form headers are not captured.
+        if seen_employee and _is_comma_person_name_line(lines[i]):
+            name_line = lines[i]
+            k = _next_nonempty(lines, i + 1)
+            amounts, next_idx = _collect_money_lines(lines, k, max_count=2)
+            if amounts:
+                first, mi, last = _parse_comma_name(name_line)
+                if first and last:
+                    row, dbg = _row_from_hawaii_employee(
+                        DEFAULT_SSN,
+                        first,
+                        mi,
+                        last,
+                        amounts,
+                        capture="hawaii-ucb6a-no-ssn",
+                        name_line=name_line,
+                        block_idx=block_idx,
+                    )
+                    rows.append(row)
+                    debug_rows.append(dbg)
+                    block_idx += 1
+                    i = next_idx
+                    continue
 
-        name_line = lines[j]
-        if not _is_comma_person_name_line(name_line):
-            i += 1
-            continue
-
-        k = _next_nonempty(lines, j + 1)
-        if k >= n:
-            break
-
-        amounts, next_idx = _collect_money_lines(lines, k, max_count=2)
-        if not amounts:
-            i += 1
-            continue
-
-        first, mi, last = _parse_comma_name(name_line)
-        if not (first and last):
-            i += 1
-            continue
-
-        row, dbg = _row_from_hawaii_employee(
-            ssn,
-            first,
-            mi,
-            last,
-            amounts,
-            capture="hawaii-ucb6a",
-            name_line=name_line,
-            block_idx=block_idx,
-        )
-        rows.append(row)
-        debug_rows.append(dbg)
-        block_idx += 1
-        i = next_idx
+        i += 1
 
     return rows, debug_rows
 
