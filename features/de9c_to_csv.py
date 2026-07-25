@@ -11,8 +11,6 @@ from tkinter import ttk, filedialog, messagebox
 # =========================
 # this is the *placeholder* a PDF row will get if it doesn't have a real SSN
 DEFAULT_SSN = "000000000"
-# Hawaii HUI Express rejects all-zero / blank SSNs; use this placeholder instead.
-HAWAII_PLACEHOLDER_SSN = "123456789"
 DEFAULT_WAGE_PLAN_CODE = "S"
 
 STATE_CALIFORNIA = "California"
@@ -527,7 +525,7 @@ def parse_hawaii_ucb6a_text_with_debug(text: str):
     """Parse Hawaii UC-B6A PDFs: SSN, LAST,FIRST, quarter wages (optional out-of-state).
 
     Employees with a blank SSN still appear as LAST,FIRST + wages with no 9-digit
-    line above them. Those rows are kept using HAWAII_PLACEHOLDER_SSN.
+    line above them. Those rows are kept using DEFAULT_SSN as a placeholder.
     """
     lines = [ln.strip() for ln in text.split("\n")]
     rows = []
@@ -541,9 +539,6 @@ def parse_hawaii_ucb6a_text_with_debug(text: str):
         # CASE 1: normal SSN + name + wages
         if STRICT_SSN_LINE_RE.match(lines[i]):
             ssn = lines[i]
-            # All-zero is treated as missing for Hawaii HUI Express.
-            if ssn == "000000000":
-                ssn = HAWAII_PLACEHOLDER_SSN
             j = _next_nonempty(lines, i + 1)
             if j >= n:
                 break
@@ -594,7 +589,7 @@ def parse_hawaii_ucb6a_text_with_debug(text: str):
                 first, mi, last = _parse_comma_name(name_line)
                 if first and last:
                     row, dbg = _row_from_hawaii_employee(
-                        HAWAII_PLACEHOLDER_SSN,
+                        DEFAULT_SSN,
                         first,
                         mi,
                         last,
@@ -1137,10 +1132,10 @@ def parse_de9c_text_with_debug(text: str):
 # =========================
 # post-filter
 # =========================
-def _filter_out_header_rows(rows, *, placeholder_ssn: str = DEFAULT_SSN):
+def _filter_out_header_rows(rows):
     """Remove header/non-employee artifacts and normalize missing SSNs.
 
-    - Any row missing/invalid SSN (not 9 digits, or all zeros) gets ``placeholder_ssn``.
+    - Any row missing/invalid SSN gets DEFAULT_SSN.
     - Drops header/boilerplate rows and non-employee rows (prevents ',,,,,,,' lines).
     """
     out = []
@@ -1158,10 +1153,10 @@ def _filter_out_header_rows(rows, *, placeholder_ssn: str = DEFAULT_SSN):
         # Remove debug-only field before output
         r.pop("_dbg_name_lines", None)
 
-        # Normalize SSN: if missing/invalid/all-zero, force placeholder
+        # Normalize SSN: if missing/invalid, force DEFAULT_SSN
         ssn_digits = re.sub(r"\D", "", (r.get("SSN") or ""))
-        if len(ssn_digits) != 9 or ssn_digits == "000000000":
-            ssn_digits = placeholder_ssn
+        if len(ssn_digits) != 9:
+            ssn_digits = DEFAULT_SSN
         r["SSN"] = ssn_digits
 
         # Require BOTH first+last name (prevents B./A. header fragments becoming "people")
@@ -1489,10 +1484,7 @@ class App(tk.Tk):
             state = self.state_var.get()
             text = extract_text_from_pdf(pdf_path)
             rows, dbg = parse_payroll_text_with_debug(text, state)
-            placeholder = HAWAII_PLACEHOLDER_SSN if state == STATE_HAWAII else DEFAULT_SSN
-            rows, dropped_header, dropped_non_employee = _filter_out_header_rows(
-                rows, placeholder_ssn=placeholder
-            )
+            rows, dropped_header, dropped_non_employee = _filter_out_header_rows(rows)
         except Exception as e:
             self.logln("[ERROR] " + str(e))
             messagebox.showerror("Error", f"Parse failed:\n{e}")
@@ -1535,39 +1527,6 @@ class App(tk.Tk):
 def _print_debug_to_console(pdf_path: Path, state: str = STATE_CALIFORNIA):
     text = extract_text_from_pdf(pdf_path)
     rows, dbg = parse_payroll_text_with_debug(text, state)
-    placeholder = HAWAII_PLACEHOLDER_SSN if state == STATE_HAWAII else DEFAULT_SSN
-    rows, dropped_header, dropped_non_employee = _filter_out_header_rows(
-        rows, placeholder_ssn=placeholder
+    rows, dropped_header, dropped_non_employee = _filter_out_header_rows(rows)
+lder
     )
-    print(f"State: {state}")
-    print(f"Rows: {len(rows)} (removed {dropped_header} header rows, {dropped_non_employee} non-employee rows)")
-
-    for r in rows:
-        print(r)
-
-    if state == STATE_NEW_YORK:
-        result = verify_nys45_partc_totals(rows, text)
-        for line in format_nys45_totals_report(result):
-            print(line)
-
-if __name__ == "__main__":
-    if "--debug" in sys.argv:
-        try:
-            pdf_idx = sys.argv.index("--pdf") + 1
-            pdf_path = Path(sys.argv[pdf_idx])
-        except Exception:
-            print("Usage: python de9c_to_csv.py --debug --pdf <PDF_PATH> [--state California|New York|Hawaii]")  # noqa
-            sys.exit(2)
-        state = STATE_CALIFORNIA
-        if "--state" in sys.argv:
-            try:
-                state = sys.argv[sys.argv.index("--state") + 1]
-            except Exception:
-                print("Usage: python de9c_to_csv.py --debug --pdf <PDF_PATH> [--state California|New York|Hawaii]")  # noqa
-                sys.exit(2)
-        if not pdf_path.is_file():
-            print(f"PDF not found: {pdf_path}")
-            sys.exit(2)
-        _print_debug_to_console(pdf_path, state)
-    else:
-        App().mainloop()
