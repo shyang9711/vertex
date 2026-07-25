@@ -1,4 +1,3 @@
-# de9c_to_csv.py
 import re
 import csv
 import sys
@@ -416,7 +415,7 @@ def _row_from_employee(ssn: str, first: str, mi: str, last: str, amounts: list[s
     }
     return row, dbg
 
-def _format_hawaii_money(val: str, *, default: str = "0.00") -> str:
+def _format_hawaii_money(val: str, default: str = "0.00") -> str:
     if val is None or not str(val).strip():
         return default
     try:
@@ -445,8 +444,8 @@ def _row_from_hawaii_employee(
         "First Name": _enforce_ny_firstname_limit(first),
         "Middle Initial": (mi or "")[:1].upper(),
         "Quarter Wages": _format_hawaii_money(quarter),
-        # HUI Express expects this blank when the employee has no out-of-state wages.
         "Out-of-State Wages": _format_hawaii_money(out_of_state, default=""),
+
         "State": (state or "").strip().upper()[:2],
         "_dbg_name_lines": name_line,
     }
@@ -1189,7 +1188,7 @@ def _filter_out_header_rows(rows):
                 return False
             s2 = s.replace(".", "")
             return len(s2) <= 1 and s2.isalpha()
-        
+
         if _is_initial_token(first_name) and _is_initial_token(last_name):
             dropped_non_employee += 1
             continue
@@ -1471,7 +1470,7 @@ class App(tk.Tk):
 
     def convert(self):
         pdf_path = Path(self.path_var.get().strip() or "")
-        
+
         if not pdf_path.is_file():
             messagebox.showerror("Error", "Please choose a valid PDF file (a .pdf file, not a folder).")
             return
@@ -1479,7 +1478,7 @@ class App(tk.Tk):
         if pdf_path.suffix.lower() != ".pdf":
             messagebox.showerror("Error", "Selected file is not a .pdf.")
             return
-        
+
         try:
             state = self.state_var.get()
             text = extract_text_from_pdf(pdf_path)
@@ -1528,5 +1527,35 @@ def _print_debug_to_console(pdf_path: Path, state: str = STATE_CALIFORNIA):
     text = extract_text_from_pdf(pdf_path)
     rows, dbg = parse_payroll_text_with_debug(text, state)
     rows, dropped_header, dropped_non_employee = _filter_out_header_rows(rows)
-lder
-    )
+    print(f"State: {state}")
+    print(f"Rows: {len(rows)} (removed {dropped_header} header rows, {dropped_non_employee} non-employee rows)")
+
+    for r in rows:
+        print(r)
+
+    if state == STATE_NEW_YORK:
+        result = verify_nys45_partc_totals(rows, text)
+        for line in format_nys45_totals_report(result):
+            print(line)
+
+if __name__ == "__main__":
+    if "--debug" in sys.argv:
+        try:
+            pdf_idx = sys.argv.index("--pdf") + 1
+            pdf_path = Path(sys.argv[pdf_idx])
+        except Exception:
+            print("Usage: python de9c_to_csv.py --debug --pdf <PDF_PATH> [--state California|New York|Hawaii]")  # noqa
+            sys.exit(2)
+        state = STATE_CALIFORNIA
+        if "--state" in sys.argv:
+            try:
+                state = sys.argv[sys.argv.index("--state") + 1]
+            except Exception:
+                print("Usage: python de9c_to_csv.py --debug --pdf <PDF_PATH> [--state California|New York|Hawaii]")  # noqa
+                sys.exit(2)
+        if not pdf_path.is_file():
+            print(f"PDF not found: {pdf_path}")
+            sys.exit(2)
+        _print_debug_to_console(pdf_path, state)
+    else:
+        App().mainloop()
