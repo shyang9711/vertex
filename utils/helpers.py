@@ -328,6 +328,63 @@ def find_client_by_uid(clients: List[Dict[str, Any]], uid: str) -> Optional[Dict
             return c
     return None
 
+
+def _client_lookup_keys(client: Dict[str, Any]) -> List[str]:
+    """All uid forms that `_client_matches_uid` would accept for this client."""
+    keys: List[str] = []
+    uid = get_client_uid(client)
+    if uid:
+        keys.append(uid)
+    raw = str(client.get("id") or "").strip()
+    if raw:
+        keys.append(raw)
+        keys.append(f"client:{raw}")
+    ein = normalize_ein_digits(client.get("ein", ""))
+    if ein:
+        keys.append(ein)
+        keys.append(f"ein:{ein}")
+    # Same as _client_matches_uid: ssn: matches ssn or ein for every client.
+    ssn_or_ein = normalize_ssn_digits(client.get("ssn", "") or client.get("ein", ""))
+    if ssn_or_ein:
+        keys.append(ssn_or_ein)
+        keys.append(f"ssn:{ssn_or_ein}")
+    seen = set()
+    out: List[str] = []
+    for k in keys:
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def build_client_index(clients: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """O(n) map of every supported uid form → client, for fast relation lookups."""
+    index: Dict[str, Dict[str, Any]] = {}
+    for c in clients or []:
+        if not isinstance(c, dict):
+            continue
+        for key in _client_lookup_keys(c):
+            index.setdefault(key, c)
+    return index
+
+
+def find_client_in_index(index: Dict[str, Dict[str, Any]], uid: str) -> Optional[Dict[str, Any]]:
+    uid = (uid or "").strip()
+    if not uid or not index:
+        return None
+    hit = index.get(uid)
+    if hit is not None:
+        return hit
+    low = uid.lower()
+    if low.startswith("ein:"):
+        return index.get(f"ein:{normalize_ein_digits(uid.split(':', 1)[1])}")
+    if low.startswith("ssn:"):
+        return index.get(f"ssn:{normalize_ssn_digits(uid.split(':', 1)[1])}")
+    if low.startswith("client:"):
+        raw = (uid.split(":", 1)[1] or "").strip()
+        return index.get(raw) or index.get(uid)
+    return index.get(normalize_ein_digits(uid)) or index.get(normalize_ssn_digits(uid))
+
 def _normalize_phone(x: str) -> str:
     return "".join(ch for ch in (x or "") if ch.isdigit())
 
@@ -579,8 +636,8 @@ def sync_inverse_relations(clients: List[Dict[str, Any]], log=None) -> int:
     """
     Ensure every client has back-links for relations pointing to them.
     If entity D has Chris Lim in its relations, Chris Lim will get D in its relations.
-    Uses find_client_by_uid so relation ids in any format (ein:/ssn:/raw) match.
-    Mutates clients in place. Returns the number of clients that were updated.
+    Uses an index so relation ids in any format (ein:/ssn:/raw) match in O(n) time.
+    Mutates clients in place. Returns the number of back-links that were added.
     If log is provided (e.g. from client_manager), sync debug lines are written there so
     they appear in the main app log file when running as .exe.
     """
@@ -590,55 +647,42 @@ def sync_inverse_relations(clients: List[Dict[str, Any]], log=None) -> int:
     if not clients:
         return 0
 
-    def _rel_points_to_client(rel_id: str, target: Dict[str, Any]) -> bool:
-        if not rel_id or not target:
-            return False
-        found = find_client_by_uid(clients, rel_id)
-        return found is target
+    index = build_client_index(clients)
 
-    def _c_has_relation_to(c_rels: list, other: Dict[str, Any]) -> bool:
-        for r in c_rels or []:
+    def _has_relation_to(rels: list, target: Dict[str, Any]) -> bool:
+        for r in rels or []:
             rid = (ensure_relation_link(r).get("id") or "").strip()
-            if _rel_points_to_client(rid, other):
+            if rid and find_client_in_index(index, rid) is target:
                 return True
         return False
 
     updated = 0
-    for c in clients:
-        c_id = get_client_uid(c)
-        if not c_id:
+    for other in clients:
+        other_id = get_client_uid(other)
+        if not other_id:
             continue
-        c_rels = c.get("relations", []) or []
-        c_name = (c.get("name") or "").strip() or c_id
-
-        for other in clients:
-            if other is c:
+        other_name = (other.get("name") or "").strip() or other_id
+        for rel in other.get("relations", []) or []:
+            rr = ensure_relation_link(rel)
+            rel_id = (rr.get("id") or "").strip()
+            c = find_client_in_index(index, rel_id) if rel_id else None
+            if c is None or c is other:
                 continue
-            other_id = get_client_uid(other)
-            if not other_id:
+            c_rels = c.get("relations", []) or []
+            if _has_relation_to(c_rels, other):
                 continue
-            other_rels = other.get("relations", []) or []
-            other_name = (other.get("name") or "").strip() or other_id
-            for rel in other_rels:
-                rr = ensure_relation_link(rel)
-                rel_id = (rr.get("id") or "").strip()
-                if not _rel_points_to_client(rel_id, c):
-                    continue
-                # other points to c; ensure c has a relation back to other
-                if _c_has_relation_to(c_rels, other):
-                    continue
-                forward_role = (rr.get("role") or "").strip().lower()
-                back_role = _inverse_role(forward_role)
-                back_rel = _build_full_relation_from_client(other, other_id, back_role)
-                c["relations"] = merge_relations(c.get("relations", []) or [], [back_rel])
-                c_rels = c.get("relations", []) or []
-                updated += 1
-                if _log:
-                    _log.info(
-                        "sync_inverse_relations: added back-link from %s (%s) to %s (%s), role=%s",
-                        c_name, c_id, other_name, other_id, back_role,
-                    )
-                break
+            forward_role = (rr.get("role") or "").strip().lower()
+            back_role = _inverse_role(forward_role)
+            back_rel = _build_full_relation_from_client(other, other_id, back_role)
+            c["relations"] = merge_relations(c.get("relations", []) or [], [back_rel])
+            updated += 1
+            if _log:
+                c_id = get_client_uid(c)
+                c_name = (c.get("name") or "").strip() or c_id
+                _log.info(
+                    "sync_inverse_relations: added back-link from %s (%s) to %s (%s), role=%s",
+                    c_name, c_id, other_name, other_id, back_role,
+                )
 
     if _log:
         _log.info("sync_inverse_relations: done, updated_count=%s", updated)
@@ -656,16 +700,12 @@ def remove_stale_back_links(clients: List[Dict[str, Any]], log=None) -> int:
     if not clients:
         return 0
 
-    def _rel_points_to_client(rel_id: str, target: Dict[str, Any]) -> bool:
-        if not rel_id or not target:
-            return False
-        found = find_client_by_uid(clients, rel_id)
-        return found is target
+    index = build_client_index(clients)
 
-    def _c_has_relation_to(c_rels: list, other: Dict[str, Any]) -> bool:
-        for r in c_rels or []:
+    def _has_relation_to(rels: list, target: Dict[str, Any]) -> bool:
+        for r in rels or []:
             rid = (ensure_relation_link(r).get("id") or "").strip()
-            if _rel_points_to_client(rid, other):
+            if rid and find_client_in_index(index, rid) is target:
                 return True
         return False
 
@@ -680,12 +720,12 @@ def remove_stale_back_links(clients: List[Dict[str, Any]], log=None) -> int:
         for rel in c_rels:
             rr = ensure_relation_link(rel)
             rel_id = (rr.get("id") or "").strip()
-            other = find_client_by_uid(clients, rel_id) if rel_id else None
+            other = find_client_in_index(index, rel_id) if rel_id else None
             if not other or other is c:
                 new_rels.append(rr)
                 continue
             # other exists; does other have a relation back to c?
-            if _c_has_relation_to(other.get("relations", []) or [], c):
+            if _has_relation_to(other.get("relations", []) or [], c):
                 new_rels.append(rr)
             else:
                 updated += 1

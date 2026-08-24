@@ -309,18 +309,22 @@ class App(ttk.Frame):
         self.root = master
 
         self._data_file_path = DATA_FILE.resolve()
+        import time as _time
+        _t0 = _time.perf_counter()
         try:
             sql_stats = ensure_json_migrated_to_sql()
             if any(sql_stats.get(k, 0) for k in sql_stats):
                 self.log.info("Startup JSON→SQL migrate: %s", sql_stats)
         except Exception:
             self.log.exception("Startup JSON→SQL migrate failed")
+        _t_migrate = _time.perf_counter()
         self.items: List[Dict[str, Any]] = load_clients(self._data_file_path)
-        rel_counts = [len(c.get("relations") or []) for c in self.items]
-        self.log.info("load: read %s clients from %s (relation counts: %s)", len(self.items), self._data_file_path, rel_counts)
+        _t_load = _time.perf_counter()
+        self.log.info("load: read %s clients from %s", len(self.items), self._data_file_path)
         # Ensure back-links (e.g. Chris Lim gets relations when others point to him), then persist so clients.json is updated
         # Pass self.log so sync debug lines go to app log (works in .exe when "sync" logger may be missing)
         sync_updated = sync_inverse_relations(self.items, log=self.log)
+        _t_sync = _time.perf_counter()
         self.log.info("sync_inverse_relations on load: updated_count=%s", sync_updated)
         # Remove stale back-links (e.g. user removed Loyal CMB from Chris Lim but Loyal CMB still had Chris Lim)
         try:
@@ -328,12 +332,17 @@ class App(ttk.Frame):
         except Exception:
             from utils.helpers import remove_stale_back_links
         stale_updated = remove_stale_back_links(self.items, log=self.log)
+        _t_stale = _time.perf_counter()
         if stale_updated > 0:
             self.log.info("remove_stale_back_links on load: updated_count=%s", stale_updated)
         if sync_updated > 0 or stale_updated > 0:
             save_clients(self.items, self._data_file_path)
             if sync_updated > 0:
                 self.log.info("sync_inverse_relations: saved clients after adding %s back-link(s)", sync_updated)
+        self.log.info(
+            "startup timings: migrate=%.3fs load=%.3fs sync=%.3fs stale=%.3fs",
+            _t_migrate - _t0, _t_load - _t_migrate, _t_sync - _t_load, _t_stale - _t_sync,
+        )
         # Run migration automatically on load if needed
         self._run_auto_migration()
 
@@ -4796,17 +4805,6 @@ def main():
     log = get_logger("launcher")
     log.info("Launching Client Manager main()")
     root = tk.Tk()
-
-    if enforce_major_update_on_startup(
-        root,
-        app_name=APP_NAME,
-        app_version=APP_VERSION,
-        github_api_latest=GITHUB_API_LATEST,
-        github_releases_url=GITHUB_RELEASES_URL,
-        update_asset_name=UPDATE_ASSET_NAME,
-    ):
-        root.mainloop()
-        return
     
     def resource_path(rel: str) -> str:
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -4844,6 +4842,20 @@ def main():
         pass
     
     App(root)
+    try:
+        root.update_idletasks()
+    except Exception:
+        pass
+    if enforce_major_update_on_startup(
+        root,
+        app_name=APP_NAME,
+        app_version=APP_VERSION,
+        github_api_latest=GITHUB_API_LATEST,
+        github_releases_url=GITHUB_RELEASES_URL,
+        update_asset_name=UPDATE_ASSET_NAME,
+    ):
+        root.mainloop()
+        return
     root.mainloop()
 
 if __name__ == "__main__":

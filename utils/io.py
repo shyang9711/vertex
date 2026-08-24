@@ -548,8 +548,7 @@ def save_clients(items: List[Dict[str, Any]], path: Path | None = None) -> None:
     if _is_primary_clients_path(target) and sql_db_ready():
         try:
             _sql().save_clients_payloads(to_save)
-            rel_counts = [len(c.get("relations") or []) for c in to_save]
-            LOG.info("save_clients: wrote %s clients to SQL (relation counts: %s)", len(to_save), rel_counts)
+            LOG.info("save_clients: wrote %s clients to SQL", len(to_save))
             return
         except Exception:
             LOG.exception("SQL clients save failed; falling back to JSON")
@@ -562,15 +561,12 @@ def save_clients(items: List[Dict[str, Any]], path: Path | None = None) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        rel_counts = [len(c.get("relations") or []) for c in to_save]
-        LOG.info("save_clients: wrote %s to %s (relation counts: %s)", len(to_save), target, rel_counts)
+        LOG.info("save_clients: wrote %s to %s", len(to_save), target)
         # Verify read-back so we catch wrong path / cache / sync issues
         try:
             raw = json.loads(target.read_text(encoding="utf-8"))
             if isinstance(raw, list) and len(raw) == len(to_save):
-                disk_counts = [len(c.get("relations") or []) for c in raw]
-                if disk_counts != rel_counts:
-                    LOG.error("save_clients: verify failed — wrote %s but disk has %s at %s", rel_counts, disk_counts, target)
+                pass
             else:
                 LOG.warning("save_clients: verify read-back shape mismatch at %s", target)
         except Exception as verify_err:
