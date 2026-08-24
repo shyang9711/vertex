@@ -210,6 +210,10 @@ def migrate_json_to_sql(**kwargs):
     return _sql().migrate_json_to_sql(**kwargs)
 
 
+def backup_db(**kwargs):
+    return _sql().backup_db(**kwargs)
+
+
 def ensure_json_migrated_to_sql() -> dict:
     """Copy each JSON store into SQL when that store has JSON and no SQL data yet."""
     try:
