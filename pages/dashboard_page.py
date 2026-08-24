@@ -249,27 +249,58 @@ class DashboardPage:
         self._grey_text = "#6B7280"  # same grey as 'done'
 
         self._CAL_CELL_MINHEIGHT = 48
+        self._tasks_dirty = False
 
 
     # -------- lifecycle --------
+    def _widget_alive(self, w) -> bool:
+        try:
+            return w is not None and bool(w.winfo_exists())
+        except Exception:
+            return False
+
+    def refresh_task_views(self):
+        """
+        Redraw todo list + calendar from the current TasksStore.
+        If the dashboard is not on screen (widgets destroyed), mark dirty so
+        the next show/ensure rebuilds from the updated store.
+        """
+        if self._widget_alive(getattr(self, "todo_tv", None)) or self._widget_alive(getattr(self, "_cal_wrap", None)):
+            self._refresh_dashboard_widgets()
+            self._tasks_dirty = False
+        else:
+            self._tasks_dirty = True
+
     def ensure(self, host):
         self.log.info("ensure() dashboard")
-        if self.frame is None or not self.frame.winfo_exists():
+        frame_ok = self._widget_alive(self.frame)
+        todo_ok = self._widget_alive(getattr(self, "todo_tv", None))
+        if not frame_ok:
             self.frame = ttk.Frame(host, padding=14, style="TFrame")
             self._build_ui(self.frame)
+        elif not todo_ok:
+            try:
+                for w in list(self.frame.winfo_children()):
+                    w.destroy()
+            except Exception:
+                pass
+            self._build_ui(self.frame)
+        elif getattr(self, "_tasks_dirty", False):
+            self._schedule_dashboard_refresh(self.frame)
         return self.frame
 
     def show(self, host):
         self.log.info("show()")
         frm = self.ensure(host)
         frm.pack(fill=tk.BOTH, expand=True)
+        self._tasks_dirty = False
         self._schedule_dashboard_refresh(frm)
 
     def _schedule_dashboard_refresh(self, widget=None):
         """Refresh todo list + calendar after the UI can paint (avoids blocking startup)."""
         host = widget or getattr(self, "frame", None) or getattr(self.app, "root", None)
         try:
-            if host is not None:
+            if host is not None and self._widget_alive(host):
                 host.after(0, self._refresh_dashboard_widgets)
                 return
         except Exception:
@@ -277,8 +308,15 @@ class DashboardPage:
         self._refresh_dashboard_widgets()
 
     def _refresh_dashboard_widgets(self):
-        self._refresh_todo_feed()
-        self._draw_calendar()
+        try:
+            self._refresh_todo_feed()
+        except Exception:
+            pass
+        try:
+            self._draw_calendar()
+        except Exception:
+            pass
+        self._tasks_dirty = False
 
     # --- Import data ---
     def reload_from_disk(self):
@@ -1070,7 +1108,10 @@ class DashboardPage:
     # -------------- Calendar --------------
     def _draw_calendar(self):
         self.log.debug("Draw calendar %04d-%02d", self._cal_year or 0, self._cal_month or 0)
-        if not self._cal_wrap: return
+        if not self._widget_alive(getattr(self, "_cal_wrap", None)):
+            return
+        if not self._widget_alive(getattr(self, "_cal_label_btn", None)):
+            return
         for w in self._cal_wrap.winfo_children(): w.destroy()
         self._cal_label_btn.config(text=f"{_cal.month_name[self._cal_month]} {self._cal_year}")
 

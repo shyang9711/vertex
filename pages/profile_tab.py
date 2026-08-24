@@ -477,8 +477,13 @@ def init_profile_tab(
     def _safe_redraw_dashboard():
         try:
             d = getattr(app, "dashboard", None)
-            if d and getattr(d, "_cal_wrap", None) and d._cal_wrap.winfo_exists():
-                d._draw_calendar()
+            if d and hasattr(d, "refresh_task_views"):
+                d.refresh_task_views()
+            elif d:
+                if hasattr(d, "_refresh_todo_feed"):
+                    d._refresh_todo_feed()
+                if getattr(d, "_cal_wrap", None) and d._cal_wrap.winfo_exists():
+                    d._draw_calendar()
         except Exception:
             pass
 

@@ -4331,7 +4331,10 @@ class App(ttk.Frame):
         self.log.info("navigate(kind=%s, push=%s)", kind, push)
         if kind == "main":
             self._ensure_main_page()
-            self.page_main.pack(fill=tk.BOTH, expand=True)
+            try:
+                self.dashboard.show(self.page_host)
+            except Exception:
+                self.page_main.pack(fill=tk.BOTH, expand=True)
         elif kind == "search":
             self._ensure_search_page()
             self.page_search.pack(fill=tk.BOTH, expand=True)
