@@ -34,6 +34,7 @@ class TaskbarModel:
         on_import_data=None,
         on_export_data=None,
         on_update_data=None,
+        on_migrate_to_sql=None,
         on_upload_vendor_list=None,
         on_check_updates=None,
         on_about=None,
@@ -58,6 +59,7 @@ class TaskbarModel:
         self.on_import_data = on_import_data or (lambda: None)
         self.on_export_data = on_export_data or (lambda: None)
         self.on_update_data = on_update_data or (lambda: None)
+        self.on_migrate_to_sql = on_migrate_to_sql or (lambda: None)
         self.on_upload_vendor_list = on_upload_vendor_list or (lambda: None)
 
         self.log = get_logger("taskbar")
@@ -83,6 +85,7 @@ class TaskbarModel:
         m_file.add_command(label="Import Data...", command=self._do_import_data)
         m_file.add_command(label="Export Data...", command=self._do_export_data)
         m_file.add_command(label="Update Data...", command=self._do_update_data)
+        m_file.add_command(label="Migrate to SQL...", command=self._do_migrate_to_sql)
         m_file.add_command(label="Upload/Update Vendor List...", command=self._do_upload_vendor_list)
         m_file.add_separator()
         m_file.add_command(
@@ -150,6 +153,10 @@ class TaskbarModel:
     def _do_update_data(self):
         self.log.info("Update Data triggered from menu")
         self.on_update_data()
+
+    def _do_migrate_to_sql(self):
+        self.log.info("Migrate to SQL triggered from menu")
+        self.on_migrate_to_sql()
 
     def _do_upload_vendor_list(self):
         self.log.info("Upload Vendor List triggered from menu")

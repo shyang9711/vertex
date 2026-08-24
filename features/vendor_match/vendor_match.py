@@ -80,6 +80,56 @@ if _vm_dir not in sys.path:
 COMPANY_LIST_FILENAME = "company_list.json"
 COMPANY_LIST_PATH = os.path.join(_rules_dir(), COMPANY_LIST_FILENAME)
 
+def _match_sql():
+    try:
+        from vertex.utils.sql_store import sql_db_ready, load_json_file, save_json_file
+        return sql_db_ready, load_json_file, save_json_file
+    except Exception:
+        try:
+            from utils.sql_store import sql_db_ready, load_json_file, save_json_file
+            return sql_db_ready, load_json_file, save_json_file
+        except Exception:
+            return None, None, None
+
+def _sql_load_match_file(filename):
+    try:
+        try:
+            from vertex.utils.io import ensure_json_migrated_to_sql
+        except ModuleNotFoundError:
+            from utils.io import ensure_json_migrated_to_sql
+        ensure_json_migrated_to_sql()
+    except Exception:
+        pass
+    ready, load_fn, _save_fn = _match_sql()
+    if not ready:
+        return None
+    try:
+        if ready():
+            return load_fn("match_rules", filename)
+    except Exception:
+        return None
+    return None
+
+def _sql_save_match_file(filename, obj) -> bool:
+    try:
+        try:
+            from vertex.utils.io import ensure_json_migrated_to_sql
+        except ModuleNotFoundError:
+            from utils.io import ensure_json_migrated_to_sql
+        ensure_json_migrated_to_sql()
+    except Exception:
+        pass
+    ready, _load_fn, save_fn = _match_sql()
+    if not ready:
+        return False
+    try:
+        if ready():
+            save_fn("match_rules", filename, obj)
+            return True
+    except Exception:
+        return False
+    return False
+
 def slugify(name: str) -> str:
     s = re.sub(r"\s+", "_", name.strip())
     s = re.sub(r"[^A-Za-z0-9_]+", "", s)
@@ -90,6 +140,16 @@ def company_rules_path(company_name: str) -> str:
     return os.path.join(_rules_dir(), f"vendor_rules_{slug}.json")
 
 def load_company_list():
+    data = _sql_load_match_file(COMPANY_LIST_FILENAME)
+    if data is not None:
+        try:
+            if isinstance(data, dict) and "companies" in data and isinstance(data["companies"], list):
+                return sorted({str(x).strip() for x in data["companies"] if str(x).strip()})
+            if isinstance(data, list):
+                return sorted({str(x).strip() for x in data if str(x).strip()})
+        except Exception as e:
+            messagebox.showwarning("Company List", f"Could not load {COMPANY_LIST_FILENAME}:\n{e}")
+            return []
     if os.path.exists(COMPANY_LIST_PATH):
         try:
             with open(COMPANY_LIST_PATH, "r", encoding="utf-8") as f:
@@ -103,9 +163,12 @@ def load_company_list():
     return []
 
 def save_company_list(companies):
+    payload = {"companies": companies}
+    if _sql_save_match_file(COMPANY_LIST_FILENAME, payload):
+        return
     try:
         with open(COMPANY_LIST_PATH, "w", encoding="utf-8") as f:
-            json.dump({"companies": companies}, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
         messagebox.showerror("Company List", f"Could not save {COMPANY_LIST_FILENAME}:\n{e}")
 
@@ -265,6 +328,19 @@ def detect_bank_from_document(path: str) -> str | None:
     return None
 
 def load_rules_from_disk(rules_path):
+    data = _sql_load_match_file(os.path.basename(rules_path))
+    if data is not None:
+        try:
+            rules = []
+            for item in data:
+                phrase = str(item.get("phrase", "")).strip()
+                vendor = str(item.get("vendor", "")).strip()
+                if phrase and vendor:
+                    rules.append({"phrase": phrase, "vendor": vendor})
+            return rules
+        except Exception as e:
+            messagebox.showwarning("Rules Load", f"Could not load rules:\n{e}")
+            return []
     if os.path.exists(rules_path):
         try:
             with open(rules_path, "r", encoding="utf-8") as f:
@@ -281,6 +357,8 @@ def load_rules_from_disk(rules_path):
     return []
 
 def save_rules_to_disk(rules_path, rules):
+    if _sql_save_match_file(os.path.basename(rules_path), rules):
+        return
     try:
         os.makedirs(os.path.dirname(rules_path) or APP_DIR, exist_ok=True)
         with open(rules_path, "w", encoding="utf-8") as f:
@@ -1255,11 +1333,17 @@ def _account_str_to_key(s: str) -> tuple[str, str] | None:
 
 def load_accounts_from_disk(accounts_path):
     """Load account map. Returns dict[(vendor, "debits"|"credits"), account_str]. Migrates old vendor-only keys to both types."""
-    if not os.path.exists(accounts_path):
+    data = _sql_load_match_file(os.path.basename(accounts_path))
+    if data is None and os.path.exists(accounts_path):
+        try:
+            with open(accounts_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showwarning("Accounts Load", f"Could not load accounts:\n{e}")
+            return {}
+    if not data:
         return {}
     try:
-        with open(accounts_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
         out = {}
         for k, v in data.items():
             k, v = str(k).strip(), str(v).strip()
@@ -1286,6 +1370,8 @@ def save_accounts_to_disk(accounts_path, mapping: dict):
                 serialized[_account_key_to_str(k[0], k[1])] = v
             else:
                 serialized[str(k)] = str(v)
+        if _sql_save_match_file(os.path.basename(accounts_path), serialized):
+            return
         os.makedirs(os.path.dirname(accounts_path) or APP_DIR, exist_ok=True)
         with open(accounts_path, "w", encoding="utf-8") as f:
             json.dump(serialized, f, ensure_ascii=False, indent=2)

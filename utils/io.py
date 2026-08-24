@@ -98,6 +98,7 @@ ACCOUNT_MANAGERS_FILE = CLIENTS_DIR / "account_managers.json"
 TASKS_FILE            = TASKS_DIR / "tasks.json"
 MONTHLY_STATE_FILE    = MONTHLY_DATA_DIR / "monthly_state.json"
 MIGRATIONS_FILE       = DATA_ROOT / "migrations.json"
+DB_FILE               = DATA_ROOT / "vertex.db"
 
 # Export _read_json_file and _write_json_file for use by other modules if needed
 # (They're used internally but may be needed elsewhere)
@@ -190,6 +191,239 @@ def latest_valid_backup(path: Path) -> Path | None:
         return None
 
 
+def _sql():
+    try:
+        from vertex.utils import sql_store as m
+    except ModuleNotFoundError:
+        from utils import sql_store as m
+    return m
+
+
+def sql_db_ready() -> bool:
+    try:
+        return bool(_sql().sql_db_ready())
+    except Exception:
+        return False
+
+
+def migrate_json_to_sql(**kwargs):
+    return _sql().migrate_json_to_sql(**kwargs)
+
+
+def ensure_json_migrated_to_sql() -> dict:
+    """Copy each JSON store into SQL when that store has JSON and no SQL data yet."""
+    try:
+        return _sql().migrate_missing_json_to_sql()
+    except Exception:
+        LOG.exception("Startup JSON→SQL migrate failed")
+        return {}
+
+
+def _is_primary_clients_path(path: Path | None) -> bool:
+    if path is None:
+        return True
+    try:
+        return Path(path).resolve() == DATA_FILE.resolve()
+    except Exception:
+        return False
+
+
+def load_account_managers() -> list:
+    ensure_json_migrated_to_sql()
+    if _sql().sql_has_list("account_managers"):
+        try:
+            data = _sql().load_account_managers_payloads()
+            if isinstance(data, list):
+                return data
+        except Exception:
+            LOG.exception("SQL account managers load failed; falling back to JSON")
+    data = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
+    return data if isinstance(data, list) else []
+
+
+def save_account_managers(managers: list) -> None:
+    if not isinstance(managers, list):
+        managers = []
+    if sql_db_ready():
+        _sql().save_account_managers_payloads(managers)
+        return
+    ACCOUNT_MANAGERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ACCOUNT_MANAGERS_FILE.write_text(
+        json.dumps(managers, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_tasks_list(path: Path | None = None) -> list:
+    ensure_json_migrated_to_sql()
+    if _sql().sql_has_list("tasks"):
+        try:
+            data = _sql().load_tasks_payloads()
+            if isinstance(data, list):
+                return data
+        except Exception:
+            LOG.exception("SQL tasks load failed; falling back to JSON")
+    target = Path(path) if path is not None else TASKS_FILE
+    data = _read_json_file(target, default=[])
+    return data if isinstance(data, list) else []
+
+
+def save_tasks_list(tasks: list, path: Path | None = None) -> None:
+    if not isinstance(tasks, list):
+        tasks = []
+    if sql_db_ready():
+        _sql().save_tasks_payloads(tasks)
+        return
+    target = Path(path) if path is not None else TASKS_FILE
+    backup_file(target)
+    _write_json_file(target, tasks)
+
+
+def load_monthly_state() -> dict:
+    ensure_json_migrated_to_sql()
+    if _sql().sql_has_monthly_state():
+        try:
+            data = _sql().load_monthly_state_payload()
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            LOG.exception("SQL monthly state load failed; falling back to JSON")
+    data = _read_json_file(MONTHLY_STATE_FILE, default={})
+    return data if isinstance(data, dict) else {}
+
+
+def save_monthly_state(blob: dict) -> None:
+    if not isinstance(blob, dict):
+        blob = {}
+    if sql_db_ready():
+        _sql().save_monthly_state_payload(blob)
+        return
+    MONTHLY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_file(MONTHLY_STATE_FILE, blob)
+
+
+def load_match_rules_map() -> dict:
+    ensure_json_migrated_to_sql()
+    if _sql().sql_has_any_match_rules():
+        try:
+            data = _sql().load_json_files("match_rules")
+            if isinstance(data, dict) and data:
+                return data
+        except Exception:
+            LOG.exception("SQL match rules load failed; falling back to JSON")
+    rules = {}
+    if MATCH_RULES_DIR.exists():
+        for p in MATCH_RULES_DIR.glob("*.json"):
+            rules[p.name] = _read_json_file(p, default={})
+    return rules
+
+
+def save_match_rule(filename: str, contents) -> None:
+    filename = str(filename)
+    if sql_db_ready():
+        _sql().save_json_file("match_rules", filename, contents)
+        return
+    MATCH_RULES_DIR.mkdir(parents=True, exist_ok=True)
+    dest = MATCH_RULES_DIR / filename
+    dest.write_text(json.dumps(contents, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def match_rule_exists(filename: str) -> bool:
+    filename = str(filename)
+    if sql_db_ready():
+        try:
+            return bool(_sql().json_file_exists("match_rules", filename))
+        except Exception:
+            pass
+    return (MATCH_RULES_DIR / filename).exists()
+
+
+def _clients_from_raw_list(data) -> List[Dict[str, Any]]:
+    if not isinstance(data, list):
+        return []
+    out = []
+    for c in data:
+        c = dict(c) if isinstance(c, dict) else {}
+
+        # Core
+        c.setdefault("name","")
+        c.setdefault("dba","")
+        c.setdefault("ein","")
+        c.setdefault("ssn","")
+        c.setdefault("file_location","")
+        c.setdefault("memo","")
+
+        # client extended fields
+        c.setdefault("addr1","")
+        c.setdefault("addr2","")
+        c.setdefault("city","")
+        c.setdefault("state","")
+        c.setdefault("zip","")
+        c.setdefault("acct_mgr","")
+        c.setdefault("edd_number","")
+        c.setdefault("sales_tax_account","")
+        c.setdefault("entity_type","")
+
+        # Tax rates
+        c.setdefault("ui_rate","")
+        c.setdefault("sales_tax_rate","")
+        c.setdefault("other_tax_rates","")
+        c.setdefault("tax_rates_last_checked","")
+
+        # Personnel - migrate officers to relations if present
+        relations = c.get("relations")
+        if relations is None:
+            legacy = c.get("owner","")
+            relations = [legacy] if legacy else []
+        norm_offs: List[Dict[str,str]] = []
+        if isinstance(relations, list):
+            for x in relations:
+                norm_offs.append(ensure_relation_dict(x))
+        elif isinstance(relations, dict):
+            norm_offs.append(ensure_relation_dict(relations))
+        else:
+            norm_offs = [ensure_relation_dict(relations)] if relations else []
+
+        # Migrate any remaining officers to relations
+        officers = c.get("officers", []) or []
+        if officers:
+            for o in officers:
+                if isinstance(o, dict):
+                    norm_offs.append(ensure_relation_dict(o))
+            c.pop("officers", None)
+
+        normalized_relations = []
+        for rel in norm_offs:
+            rel_link = ensure_relation_link(rel)
+            if rel_link.get("id"):
+                normalized_relations.append(rel_link)
+            else:
+                normalized_relations.append(ensure_relation_dict(rel))
+
+        c["relations"] = normalized_relations
+        c.pop("owner", None)
+        c.pop("post_save_links", None)
+
+        emps = c.get("employees", [])
+        if isinstance(emps, list):
+            c["employees"] = [ensure_relation_dict(x) for x in emps]
+        elif isinstance(emps, dict):
+            c["employees"] = [ensure_relation_dict(emps)]
+        else:
+            c["employees"] = []
+
+        c.setdefault("logs", [])
+        c["logs"] = normalize_logs(c.get("logs", []))
+        c.setdefault("work_items", [])
+        if not isinstance(c.get("work_items"), list):
+            c["work_items"] = []
+        c.setdefault("active_work", {})
+        if not isinstance(c.get("active_work"), dict):
+            c["active_work"] = {}
+
+        out.append(c)
+    return out
+
+
 def load_clients(path: Path | None = None, _from_backup: bool = False) -> List[Dict[str, Any]]:
     """Load clients from clients.json file. If path is given, use it (avoids path/cache confusion).
 
@@ -197,6 +431,13 @@ def load_clients(path: Path | None = None, _from_backup: bool = False) -> List[D
     newest valid backup before falling back to an empty list.
     """
     target = (path or DATA_FILE).resolve()
+    if not _from_backup:
+        ensure_json_migrated_to_sql()
+    if not _from_backup and _is_primary_clients_path(target) and _sql().sql_has_list("clients"):
+        try:
+            return _clients_from_raw_list(_sql().load_clients_payloads())
+        except Exception:
+            LOG.exception("SQL clients load failed; falling back to JSON")
     if not target.exists():
         # File deleted/missing: try to recover from the newest valid backup first.
         if not _from_backup:
@@ -219,99 +460,7 @@ def load_clients(path: Path | None = None, _from_backup: bool = False) -> List[D
         return []
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            return []
-        out = []
-        for c in data:
-            c = dict(c) if isinstance(c, dict) else {}
-
-            # Core
-            c.setdefault("name","")
-            c.setdefault("dba","")
-            c.setdefault("ein","")
-            c.setdefault("ssn","")
-            c.setdefault("file_location","")
-            c.setdefault("memo","")
-
-            # client extended fields
-            c.setdefault("addr1","")
-            c.setdefault("addr2","")
-            c.setdefault("city","")
-            c.setdefault("state","")
-            c.setdefault("zip","")
-            c.setdefault("acct_mgr","")
-            c.setdefault("edd_number","")
-            c.setdefault("sales_tax_account","")
-            c.setdefault("entity_type","")
-
-            # Tax rates
-            c.setdefault("ui_rate","")
-            c.setdefault("sales_tax_rate","")
-            c.setdefault("other_tax_rates","")
-            c.setdefault("tax_rates_last_checked","")
-
-            # Personnel - migrate officers to relations if present
-            relations = c.get("relations")
-            if relations is None:
-                legacy = c.get("owner","")
-                relations = [legacy] if legacy else []
-            norm_offs: List[Dict[str,str]] = []
-            if isinstance(relations, list):
-                for x in relations:
-                    norm_offs.append(ensure_relation_dict(x))
-            elif isinstance(relations, dict):
-                norm_offs.append(ensure_relation_dict(relations))
-            else:
-                norm_offs = [ensure_relation_dict(relations)] if relations else []
-            
-            # Migrate any remaining officers to relations
-            officers = c.get("officers", []) or []
-            if officers:
-                for o in officers:
-                    if isinstance(o, dict):
-                        norm_offs.append(ensure_relation_dict(o))
-                # Remove officers after migration
-                c.pop("officers", None)
-            
-            # Normalize relations to ensure they use id format
-            normalized_relations = []
-            for rel in norm_offs:
-                # Try to parse as relation link (for entity links)
-                rel_link = ensure_relation_link(rel)
-                if rel_link.get("id"):
-                    # Entity link - use link format
-                    normalized_relations.append(rel_link)
-                else:
-                    # Person relation - use dict format
-                    normalized_relations.append(ensure_relation_dict(rel))
-            
-            c["relations"] = normalized_relations
-            c.pop("owner", None)
-            # Remove post_save_links if present (should not be in saved data)
-            c.pop("post_save_links", None)
-
-            # Optional employees list (if present, normalize same way)
-            emps = c.get("employees", [])
-            if isinstance(emps, list):
-                c["employees"] = [ensure_relation_dict(x) for x in emps]
-            elif isinstance(emps, dict):
-                c["employees"] = [ensure_relation_dict(emps)]
-            else:
-                c["employees"] = []
-
-            # Logs list (optional)
-            c.setdefault("logs", [])
-            c["logs"] = normalize_logs(c.get("logs", []))
-            # Work item model for taskbar workflow
-            c.setdefault("work_items", [])
-            if not isinstance(c.get("work_items"), list):
-                c["work_items"] = []
-            c.setdefault("active_work", {})
-            if not isinstance(c.get("active_work"), dict):
-                c["active_work"] = {}
-
-            out.append(c)
-        return out
+        return _clients_from_raw_list(data)
     except Exception as e:
         LOG.exception("Failed to load clients.json: %s", e)
         # Corrupt file: try to recover from the newest valid backup.
@@ -392,6 +541,14 @@ def save_clients(items: List[Dict[str, Any]], path: Path | None = None) -> None:
     remove_stale_back_links(items, log=LOG)
     to_save = _normalize_clients_for_io(items)
     target = (path or DATA_FILE).resolve()
+    if _is_primary_clients_path(target) and sql_db_ready():
+        try:
+            _sql().save_clients_payloads(to_save)
+            rel_counts = [len(c.get("relations") or []) for c in to_save]
+            LOG.info("save_clients: wrote %s clients to SQL (relation counts: %s)", len(to_save), rel_counts)
+            return
+        except Exception:
+            LOG.exception("SQL clients save failed; falling back to JSON")
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         # Snapshot the current good file before overwriting it.
@@ -428,7 +585,7 @@ def migrate_tasks_client_to_client(tasks_path: Path, remove_old_keys: bool = Tru
 
     remove_old_keys=True will remove company_* fields after copying.
     """
-    tasks = _read_json_file(tasks_path, default=[])
+    tasks = load_tasks_list(tasks_path)
     if not isinstance(tasks, list):
         return {"updated": 0, "skipped": 0, "error": "tasks.json is not a list"}
 
@@ -462,7 +619,7 @@ def migrate_tasks_client_to_client(tasks_path: Path, remove_old_keys: bool = Tru
             updated += 1
 
     if updated > 0:
-        _write_json_file(tasks_path, tasks)
+        save_tasks_list(tasks, tasks_path)
 
     return {"updated": updated, "skipped": skipped}
 
@@ -478,7 +635,7 @@ def migrate_tasks_client_id_to_ein_ssn(tasks_path: Path, clients: List[Dict[str,
     
     Then updates the task's client_id to the entity's EIN (preferred) or SSN.
     """
-    tasks = _read_json_file(tasks_path, default=[])
+    tasks = load_tasks_list(tasks_path)
     if not isinstance(tasks, list):
         return {"updated": 0, "skipped": 0, "error": "tasks.json is not a list"}
     
@@ -592,7 +749,7 @@ def migrate_tasks_client_id_to_ein_ssn(tasks_path: Path, clients: List[Dict[str,
             skipped += 1
 
     if updated > 0:
-        _write_json_file(tasks_path, tasks)
+        save_tasks_list(tasks, tasks_path)
 
     return {
         "updated": updated,
@@ -740,26 +897,11 @@ def export_all_to_json(out_path: Path, clients: list[dict]):
         "vendor_lists": {},   # filename -> csv text
     }
 
-    # account managers
-    if ACCOUNT_MANAGERS_FILE.exists():
-        payload["account_managers"] = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
-
-    # tasks
-    if TASKS_FILE.exists():
-        payload["tasks"] = _read_json_file(TASKS_FILE, default=[])
-
-    # monthly state
-    if MONTHLY_STATE_FILE.exists():
-        payload["monthly_state"] = _read_json_file(MONTHLY_STATE_FILE, default={})
-
-    # match_rules/*.json
-    if MATCH_RULES_DIR.exists():
-        for p in MATCH_RULES_DIR.glob("*.json"):
-            try:
-                payload["match_rules"][p.name] = _read_json_file(p, default={})
-            except Exception:
-                # If any file is malformed, still export something rather than failing the whole export
-                payload["match_rules"][p.name] = {"__raw__": _read_text(p)}
+    # account managers / tasks / monthly / match rules (SQL if present)
+    payload["account_managers"] = load_account_managers()
+    payload["tasks"] = load_tasks_list()
+    payload["monthly_state"] = load_monthly_state()
+    payload["match_rules"] = load_match_rules_map()
 
     # vendor_lists/*.csv
     if VENDOR_LISTS_DIR.exists():
@@ -819,26 +961,19 @@ def export_selected_to_json(out_path: Path, clients: list[dict], selections: dic
                         c["client_issues"] = []
             payload["clients"] = cleaned
 
-        if ACCOUNT_MANAGERS_FILE.exists():
-            payload["account_managers"] = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
-        else:
-            payload["account_managers"] = []
+        payload["account_managers"] = load_account_managers()
 
     # Tasks
     if selections.get("tasks"):
-        payload["tasks"] = _read_json_file(TASKS_FILE, default=[]) if TASKS_FILE.exists() else []
+        payload["tasks"] = load_tasks_list()
 
     # Monthly data
     if selections.get("monthly_data"):
-        payload["monthly_state"] = _read_json_file(MONTHLY_STATE_FILE, default={}) if MONTHLY_STATE_FILE.exists() else {}
+        payload["monthly_state"] = load_monthly_state()
 
     # Match rules (all *.json under match_rules/)
     if selections.get("match_rules"):
-        rules = {}
-        if MATCH_RULES_DIR.exists():
-            for p in MATCH_RULES_DIR.glob("*.json"):
-                rules[p.name] = _read_json_file(p, default={})
-        payload["match_rules"] = rules
+        payload["match_rules"] = load_match_rules_map()
 
     # Vendor lists (all *.csv or *.CSV under vendor_lists/)
     if selections.get("vendor_lists"):
@@ -948,7 +1083,7 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
     # --- import account managers (dedupe by (name/email/phone) + normalize to deterministic ids) ---
     am_added = 0
     if isinstance(data.get("account_managers"), list):
-        existing_ams = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
+        existing_ams = load_account_managers()
         if not isinstance(existing_ams, list):
             existing_ams = []
 
@@ -996,17 +1131,14 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
             existing_keys.add(key)
             am_added += 1
 
-        ACCOUNT_MANAGERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ACCOUNT_MANAGERS_FILE.write_text(json.dumps(existing_ams, indent=2, ensure_ascii=False), encoding="utf-8")
+        save_account_managers(existing_ams)
 
-
-    # --- import monthly_state (safe: write if file missing; else keep existing) ---
+    # --- import monthly_state (safe: write if missing; else keep existing) ---
     if isinstance(data.get("monthly_state"), dict):
-        if not MONTHLY_STATE_FILE.exists():
-            MONTHLY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            MONTHLY_STATE_FILE.write_text(json.dumps(data["monthly_state"], indent=2, ensure_ascii=False), encoding="utf-8")
+        if not load_monthly_state():
+            save_monthly_state(data["monthly_state"])
 
-    # --- import match_rules (do NOT overwrite existing files) ---
+    # --- import match_rules (do NOT overwrite existing) ---
     mr_added = 0
     match_rules = data.get("match_rules", {})
     if isinstance(match_rules, dict):
@@ -1016,11 +1148,9 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
                 fname = str(fname)
                 if not fname.lower().endswith(".json"):
                     continue
-                dest = MATCH_RULES_DIR / fname
-                if dest.exists():
+                if match_rule_exists(fname):
                     continue  # do not overwrite
-                # contents can be dict/list/etc.
-                dest.write_text(json.dumps(contents, indent=2, ensure_ascii=False), encoding="utf-8")
+                save_match_rule(fname, contents)
                 mr_added += 1
             except Exception:
                 pass
@@ -1045,7 +1175,7 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
     tasks_added = 0
     incoming_tasks = data.get("tasks", [])
     if isinstance(incoming_tasks, list):
-        existing_tasks = _read_json_file(TASKS_FILE, default=[])
+        existing_tasks = load_tasks_list()
         if not isinstance(existing_tasks, list):
             existing_tasks = []
 
@@ -1072,7 +1202,7 @@ def import_all_from_json(in_path: Path, clients: list[dict]) -> dict:
             tasks_added += 1
 
         if tasks_added > 0:
-            _write_json_file(TASKS_FILE, existing_tasks)
+            save_tasks_list(existing_tasks)
 
     return {
         "clients_added": clients_added,

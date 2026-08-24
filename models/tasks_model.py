@@ -182,7 +182,11 @@ class TasksStore:
     # ---------- persistence ----------
     def load(self) -> None:
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            try:
+                from vertex.utils.io import load_tasks_list
+            except ModuleNotFoundError:
+                from utils.io import load_tasks_list
+            data = load_tasks_list(self.path)
         except Exception:
             # Missing/corrupt tasks.json: try to recover from newest valid backup.
             data = []
@@ -218,9 +222,11 @@ class TasksStore:
 
     def save(self) -> None:
         try:
-            # Snapshot the current good file before overwriting it.
-            backup_file(self.path)
-            self.path.write_text(json.dumps(self.tasks, indent=2, ensure_ascii=False), encoding="utf-8")
+            try:
+                from vertex.utils.io import save_tasks_list
+            except ModuleNotFoundError:
+                from utils.io import save_tasks_list
+            save_tasks_list(self.tasks, self.path)
         except Exception:
             # surface errors in UI callers; here we just raise
             raise

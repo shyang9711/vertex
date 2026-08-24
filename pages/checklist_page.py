@@ -83,20 +83,18 @@ def _paths():
 
 def _load_clients():
     """
-    Read clients.json and return list of (label, key) where:
+    Read clients (SQL if present, else clients.json) and return list of (label, key) where:
       label = 'DBA — Name' if DBA exists else Name (fallback to EIN if name empty)
       key   = EIN if present else Name (fallback to DBA)
     """
-    clients_path, _ = _paths()
     try:
-        raw = json.loads(clients_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        messagebox.showwarning("Missing clients.json",
-                               f"Couldn't find:\n{clients_path}\n\nProceeding with an empty list.")
-        return []
+        try:
+            from vertex.utils.io import load_clients
+        except ModuleNotFoundError:
+            from utils.io import load_clients
+        raw = load_clients()
     except Exception as e:
-        messagebox.showerror("Failed to parse clients.json",
-                             f"Path: {clients_path}\n\n{e}")
+        messagebox.showerror("Failed to load clients", str(e))
         return []
 
     out = []
@@ -117,21 +115,25 @@ def _load_clients():
 
 
 def _read_state_blob():
-    """Read the whole monthly_state.json blob (dict)."""
-    _, state_path = _paths()
-    if not state_path.exists():
-        return {}
+    """Read the whole monthly state blob (dict) from SQL or JSON."""
     try:
-        return json.loads(state_path.read_text(encoding="utf-8")) or {}
+        try:
+            from vertex.utils.io import load_monthly_state
+        except ModuleNotFoundError:
+            from utils.io import load_monthly_state
+        return load_monthly_state() or {}
     except Exception:
         return {}
 
 
 def _write_state_blob(blob: dict):
-    """Write the whole monthly_state.json blob (dict)."""
-    _, state_path = _paths()
+    """Write the whole monthly state blob (dict) to SQL or JSON."""
     try:
-        state_path.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+        try:
+            from vertex.utils.io import save_monthly_state
+        except ModuleNotFoundError:
+            from utils.io import save_monthly_state
+        save_monthly_state(blob if isinstance(blob, dict) else {})
         return True, None
     except Exception as e:
         return False, e

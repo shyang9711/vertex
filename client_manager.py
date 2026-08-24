@@ -80,6 +80,8 @@ try:
         migrate_tasks_client_to_client, migrate_tasks_client_id_to_ein_ssn, migrate_officers_to_relations,
         DATA_FILE, ACCOUNT_MANAGERS_FILE, TASKS_FILE, MONTHLY_STATE_FILE,
         MATCH_RULES_DIR, VENDOR_LISTS_DIR, CLIENTS_DIR, DATA_ROOT, MIGRATIONS_FILE,
+        DB_FILE, sql_db_ready, migrate_json_to_sql, ensure_json_migrated_to_sql,
+        load_account_managers, save_account_managers,
     )
     from vertex.utils.helpers import (
         ensure_relation_dict, display_relation_name,
@@ -135,6 +137,8 @@ except ModuleNotFoundError:
         migrate_tasks_client_to_client, migrate_tasks_client_id_to_ein_ssn, migrate_officers_to_relations,
         DATA_FILE, ACCOUNT_MANAGERS_FILE, TASKS_FILE, MONTHLY_STATE_FILE,
         MATCH_RULES_DIR, VENDOR_LISTS_DIR, CLIENTS_DIR, DATA_ROOT, MIGRATIONS_FILE,
+        DB_FILE, sql_db_ready, migrate_json_to_sql, ensure_json_migrated_to_sql,
+        load_account_managers, save_account_managers,
     )
     from utils.helpers import (
         ensure_relation_dict, display_relation_name,
@@ -271,10 +275,15 @@ except Exception:
 # Data IO functions moved to utils/io.py
 
 def show_about_dialog(parent: tk.Misc | None = None):
+    try:
+        storage = f"SQLite\n{DB_FILE}" if sql_db_ready() else f"JSON files\n{DATA_ROOT}"
+    except Exception:
+        storage = str(DATA_ROOT)
     msg = (
         f"{APP_NAME}\n"
         f"Version {APP_VERSION}\n\n"
-        f"Data folder:\n{DATA_ROOT}"
+        f"Data folder:\n{DATA_ROOT}\n\n"
+        f"Storage:\n{storage}"
     )
     messagebox.showinfo("About", msg, parent=parent)
 
@@ -300,6 +309,12 @@ class App(ttk.Frame):
         self.root = master
 
         self._data_file_path = DATA_FILE.resolve()
+        try:
+            sql_stats = ensure_json_migrated_to_sql()
+            if any(sql_stats.get(k, 0) for k in sql_stats):
+                self.log.info("Startup JSON→SQL migrate: %s", sql_stats)
+        except Exception:
+            self.log.exception("Startup JSON→SQL migrate failed")
         self.items: List[Dict[str, Any]] = load_clients(self._data_file_path)
         rel_counts = [len(c.get("relations") or []) for c in self.items]
         self.log.info("load: read %s clients from %s (relation counts: %s)", len(self.items), self._data_file_path, rel_counts)
@@ -395,6 +410,7 @@ class App(ttk.Frame):
             on_import_data=self._import_data_dialog,
             on_export_data=self._export_selected_dialog,
             on_update_data=self._update_data_dialog,
+            on_migrate_to_sql=self._migrate_to_sql_dialog,
             on_upload_vendor_list=self._upload_vendor_list_dialog,
 
             # Update
@@ -796,11 +812,9 @@ class App(ttk.Frame):
 
 
     def _load_account_managers(self):
-        """Load from clients/account_managers.json; return [] if missing/error."""
-        path = self._account_managers_path()
+        """Load account managers from SQL if present, else JSON; return [] if missing/error."""
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = load_account_managers()
             return self._normalize_acct_mgr_list(data)
         except FileNotFoundError:
             return []
@@ -812,16 +826,14 @@ class App(ttk.Frame):
             return []
 
     def _save_account_managers(self, lst):
-        """Save to clients/account_managers.json (creates folder if needed)."""
+        """Save account managers to SQL if present, else JSON."""
         lst = self._normalize_acct_mgr_list(lst)
-        path = self._account_managers_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(lst, f, ensure_ascii=False, indent=2)
+            save_account_managers(lst)
             try:
                 if hasattr(self, "status"):
-                    self.status.set(f"Saved {len(lst)} account manager(s) → {path}")
+                    loc = DB_FILE if sql_db_ready() else self._account_managers_path()
+                    self.status.set(f"Saved {len(lst)} account manager(s) → {loc}")
             except Exception:
                 pass
         except Exception as e:
@@ -2589,10 +2601,97 @@ class App(ttk.Frame):
 
     # --- Data operations used by Taskbar / File menu -----------------
     def _save_all_data(self):
-        """Flush current in-memory data to internal storage (clients.json, later tasks/rules)."""
+        """Flush current in-memory data to SQL (if present) or JSON."""
         save_clients(self.items, self._data_file_path)
+        try:
+            save_account_managers(self._normalize_acct_mgr_list(self.account_managers))
+        except Exception:
+            self.log.exception("Save account managers failed")
+        try:
+            store = getattr(getattr(self, "dashboard", None), "store", None)
+            if store is not None:
+                store.save()
+        except Exception:
+            self.log.exception("Save tasks failed")
+        loc = "SQLite (vertex.db)" if sql_db_ready() else "JSON"
         if hasattr(self, "status"):
-            self.status.set(f"Saved {len(self.items)} client(s).")
+            self.status.set(f"Saved {len(self.items)} client(s) to {loc}.")
+
+    def _migrate_to_sql_dialog(self):
+        overwrite = False
+        if sql_db_ready():
+            if not messagebox.askyesno(
+                "Migrate to SQL",
+                "A SQLite database already exists.\n\n"
+                "Overwrite it with the data currently in Vertex "
+                "(open clients/tasks plus JSON files)?\n\n"
+                "JSON files will be kept as a backup.",
+                parent=self.winfo_toplevel(),
+            ):
+                return
+            overwrite = True
+        else:
+            if not messagebox.askyesno(
+                "Migrate to SQL",
+                "Copy clients, tasks, account managers, monthly checklists, "
+                "and match rules into a SQLite database (data/vertex.db).\n\n"
+                "JSON files will be kept as a backup. After this, Vertex will "
+                "use the SQL database whenever it exists.\n\nContinue?",
+                parent=self.winfo_toplevel(),
+            ):
+                return
+
+        tasks = None
+        try:
+            store = getattr(getattr(self, "dashboard", None), "store", None)
+            if store is not None:
+                tasks = list(getattr(store, "tasks", []) or [])
+        except Exception:
+            tasks = None
+
+        try:
+            stats = migrate_json_to_sql(
+                clients=list(self.items or []),
+                account_managers=list(self.account_managers or []),
+                tasks=tasks,
+                overwrite=overwrite,
+            )
+        except Exception as e:
+            self.log.exception("Migrate to SQL failed")
+            messagebox.showerror(
+                "Migrate to SQL",
+                f"Migration failed:\n{e}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        try:
+            self.items = load_clients(self._data_file_path)
+            self.account_managers = self._load_account_managers()
+            self.populate()
+            self._update_suggestions()
+        except Exception:
+            self.log.exception("Reload after SQL migrate failed")
+        try:
+            dash = getattr(self, "dashboard", None)
+            if dash and hasattr(dash, "reload_from_disk"):
+                dash.reload_from_disk()
+        except Exception:
+            pass
+
+        if hasattr(self, "status"):
+            self.status.set(f"Using SQLite — {stats.get('clients', 0)} client(s).")
+        messagebox.showinfo(
+            "Migrate to SQL",
+            "Migration complete. Vertex will now prefer the SQL database.\n\n"
+            f"Database:\n{stats.get('db_path')}\n\n"
+            f"Clients: {stats.get('clients', 0)}\n"
+            f"Account managers: {stats.get('account_managers', 0)}\n"
+            f"Tasks: {stats.get('tasks', 0)}\n"
+            f"Match rules: {stats.get('match_rules', 0)}\n"
+            f"Monthly state: {'yes' if stats.get('monthly_state') else 'empty'}",
+            parent=self.winfo_toplevel(),
+        )
 
     def _import_data_dialog(self):
         path_str = filedialog.askopenfilename(
