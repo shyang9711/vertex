@@ -494,17 +494,10 @@ def init_profile_tab(
         dash = getattr(app, "dashboard", None)
         if not dash or not getattr(dash, "store", None):
             return
-        # Flip done on ORIGINAL due date (same rule as dashboard)
         t = dash.store.tasks[i_task]
-        s = orig_date.isoformat()
-        comp = t.setdefault("completed", [])
-        if s in comp:
-            comp.remove(s)
-        else:
-            comp.append(s)
-        # Persist + refresh everywhere
-        dash.store.save()
-        dash._refresh_todo_feed()
+        # Same rule as dashboard: clear/set both original due date and display date
+        # (lead days / weekend-holiday shift). Only flipping orig left dashboard checked.
+        dash.store.toggle_done_for_date(t, orig_date)
         _safe_redraw_dashboard()
         _refresh_client_tasks_tv()
 
@@ -1362,7 +1355,8 @@ def init_profile_tab(
                         d += _dt.timedelta(days=1)
                         continue
                     disp = display_date_for(t, orig)
-                    yield orig, disp, (orig.isoformat() in comp)
+                    is_done = (orig.isoformat() in comp) or (disp.isoformat() in comp)
+                    yield orig, disp, is_done
                 d += _dt.timedelta(days=1)
 
 

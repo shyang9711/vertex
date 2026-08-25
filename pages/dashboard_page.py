@@ -1213,7 +1213,13 @@ class DashboardPage:
             return t.get("client_name") or self._client_name(t.get("client_idx")) or ""
     
         def _is_done(t, orig_date):
-            return (orig_date.isoformat() in (t.get("completed", []) or []))
+            comp = t.get("completed", []) or []
+            s_actual = orig_date.isoformat()
+            try:
+                s_disp = display_date_for(t, orig_date).isoformat()
+            except Exception:
+                s_disp = s_actual
+            return (s_actual in comp) or (s_disp in comp)
     
         def _day_sort_key(pair):
             t, orig_date = pair
