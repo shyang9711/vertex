@@ -130,6 +130,13 @@ def _sql_save_match_file(filename, obj) -> bool:
         return False
     return False
 
+def _sql_is_ready() -> bool:
+    ready, _load_fn, _save_fn = _match_sql()
+    try:
+        return bool(ready and ready())
+    except Exception:
+        return False
+
 def slugify(name: str) -> str:
     s = re.sub(r"\s+", "_", name.strip())
     s = re.sub(r"[^A-Za-z0-9_]+", "", s)
@@ -165,6 +172,9 @@ def load_company_list():
 def save_company_list(companies):
     payload = {"companies": companies}
     if _sql_save_match_file(COMPANY_LIST_FILENAME, payload):
+        return
+    if _sql_is_ready():
+        messagebox.showerror("Company List", "Could not save to the encrypted database.")
         return
     try:
         with open(COMPANY_LIST_PATH, "w", encoding="utf-8") as f:
@@ -358,6 +368,9 @@ def load_rules_from_disk(rules_path):
 
 def save_rules_to_disk(rules_path, rules):
     if _sql_save_match_file(os.path.basename(rules_path), rules):
+        return
+    if _sql_is_ready():
+        messagebox.showerror("Rules Save", "Could not save rules to the encrypted database.")
         return
     try:
         os.makedirs(os.path.dirname(rules_path) or APP_DIR, exist_ok=True)
@@ -1371,6 +1384,9 @@ def save_accounts_to_disk(accounts_path, mapping: dict):
             else:
                 serialized[str(k)] = str(v)
         if _sql_save_match_file(os.path.basename(accounts_path), serialized):
+            return
+        if _sql_is_ready():
+            messagebox.showerror("Accounts Save", "Could not save accounts to the encrypted database.")
             return
         os.makedirs(os.path.dirname(accounts_path) or APP_DIR, exist_ok=True)
         with open(accounts_path, "w", encoding="utf-8") as f:

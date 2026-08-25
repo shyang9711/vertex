@@ -41,6 +41,14 @@ jobs:
           --hidden-import pdfminer `
           --hidden-import pdfminer.six `
           --collect-all=pymupdf
+          --collect-all=sqlcipher3
+          --collect-all=keyring
+          --hidden-import=sqlcipher3
+          --hidden-import=sqlcipher3.dbapi2
+          --hidden-import=keyring.backends.Windows
+          --hidden-import=keyring.backends.null
+          --hidden-import=utils.db_crypto
+          --hidden-import=ui.dialogs.db_password_dialog
           --add-data "logo.ico;."
           --add-data "scripts.json;."
           --add-data "features/pos_parse.py;features"

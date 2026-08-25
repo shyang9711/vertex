@@ -68,6 +68,11 @@ try:
     from vertex.ui.dialogs.linkdialog import LinkDialog
     from vertex.ui.dialogs.logdialog import LogDialog
     from vertex.ui.dialogs.work_session_popup import WorkSessionPopup, OptionalNoteDialog
+    from vertex.ui.dialogs.db_password_dialog import (
+        unlock_or_encrypt_database,
+        ensure_password_for_new_database,
+        change_database_password,
+    )
     from vertex.ui.components.autocomplete import (
         AutocompletePopup,
         hide_all_autocomplete_popups,
@@ -125,6 +130,11 @@ except ModuleNotFoundError:
     from ui.dialogs.linkdialog import LinkDialog
     from ui.dialogs.logdialog import LogDialog
     from ui.dialogs.work_session_popup import WorkSessionPopup, OptionalNoteDialog
+    from ui.dialogs.db_password_dialog import (
+        unlock_or_encrypt_database,
+        ensure_password_for_new_database,
+        change_database_password,
+    )
     from ui.components.autocomplete import (
         AutocompletePopup,
         hide_all_autocomplete_popups,
@@ -276,7 +286,7 @@ except Exception:
 
 def show_about_dialog(parent: tk.Misc | None = None):
     try:
-        storage = f"SQLite\n{DB_FILE}" if sql_db_ready() else f"JSON files\n{DATA_ROOT}"
+        storage = f"Encrypted SQLite\n{DB_FILE}" if sql_db_ready() else f"JSON files\n{DATA_ROOT}"
     except Exception:
         storage = str(DATA_ROOT)
     msg = (
@@ -307,6 +317,26 @@ class App(ttk.Frame):
         self.log = get_logger("client_manager")
         self.log.info("App init")
         self.root = master
+
+        try:
+            if not unlock_or_encrypt_database(self.root):
+                self.log.info("Database unlock cancelled")
+                self.root.destroy()
+                raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            self.log.exception("Database unlock failed")
+            try:
+                messagebox.showerror(
+                    "Encrypted database",
+                    "Could not open the encrypted database.",
+                    parent=self.root,
+                )
+            except Exception:
+                pass
+            self.root.destroy()
+            raise SystemExit(0)
 
         self._data_file_path = DATA_FILE.resolve()
         import time as _time
@@ -420,6 +450,7 @@ class App(ttk.Frame):
             on_export_data=self._export_selected_dialog,
             on_update_data=self._update_data_dialog,
             on_migrate_to_sql=self._migrate_to_sql_dialog,
+            on_change_db_password=self._change_db_password_dialog,
             on_upload_vendor_list=self._upload_vendor_list_dialog,
 
             # Update
@@ -2622,7 +2653,7 @@ class App(ttk.Frame):
                 store.save()
         except Exception:
             self.log.exception("Save tasks failed")
-        loc = "SQLite (vertex.db)" if sql_db_ready() else "JSON"
+        loc = "encrypted SQLite (vertex.db)" if sql_db_ready() else "JSON"
         if hasattr(self, "status"):
             self.status.set(f"Saved {len(self.items)} client(s) to {loc}.")
 
@@ -2631,10 +2662,10 @@ class App(ttk.Frame):
         if sql_db_ready():
             if not messagebox.askyesno(
                 "Migrate to SQL",
-                "A SQLite database already exists.\n\n"
+                "An encrypted database already exists.\n\n"
                 "Overwrite it with the data currently in Vertex "
-                "(open clients/tasks plus JSON files)?\n\n"
-                "JSON files will be kept as a backup.",
+                "(open clients/tasks plus any leftover JSON files)?\n\n"
+                "JSON files will be removed after a successful copy.",
                 parent=self.winfo_toplevel(),
             ):
                 return
@@ -2643,12 +2674,16 @@ class App(ttk.Frame):
             if not messagebox.askyesno(
                 "Migrate to SQL",
                 "Copy clients, tasks, account managers, monthly checklists, "
-                "and match rules into a SQLite database (data/vertex.db).\n\n"
-                "JSON files will be kept as a backup. After this, Vertex will "
-                "use the SQL database whenever it exists.\n\nContinue?",
+                "and match rules into an encrypted SQLite database (data/vertex.db).\n\n"
+                "JSON files are a one-time import: they will be removed after "
+                "the copy succeeds. Vertex will then use only the encrypted database.\n\n"
+                "Continue?",
                 parent=self.winfo_toplevel(),
             ):
                 return
+
+        if not ensure_password_for_new_database(self.winfo_toplevel()):
+            return
 
         tasks = None
         try:
@@ -2689,18 +2724,23 @@ class App(ttk.Frame):
             pass
 
         if hasattr(self, "status"):
-            self.status.set(f"Using SQLite — {stats.get('clients', 0)} client(s).")
+            self.status.set(f"Using encrypted SQLite — {stats.get('clients', 0)} client(s).")
+        retired = stats.get("json_retired", 0)
         messagebox.showinfo(
             "Migrate to SQL",
-            "Migration complete. Vertex will now prefer the SQL database.\n\n"
+            "Migration complete. Vertex now uses the encrypted database.\n\n"
             f"Database:\n{stats.get('db_path')}\n\n"
             f"Clients: {stats.get('clients', 0)}\n"
             f"Account managers: {stats.get('account_managers', 0)}\n"
             f"Tasks: {stats.get('tasks', 0)}\n"
             f"Match rules: {stats.get('match_rules', 0)}\n"
-            f"Monthly state: {'yes' if stats.get('monthly_state') else 'empty'}",
+            f"Monthly state: {'yes' if stats.get('monthly_state') else 'empty'}\n"
+            f"JSON files removed: {retired}",
             parent=self.winfo_toplevel(),
         )
+
+    def _change_db_password_dialog(self):
+        change_database_password(self.winfo_toplevel())
 
     def _import_data_dialog(self):
         path_str = filedialog.askopenfilename(

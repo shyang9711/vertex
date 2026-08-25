@@ -1,14 +1,14 @@
 """
-SQLite persistence for Vertex.
+SQLCipher persistence for Vertex.
 
-JSON files stay on disk as a snapshot. After File → Migrate to SQL,
-load/save prefer this database whenever it exists.
+JSON files are a one-time import source. After File → Migrate to SQL
+(or after leftover JSON is copied into an existing database), those JSON
+files are removed. Load/save then use only the encrypted database.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -19,8 +19,32 @@ SCHEMA_VERSION = 1
 
 try:
     from vertex.utils.app_logging import get_logger
+    from vertex.utils.db_crypto import (
+        DatabaseLockedError,
+        apply_key,
+        apply_rekey,
+        current_key,
+        get_sqlite,
+        is_plaintext_sqlite,
+        purge_plaintext_db_copies,
+        set_session_key,
+        try_unlock_from_keyring,
+        verify_open,
+    )
 except ModuleNotFoundError:
     from utils.app_logging import get_logger
+    from utils.db_crypto import (
+        DatabaseLockedError,
+        apply_key,
+        apply_rekey,
+        current_key,
+        get_sqlite,
+        is_plaintext_sqlite,
+        purge_plaintext_db_copies,
+        set_session_key,
+        try_unlock_from_keyring,
+        verify_open,
+    )
 
 LOG = get_logger("sql_store")
 
@@ -52,48 +76,75 @@ def db_path() -> Path:
 
 
 def sql_db_ready() -> bool:
-    """True when vertex.db exists and has a readable schema."""
+    """True when vertex.db exists, can be unlocked, and has a readable schema."""
     global _READY_CACHE
     if _READY_CACHE is True:
         return True
     path = db_path()
     try:
         if not path.exists() or path.stat().st_size < 64:
-            _READY_CACHE = False
             return False
-        with sqlite3.connect(str(path), timeout=5.0) as conn:
+        if not is_plaintext_sqlite(path) and not current_key():
+            try_unlock_from_keyring(path)
+            if not current_key():
+                return False
+        with _connect() as conn:
             row = conn.execute(
                 "SELECT value FROM meta WHERE key = 'schema_version'"
             ).fetchone()
-            _READY_CACHE = row is not None
-            return _READY_CACHE
+            if row is not None:
+                _READY_CACHE = True
+                return True
+            return False
     except Exception:
-        _READY_CACHE = False
         return False
 
 
+def _require_key(path: Path, *, creating: bool) -> str | None:
+    key = current_key()
+    if key:
+        return key
+    if creating and not path.exists():
+        raise DatabaseLockedError("Set a database password before creating vertex.db.")
+    if path.exists() and is_plaintext_sqlite(path):
+        return None
+    try_unlock_from_keyring(path if path.exists() else None)
+    key = current_key()
+    if key:
+        return key
+    raise DatabaseLockedError("Encrypted database is locked. Open Vertex and enter the password.")
+
+
 @contextmanager
-def _connect(*, create: bool = False) -> Iterator[sqlite3.Connection]:
+def _connect(*, create: bool = False) -> Iterator[Any]:
     path = db_path()
     if create:
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.exists():
         raise FileNotFoundError(str(path))
-    conn = sqlite3.connect(str(path), timeout=30.0)
+    key = _require_key(path, creating=create)
+    sqlite = get_sqlite()
+    conn = sqlite.connect(str(path), timeout=30.0)
     try:
+        if key:
+            apply_key(conn, key)
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = DELETE")
         conn.execute("PRAGMA synchronous = FULL")
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         raise
     finally:
         conn.close()
 
 
-def _init_schema(conn: sqlite3.Connection) -> None:
+def _init_schema(conn: Any) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS meta (
@@ -140,7 +191,7 @@ def _loads(text: str, default: Any = None) -> Any:
         return default
 
 
-def _replace_list(conn: sqlite3.Connection, table: str, id_field: str, rows: list) -> int:
+def _replace_list(conn: Any, table: str, id_field: str, rows: list) -> int:
     if table not in _LIST_TABLES or _LIST_TABLES[table] != id_field:
         raise ValueError(f"unsupported table {table}")
     conn.execute(f"DELETE FROM {table}")
@@ -156,7 +207,7 @@ def _replace_list(conn: sqlite3.Connection, table: str, id_field: str, rows: lis
     return count
 
 
-def _load_list(conn: sqlite3.Connection, table: str) -> list:
+def _load_list(conn: Any, table: str) -> list:
     rows = conn.execute(f"SELECT payload FROM {table} ORDER BY sort_idx").fetchall()
     out = []
     for (payload,) in rows:
@@ -285,7 +336,8 @@ def json_file_exists(kind: str, name: str) -> bool:
 def backup_db(*, keep: int | None = None, force: bool = False) -> Path | None:
     """
     Snapshot vertex.db into data/backups/vertex_YYYYMMDD_HHMMSS.db and keep
-    the newest ``keep`` copies (same 7-copy policy as JSON).
+    the newest ``keep`` copies (same 7-copy policy as JSON). The snapshot is
+    encrypted with the same SQLCipher key as the live database.
     """
     global _LAST_BACKUP_MONO
     if _SKIP_DB_BACKUP and not force:
@@ -297,6 +349,10 @@ def backup_db(*, keep: int | None = None, force: bool = False) -> Path | None:
     try:
         if not path.exists() or path.stat().st_size == 0:
             return None
+        key = current_key()
+        if not key and not is_plaintext_sqlite(path):
+            try_unlock_from_keyring(path)
+            key = current_key()
         keep_n = int(keep if keep is not None else getattr(_io(), "BACKUP_KEEP", BACKUP_KEEP) or BACKUP_KEEP)
         backups_dir = path.parent / "backups"
         backups_dir.mkdir(parents=True, exist_ok=True)
@@ -306,15 +362,27 @@ def backup_db(*, keep: int | None = None, force: bool = False) -> Path | None:
         while dest.exists():
             dest = backups_dir / f"vertex_{ts}_{n}.db"
             n += 1
-        src = sqlite3.connect(str(path), timeout=30.0)
+        sqlite = get_sqlite()
+        src = sqlite.connect(str(path), timeout=30.0)
         try:
-            dst = sqlite3.connect(str(dest))
+            if key:
+                apply_key(src, key)
+            dst = sqlite.connect(str(dest), timeout=30.0)
             try:
+                if key:
+                    apply_key(dst, key)
                 src.backup(dst)
+                dst.commit()
             finally:
                 dst.close()
         finally:
             src.close()
+        if key and is_plaintext_sqlite(dest):
+            try:
+                dest.unlink()
+            except Exception:
+                pass
+            raise RuntimeError("SQL backup was not encrypted")
         _LAST_BACKUP_MONO = now
         existing = sorted(
             backups_dir.glob("vertex_*.db"),
@@ -331,6 +399,55 @@ def backup_db(*, keep: int | None = None, force: bool = False) -> Path | None:
     except Exception as e:
         LOG.warning("SQL backup failed: %s", e)
         return None
+
+
+def purge_plaintext_backups() -> int:
+    """Remove unencrypted vertex_*.db copies left over from before SQLCipher."""
+    path = db_path()
+    n = purge_plaintext_db_copies(path.parent / "backups")
+    n += purge_plaintext_db_copies(path.parent)
+    leftover = path.with_name(path.name + ".plain.bak")
+    if leftover.exists() and is_plaintext_sqlite(leftover):
+        try:
+            leftover.unlink()
+            n += 1
+        except Exception:
+            pass
+    if n:
+        LOG.info("Removed %s plaintext database leftover(s)", n)
+    return n
+
+
+def change_db_password(old: str, new: str) -> None:
+    """Re-key the live database. `old` must open it; `new` becomes the session key."""
+    global _READY_CACHE
+    path = db_path()
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    if not verify_open(path, old):
+        raise RuntimeError("Current password is incorrect.")
+    sqlite = get_sqlite()
+    conn = sqlite.connect(str(path), timeout=30.0)
+    try:
+        apply_key(conn, old)
+        apply_rekey(conn, new)
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+    set_session_key(new)
+    _READY_CACHE = None
+    if not verify_open(path, new):
+        raise RuntimeError("Password was changed but the database could not be reopened.")
+    backups_dir = path.parent / "backups"
+    if backups_dir.is_dir():
+        for old_bak in backups_dir.glob("vertex_*.db"):
+            try:
+                old_bak.unlink()
+            except Exception:
+                pass
+    backup_db(force=True)
+    LOG.info("Database password changed")
 
 
 @contextmanager
@@ -405,11 +522,49 @@ def _json_file_present(path: Path) -> bool:
         return False
 
 
+def _json_still_needed() -> bool:
+    """True when a live JSON file still holds data that SQL does not."""
+    if not sql_db_ready():
+        return True
+    io = _io()
+
+    def _list_pending(path: Path, table: str) -> bool:
+        if sql_has_list(table) or not _json_file_present(path):
+            return False
+        raw = io._read_json_file(path, [])
+        return isinstance(raw, list) and len(raw) > 0
+
+    if _list_pending(io.DATA_FILE, "clients"):
+        return True
+    if _list_pending(io.ACCOUNT_MANAGERS_FILE, "account_managers"):
+        return True
+    if _list_pending(io.TASKS_FILE, "tasks"):
+        return True
+    if _json_file_present(io.MONTHLY_STATE_FILE) and not sql_has_monthly_state():
+        raw = io._read_json_file(io.MONTHLY_STATE_FILE, {})
+        if isinstance(raw, dict) and raw:
+            return True
+    if io.MATCH_RULES_DIR.exists() and any(io.MATCH_RULES_DIR.glob("*.json")) and not sql_has_any_match_rules():
+        return True
+    return False
+
+
+def _retire_json_if_safe() -> None:
+    if _json_still_needed():
+        return
+    try:
+        stats = _io().retire_json_artifacts()
+        if stats.get("removed"):
+            LOG.info("Retired JSON artifacts: %s", stats)
+    except Exception:
+        LOG.exception("JSON retire failed")
+
+
 def migrate_missing_json_to_sql() -> dict:
     """
     On startup: for each store, copy JSON → SQL only when the JSON file exists
     and that store has no SQL data yet. Never overwrites a store that already
-    has SQL rows. JSON files are left in place.
+    has SQL rows. After a successful copy, JSON files are removed.
     """
     global _MISSING_JSON_MIGRATED, _MISSING_JSON_MIGRATING
     empty = {
@@ -423,6 +578,14 @@ def migrate_missing_json_to_sql() -> dict:
         return empty
     _MISSING_JSON_MIGRATING = True
     try:
+        path = db_path()
+        if not path.exists() or path.stat().st_size < 64:
+            return empty
+        if not current_key() and not is_plaintext_sqlite(path):
+            try_unlock_from_keyring(path)
+            if not current_key():
+                return empty
+
         io = _io()
         need_clients = not sql_has_list("clients") and _json_file_present(io.DATA_FILE)
         need_ams = not sql_has_list("account_managers") and _json_file_present(io.ACCOUNT_MANAGERS_FILE)
@@ -432,6 +595,7 @@ def migrate_missing_json_to_sql() -> dict:
 
         if not (need_clients or need_ams or need_tasks or need_monthly or need_rules):
             _MISSING_JSON_MIGRATED = True
+            _retire_json_if_safe()
             return empty
 
         clients_json = io._read_json_file(io.DATA_FILE, []) if need_clients else None
@@ -451,6 +615,7 @@ def migrate_missing_json_to_sql() -> dict:
 
         if not (need_clients or need_ams or need_tasks or need_monthly or need_rules):
             _MISSING_JSON_MIGRATED = True
+            _retire_json_if_safe()
             return empty
 
         ensure_schema()
@@ -475,6 +640,7 @@ def migrate_missing_json_to_sql() -> dict:
         backup_db(force=True)
         LOG.info("Startup JSON→SQL migrate (missing stores only): %s", stats)
         _MISSING_JSON_MIGRATED = True
+        _retire_json_if_safe()
         return stats
     finally:
         _MISSING_JSON_MIGRATING = False
@@ -488,9 +654,14 @@ def migrate_json_to_sql(
     overwrite: bool = False,
 ) -> dict:
     """
-    Copy current JSON (and optional in-memory lists) into vertex.db.
-    Existing JSON files are left in place.
+    Copy current JSON (and optional in-memory lists) into an encrypted vertex.db.
+    JSON files are removed after a successful copy.
     """
+    if not current_key():
+        try_unlock_from_keyring(db_path() if db_path().exists() else None)
+    if not current_key():
+        raise DatabaseLockedError("Set a database password before migrating.")
+
     io = _io()
     existed = sql_db_ready()
     if existed and not overwrite:
@@ -556,6 +727,8 @@ def migrate_json_to_sql(
             ("migrated_at", now),
         )
 
+    global _READY_CACHE
+    _READY_CACHE = True
     stats = {
         "db_path": str(db_path()),
         "clients": n_clients,
@@ -568,4 +741,12 @@ def migrate_json_to_sql(
     }
     LOG.info("Migrated JSON to SQL: %s", stats)
     backup_db(force=True)
+    try:
+        retired = io.retire_json_artifacts()
+        if retired.get("removed"):
+            LOG.info("Retired JSON artifacts: %s", retired)
+        stats["json_retired"] = len(retired.get("removed") or [])
+    except Exception:
+        LOG.exception("JSON retire failed")
+        stats["json_retired"] = 0
     return stats

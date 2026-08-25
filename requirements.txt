@@ -11,3 +11,5 @@ colorama
 PyMuPDF
 PyPDF2
 pdfminer.six
+sqlcipher3>=0.6.2
+keyring>=25.0

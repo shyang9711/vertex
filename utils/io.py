@@ -223,6 +223,48 @@ def ensure_json_migrated_to_sql() -> dict:
         return {}
 
 
+def retire_json_artifacts() -> dict:
+    """Delete live JSON data files and their plaintext backups after SQL holds the data."""
+    removed: list[str] = []
+    errors: list[str] = []
+    files = [
+        DATA_FILE,
+        ACCOUNT_MANAGERS_FILE,
+        TASKS_FILE,
+        MONTHLY_STATE_FILE,
+    ]
+    try:
+        if MATCH_RULES_DIR.exists():
+            files.extend(sorted(MATCH_RULES_DIR.glob("*.json")))
+    except Exception:
+        pass
+    folders = [
+        CLIENTS_DIR / "backups",
+        TASKS_DIR / "backups",
+        MONTHLY_DATA_DIR / "backups",
+        MATCH_RULES_DIR / "backups",
+    ]
+    for path in files:
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+                removed.append(str(path))
+        except Exception as e:
+            errors.append(f"{path}: {e}")
+    for folder in folders:
+        try:
+            if folder.exists() and folder.is_dir():
+                shutil.rmtree(folder)
+                removed.append(str(folder))
+        except Exception as e:
+            errors.append(f"{folder}: {e}")
+    if removed:
+        LOG.info("Retired JSON artifacts (%s)", len(removed))
+    if errors:
+        LOG.warning("JSON retire errors: %s", errors)
+    return {"removed": removed, "errors": errors}
+
+
 def _is_primary_clients_path(path: Path | None) -> bool:
     if path is None:
         return True
@@ -234,13 +276,15 @@ def _is_primary_clients_path(path: Path | None) -> bool:
 
 def load_account_managers() -> list:
     ensure_json_migrated_to_sql()
-    if _sql().sql_has_list("account_managers"):
+    if sql_db_ready():
         try:
             data = _sql().load_account_managers_payloads()
-            if isinstance(data, list):
-                return data
+            return data if isinstance(data, list) else []
         except Exception:
-            LOG.exception("SQL account managers load failed; falling back to JSON")
+            LOG.exception("SQL account managers load failed")
+            if messagebox:
+                messagebox.showerror("Load Error", "Couldn't read account managers from the encrypted database.")
+            return []
     data = _read_json_file(ACCOUNT_MANAGERS_FILE, default=[])
     return data if isinstance(data, list) else []
 
@@ -259,13 +303,15 @@ def save_account_managers(managers: list) -> None:
 
 def load_tasks_list(path: Path | None = None) -> list:
     ensure_json_migrated_to_sql()
-    if _sql().sql_has_list("tasks"):
+    if sql_db_ready():
         try:
             data = _sql().load_tasks_payloads()
-            if isinstance(data, list):
-                return data
+            return data if isinstance(data, list) else []
         except Exception:
-            LOG.exception("SQL tasks load failed; falling back to JSON")
+            LOG.exception("SQL tasks load failed")
+            if messagebox:
+                messagebox.showerror("Load Error", "Couldn't read tasks from the encrypted database.")
+            return []
     target = Path(path) if path is not None else TASKS_FILE
     data = _read_json_file(target, default=[])
     return data if isinstance(data, list) else []
@@ -284,13 +330,13 @@ def save_tasks_list(tasks: list, path: Path | None = None) -> None:
 
 def load_monthly_state() -> dict:
     ensure_json_migrated_to_sql()
-    if _sql().sql_has_monthly_state():
+    if sql_db_ready():
         try:
             data = _sql().load_monthly_state_payload()
-            if isinstance(data, dict):
-                return data
+            return data if isinstance(data, dict) else {}
         except Exception:
-            LOG.exception("SQL monthly state load failed; falling back to JSON")
+            LOG.exception("SQL monthly state load failed")
+            return {}
     data = _read_json_file(MONTHLY_STATE_FILE, default={})
     return data if isinstance(data, dict) else {}
 
@@ -307,13 +353,13 @@ def save_monthly_state(blob: dict) -> None:
 
 def load_match_rules_map() -> dict:
     ensure_json_migrated_to_sql()
-    if _sql().sql_has_any_match_rules():
+    if sql_db_ready():
         try:
             data = _sql().load_json_files("match_rules")
-            if isinstance(data, dict) and data:
-                return data
+            return data if isinstance(data, dict) else {}
         except Exception:
-            LOG.exception("SQL match rules load failed; falling back to JSON")
+            LOG.exception("SQL match rules load failed")
+            return {}
     rules = {}
     if MATCH_RULES_DIR.exists():
         for p in MATCH_RULES_DIR.glob("*.json"):
@@ -429,20 +475,25 @@ def _clients_from_raw_list(data) -> List[Dict[str, Any]]:
 
 
 def load_clients(path: Path | None = None, _from_backup: bool = False) -> List[Dict[str, Any]]:
-    """Load clients from clients.json file. If path is given, use it (avoids path/cache confusion).
+    """Load clients from the encrypted database, or from JSON before migration.
 
-    If the file is missing or unreadable, attempt automatic recovery from the
-    newest valid backup before falling back to an empty list.
+    If a JSON file is missing or unreadable before SQL exists, attempt recovery
+    from the newest valid backup before falling back to an empty list.
     """
     target = (path or DATA_FILE).resolve()
     if not _from_backup:
         ensure_json_migrated_to_sql()
-    if not _from_backup and _is_primary_clients_path(target) and _sql().sql_has_list("clients"):
+    if not _from_backup and _is_primary_clients_path(target) and sql_db_ready():
         try:
             return _clients_from_raw_list(_sql().load_clients_payloads())
         except Exception:
-            LOG.exception("SQL clients load failed; falling back to JSON")
+            LOG.exception("SQL clients load failed")
+            if messagebox:
+                messagebox.showerror("Load Error", "Couldn't read clients from the encrypted database.")
+            return []
     if not target.exists():
+        if not _from_backup and DB_FILE.exists():
+            return []
         # File deleted/missing: try to recover from the newest valid backup first.
         if not _from_backup:
             bak = latest_valid_backup(target)
@@ -550,8 +601,11 @@ def save_clients(items: List[Dict[str, Any]], path: Path | None = None) -> None:
             _sql().save_clients_payloads(to_save)
             LOG.info("save_clients: wrote %s clients to SQL", len(to_save))
             return
-        except Exception:
-            LOG.exception("SQL clients save failed; falling back to JSON")
+        except Exception as e:
+            LOG.exception("SQL clients save failed")
+            if messagebox:
+                messagebox.showerror("Save Error", f"Couldn't save to the encrypted database:\n{e}")
+            return
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         # Snapshot the current good file before overwriting it.
