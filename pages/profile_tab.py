@@ -1472,7 +1472,7 @@ def init_profile_tab(
     _refresh_people_tree()
     _refresh_client_tasks_tv()
 
-    # ---------- LEFT: IDs/Accounts, Tax Rates, Address, Memo ----------
+    # ---------- LEFT: IDs/Accounts, Tax Rates, Address ----------
     ttk.Label(left, text="IDs / Accounts", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     ids = ttk.Frame(left, style="Card.TFrame"); ids.pack(fill=tk.X, pady=(4,8))
     def _line(frame, text): ttk.Label(frame, text=text).pack(anchor="w")
@@ -1552,31 +1552,167 @@ def init_profile_tab(
     _refresh_tracker_summary()
     prof._refresh_tracker_summary = _refresh_tracker_summary
 
-    ttk.Label(left, text="Memo", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-    memo_txt = ScrolledText(left, width=56, height=4, wrap="word")
-    memo_txt.pack(fill=tk.X, pady=(4,0))
-    memo_txt.insert("1.0", client.get("memo",""))
-
+    # ---------- Memo (full width, below both columns) ----------
+    _expanded_win = [None]
+    _expanded_txt = [None]
+    _syncing_memo = [False]
     _memo_save_job = [None]  # mutable to cancel pending after_id
 
-    def _save_memo():
+    def _get_memo_text(widget):
+        return widget.get("1.0", "end-1c")
+
+    def _set_memo_text(widget, text):
+        current = widget.get("1.0", "end-1c")
+        if current != text:
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", text)
+
+    def _bind_text_scroll(widget):
+        def _on_wheel(event):
+            if getattr(event, "delta", 0):
+                widget.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif getattr(event, "num", None) == 4:
+                widget.yview_scroll(-3, "units")
+            elif getattr(event, "num", None) == 5:
+                widget.yview_scroll(3, "units")
+            return "break"
+
+        targets = [widget]
+        vbar = getattr(widget, "vbar", None)
+        if vbar is not None:
+            targets.append(vbar)
+        for w in targets:
+            w.bind("<MouseWheel>", _on_wheel)
+            w.bind("<Button-4>", _on_wheel)
+            w.bind("<Button-5>", _on_wheel)
+
+    def _other_memo_widget(source_widget):
+        if source_widget is memo_txt:
+            other = _expanded_txt[0]
+        else:
+            other = memo_txt
+        if other is None:
+            return None
         try:
-            text = memo_txt.get("1.0", "end").strip()
-            client["memo"] = text
+            if not other.winfo_exists():
+                return None
+        except Exception:
+            return None
+        return other
+
+    def _sync_other_editor(source_widget):
+        if _syncing_memo[0]:
+            return
+        other = _other_memo_widget(source_widget)
+        if other is None:
+            return
+        text = _get_memo_text(source_widget)
+        _syncing_memo[0] = True
+        try:
+            _set_memo_text(other, text)
+        finally:
+            _syncing_memo[0] = False
+
+    def _save_memo(source_widget=None):
+        try:
+            w = source_widget
+            if w is None:
+                w = memo_txt
+            try:
+                if not w.winfo_exists():
+                    w = memo_txt
+            except Exception:
+                w = memo_txt
+            text = _get_memo_text(w)
+            _sync_other_editor(w)
+            client["memo"] = text.strip()
             save_fn = getattr(app, "save_clients_data", None)
             if save_fn and callable(save_fn):
                 save_fn()
         except Exception:
             pass
 
-    def _debounced_save_memo(_e=None):
+    def _schedule_memo_save(source_widget):
+        if _syncing_memo[0]:
+            return
+        _sync_other_editor(source_widget)
         job = _memo_save_job[0]
         if job is not None:
-            left.after_cancel(job)
-        _memo_save_job[0] = left.after(500, lambda: (_save_memo(), _memo_save_job.__setitem__(0, None)))
+            try:
+                prof.after_cancel(job)
+            except Exception:
+                pass
+        def _run():
+            _memo_save_job[0] = None
+            _save_memo(source_widget)
+        _memo_save_job[0] = prof.after(500, _run)
 
-    memo_txt.bind("<FocusOut>", lambda _: _save_memo())
-    memo_txt.bind("<KeyRelease>", _debounced_save_memo)
+    def _flush_memo_save(source_widget=None):
+        if _syncing_memo[0]:
+            return
+        job = _memo_save_job[0]
+        if job is not None:
+            try:
+                prof.after_cancel(job)
+            except Exception:
+                pass
+            _memo_save_job[0] = None
+        _save_memo(source_widget)
+
+    def _open_expanded_memo():
+        existing = _expanded_win[0]
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.deiconify()
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
+
+        win = tk.Toplevel(prof.winfo_toplevel())
+        win.title("Client Memo")
+        win.geometry("850x550")
+        win.minsize(400, 300)
+
+        body = ttk.Frame(win, padding=8)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(body, text="Client Memo", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Separator(body, orient="horizontal").pack(fill=tk.X, pady=(4, 8))
+
+        exp_txt = ScrolledText(body, wrap="word")
+        exp_txt.pack(fill=tk.BOTH, expand=True)
+        exp_txt.insert("1.0", _get_memo_text(memo_txt))
+        _bind_text_scroll(exp_txt)
+        exp_txt.bind("<KeyRelease>", lambda _e: _schedule_memo_save(exp_txt))
+        exp_txt.bind("<FocusOut>", lambda _e: _flush_memo_save(exp_txt))
+
+        btn_row = ttk.Frame(body)
+        btn_row.pack(fill=tk.X, pady=(8, 0))
+
+        def _close_expanded():
+            txt = _expanded_txt[0]
+            _expanded_txt[0] = None
+            _expanded_win[0] = None
+            if txt is not None:
+                try:
+                    if txt.winfo_exists():
+                        _flush_memo_save(txt)
+                except Exception:
+                    pass
+            try:
+                if win.winfo_exists():
+                    win.destroy()
+            except Exception:
+                pass
+
+        ttk.Button(btn_row, text="Close", command=_close_expanded).pack(side=tk.RIGHT)
+
+        _expanded_win[0] = win
+        _expanded_txt[0] = exp_txt
+        win.protocol("WM_DELETE_WINDOW", _close_expanded)
 
     def refresh_memo():
         """Refresh memo text from current client (e.g. after saving from Edit Client dialog)."""
@@ -1584,10 +1720,72 @@ def init_profile_tab(
             i = _resolve_client_idx_from_client()
             if i is not None and getattr(app, "items", None) and 0 <= i < len(app.items):
                 c = app.items[i]
-                memo_txt.delete("1.0", tk.END)
-                memo_txt.insert("1.0", c.get("memo", ""))
+                new_text = c.get("memo", "")
+                _syncing_memo[0] = True
+                try:
+                    _set_memo_text(memo_txt, new_text)
+                    exp = _expanded_txt[0]
+                    if exp is not None:
+                        try:
+                            if exp.winfo_exists():
+                                _set_memo_text(exp, new_text)
+                        except Exception:
+                            pass
+                finally:
+                    _syncing_memo[0] = False
         except Exception:
             pass
+
+    memo_section = ttk.Frame(prof)
+    memo_section.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+
+    memo_header = ttk.Frame(memo_section)
+    memo_header.pack(fill=tk.X)
+
+    ttk.Label(
+        memo_header,
+        text="Memo",
+        font=("Segoe UI", 11, "bold")
+    ).pack(side=tk.LEFT)
+
+    ttk.Button(
+        memo_header,
+        text="Expand",
+        command=_open_expanded_memo
+    ).pack(side=tk.RIGHT)
+
+    memo_txt = ScrolledText(
+        memo_section,
+        height=10,
+        wrap="word"
+    )
+    memo_txt.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+    memo_txt.insert("1.0", client.get("memo", ""))
+    _bind_text_scroll(memo_txt)
+    memo_txt.bind("<KeyRelease>", lambda _e: _schedule_memo_save(memo_txt))
+    memo_txt.bind("<FocusOut>", lambda _e: _flush_memo_save(memo_txt))
+
+    def _on_prof_destroy(e):
+        if e.widget is not prof:
+            return
+        win = _expanded_win[0]
+        txt = _expanded_txt[0]
+        _expanded_win[0] = None
+        _expanded_txt[0] = None
+        if txt is not None:
+            try:
+                if txt.winfo_exists():
+                    _flush_memo_save(txt)
+            except Exception:
+                pass
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.destroy()
+            except Exception:
+                pass
+
+    prof.bind("<Destroy>", _on_prof_destroy, add=True)
 
     prof.refresh_memo = refresh_memo
 
