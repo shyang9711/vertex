@@ -1656,24 +1656,10 @@ class DashboardPage:
         # update on typing, pasting, programmatic set, etc.
         v_client_name.trace_add("write", lambda *_: _on_client_change())
 
-        def _on_client_down(e=None):
-            # if popup visible, move selection; else open if there are matches
-            if popup.winfo_viewable():
-                popup.move_selection(+1)
-                popup.focus_listbox()
-            else:
-                matches = _client_matches(v_client_name.get())
-                if matches:
-                    popup.show(matches)
-                    popup.focus_listbox()
-            return "break"
-
-        def _on_client_up(e=None):
-            if popup.winfo_viewable():
-                popup.move_selection(-1)
-                popup.focus_listbox()
-                return "break"
-            return None
+        def _open_client_popup():
+            matches = _client_matches(v_client_name.get())
+            if matches:
+                popup.show(matches)
 
         def _on_client_enter(e=None):
             # If popup is visible, choose highlighted item; otherwise keep default Enter behavior
@@ -1687,8 +1673,7 @@ class DashboardPage:
             popup.hide()
             return "break"
 
-        client_entry.bind("<Down>", _on_client_down)
-        client_entry.bind("<Up>", _on_client_up)
+        popup.bind_entry_arrows(client_entry, on_open=_open_client_popup)
         client_entry.bind("<Return>", _on_client_enter)
         client_entry.bind("<Escape>", _on_client_escape)
 

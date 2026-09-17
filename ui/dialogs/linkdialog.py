@@ -184,8 +184,7 @@ class LinkDialog(tk.Toplevel):
         # IMPORTANT: do NOT show suggestions on FocusIn (fixes “always on / can’t type”)
         self.ent_link.bind("<KeyRelease>", self._on_link_key)
         self.ent_link.bind("<Key>", self._on_link_key_press)  # Trigger on key press to enable search
-        self.ent_link.bind("<Down>", self._on_link_down)
-        self.ent_link.bind("<Up>", self._on_link_up)
+        self._popup.bind_entry_arrows(self.ent_link, on_open=self._refresh_popup)
         self.ent_link.bind("<Return>", self._on_link_return)
         self.ent_link.bind("<Escape>", self._on_link_escape)
         self.ent_link.bind("<FocusOut>", self._on_link_focus_out)
@@ -287,7 +286,7 @@ class LinkDialog(tk.Toplevel):
     def _on_link_key_press(self, event=None):
         """Triggered on key press to enable search even when there's an initial value"""
         # Allow search to work when user starts typing
-        if event and event.keysym in ("Up", "Down", "Return", "Escape", "Tab", "Shift_L", "Shift_R", "Control_L", "Control_R"):
+        if event and event.keysym in ("Up", "Down", "Left", "Right", "Return", "Escape", "Tab", "Shift_L", "Shift_R", "Control_L", "Control_R"):
             return
         # Schedule the search to happen after the key is processed
         self.after_idle(self._on_link_key, event)
@@ -295,7 +294,7 @@ class LinkDialog(tk.Toplevel):
     def _on_link_key(self, event=None):
         # Ignore navigation keys
         if event:
-            if event.keysym in ("Up", "Down", "Return", "Escape", "Tab", "Shift_L", "Shift_R", "Control_L", "Control_R"):
+            if event.keysym in ("Up", "Down", "Left", "Right", "Return", "Escape", "Tab", "Shift_L", "Shift_R", "Control_L", "Control_R"):
                 return
 
         typed = self.v_link.get().strip()
@@ -322,28 +321,6 @@ class LinkDialog(tk.Toplevel):
             print(f"[LinkDialog] _on_link_key: no matches, hiding popup")
             self._popup.hide()
 
-
-    def _on_link_down(self, e=None):
-        # open popup and move into listbox without mouse click
-        if not self._popup.winfo_viewable():
-            self._refresh_popup()
-        if self._popup.winfo_viewable():
-            try:
-                self._popup.listbox.focus_set()
-                self._popup.listbox.event_generate("<Down>")
-            except Exception:
-                pass
-        return "break"
-
-    def _on_link_up(self, e=None):
-        if self._popup.winfo_viewable():
-            try:
-                self._popup.listbox.focus_set()
-                self._popup.listbox.event_generate("<Up>")
-            except Exception:
-                pass
-            return "break"
-        return None
 
     def _on_link_return(self, event=None):
         # If popup is visible, choose highlighted item

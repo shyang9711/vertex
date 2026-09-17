@@ -57,9 +57,13 @@ class AutocompletePopup(tk.Toplevel):
 
         self.listbox.unbind("<Up>")
         self.listbox.unbind("<Down>")
+        self.listbox.unbind("<Left>")
+        self.listbox.unbind("<Right>")
 
         self.listbox.bind("<Up>", self._lb_up)
         self.listbox.bind("<Down>", self._lb_down)
+        self.listbox.bind("<Left>", self._lb_horizontal)
+        self.listbox.bind("<Right>", self._lb_horizontal)
 
         self.listbox.bind("<Return>", self._choose)
         self.bind("<FocusOut>", self._maybe_hide)
@@ -111,6 +115,34 @@ class AutocompletePopup(tk.Toplevel):
         self.listbox.selection_clear(0, tk.END)
         self.listbox.selection_set(i)
         self.listbox.activate(i)
+        try:
+            self.listbox.see(i)
+        except Exception:
+            pass
+
+    def bind_entry_arrows(self, entry, *, on_open=None):
+        """Navigate this popup from an Entry with Up/Down/Left/Right.
+
+        Up/Down move the highlight. Left/Right keep caret movement in the entry.
+        Never uses event_generate — synthesizing those keys re-delivers them to
+        the focused entry and overflows Tkinter's EventType conversion.
+        """
+        def _vertical(event):
+            delta = 1 if event.keysym == "Down" else -1
+            if not self.winfo_viewable():
+                if on_open is not None:
+                    on_open()
+                return "break"
+            self.move_selection(delta)
+            return "break"
+
+        def _horizontal(_event):
+            return None
+
+        entry.bind("<Up>", _vertical)
+        entry.bind("<Down>", _vertical)
+        entry.bind("<Left>", _horizontal)
+        entry.bind("<Right>", _horizontal)
 
     def current_text(self) -> Optional[str]:
         cur = self.listbox.curselection()
@@ -123,6 +155,9 @@ class AutocompletePopup(tk.Toplevel):
 
     def _lb_down(self, event=None):
         self.move_selection(+1)
+        return "break"
+
+    def _lb_horizontal(self, event=None):
         return "break"
 
     def _choose(self, *_):

@@ -531,28 +531,12 @@ class App(ttk.Frame):
             self._ac.hide()
             return "break"
 
-        def _on_search_up(e):
-            if not self._ac.winfo_viewable():
-                self._update_suggestions()
-                if not self._ac.winfo_viewable():
-                    return "break"
-            self._ac.focus_listbox()
-            self._ac.listbox.event_generate("<Up>")
-            return "break"
-
-        def _on_search_down(e):
-            if not self._ac.winfo_viewable():
-                self._update_suggestions()
-                if not self._ac.winfo_viewable():
-                    return "break"
-            self._ac.focus_listbox()
-            self._ac.listbox.event_generate("<Down>")
-            return "break"
-
         def _on_search_return(e):
-            txt = self._ac.current_text() or self.search_entry.get()
-            self._open_from_suggestion(txt)
-            return "break"
+            if self._ac.winfo_viewable():
+                txt = self._ac.current_text() or self.search_entry.get()
+                self._open_from_suggestion(txt)
+                return "break"
+            return _submit_top_search(e)
 
         def _entry_focus_out(e):
             def _check():
@@ -615,9 +599,8 @@ class App(ttk.Frame):
             ensure_link(a, b_id, b_label, role_a_to_b)
             ensure_link(b, a_id, a_label, role_b_to_a)
 
-        self.search_entry.bind("<KeyPress-Down>", _on_search_down)
-        self.search_entry.bind("<KeyPress-Up>", _on_search_up)
-        self.search_entry.bind("<Return>", _submit_top_search)
+        self._ac.bind_entry_arrows(self.search_entry, on_open=self._update_suggestions)
+        self.search_entry.bind("<Return>", _on_search_return)
         self.search_entry.bind("<Escape>", lambda e: (self._ac.hide(), "break"))
         self.search_entry.bind("<FocusOut>", _entry_focus_out)
         self.search_entry.bind("<Control-a>",  lambda e: (e.widget.select_range(0, 'end'), e.widget.icursor('end'), "break"))
@@ -3921,10 +3904,11 @@ class App(ttk.Frame):
         ttk.Button(btns, text="Link", command=on_ok).pack(side=tk.RIGHT)
 
         def on_keyrelease(e=None):
-            if e and e.keysym in ("Up","Down","Return","Escape","Prior","Next"):
+            if e and e.keysym in ("Up","Down","Left","Right","Return","Escape","Prior","Next"):
                 return
             refresh_popup()
 
+        popup.bind_entry_arrows(ent, on_open=refresh_popup)
         ent.bind("<KeyRelease>", on_keyrelease)
         ent.bind("<FocusIn>", lambda e: refresh_popup())
         ent.bind("<Return>", lambda e: on_ok())
