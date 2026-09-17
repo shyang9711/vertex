@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -91,8 +91,35 @@ jobs:
           Write-Host "Tag=$tag Version=$ver force=$isMajor"
           Get-Content update_policy.json
 
-      - name: Upload EXE to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Verify EXE
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/vertex.exe")) {
+            throw "dist/vertex.exe was not built"
+          }
+          Get-Item "dist/vertex.exe" | Format-List FullName, Length, LastWriteTime
+
+      - name: Keep EXE as workflow artifact
+        uses: actions/upload-artifact@v5
         with:
-          files: |
-            dist/vertex.exe
+          name: vertex-exe
+          path: dist/vertex.exe
+          if-no-files-found: error
+
+      - name: Upload EXE to GitHub Release
+        id: gh_release
+        continue-on-error: true
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/vertex.exe
+          fail_on_unmatched_files: true
+          overwrite_files: true
+
+      - name: Retry EXE upload with gh
+        if: steps.gh_release.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 8
+          gh release upload "${{ github.ref_name }}" "dist/vertex.exe" --clobber
