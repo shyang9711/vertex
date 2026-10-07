@@ -4,7 +4,8 @@ import re
 import os
 import sys
 from datetime import datetime
-from tkinter import Tk, filedialog, simpledialog, messagebox
+import tkinter as tk
+from tkinter import Tk, filedialog
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -12,37 +13,159 @@ try:
 except Exception:
     pass
 
+
+def ask_split_payment_options(parent):
+    """One dialog for split-payment settings. Returns (include_split, mode, threshold) or None if cancelled."""
+    dlg = tk.Toplevel(parent)
+    dlg.title("Split Payment")
+    dlg.resizable(False, False)
+    dlg.transient(parent)
+    dlg.grab_set()
+
+    result = {"ok": False}
+
+    BG = "#f4f6f9"
+    CARD = "#ffffff"
+    FG = "#1a202c"
+    MUTED = "#718096"
+    ACCENT = "#3182ce"
+    ACCENT_HOVER = "#2b6cb0"
+    BORDER = "#e2e8f0"
+
+    dlg.configure(bg=BG)
+
+    outer = tk.Frame(dlg, bg=BG, padx=20, pady=18)
+    outer.pack(fill="both", expand=True)
+
+    tk.Label(
+        outer, text="Split Payment", font=("Segoe UI", 14, "bold"),
+        fg=FG, bg=BG, anchor="w",
+    ).pack(fill="x")
+    tk.Label(
+        outer,
+        text="Optionally count split-payment days while extracting payroll hours.",
+        font=("Segoe UI", 9), fg=MUTED, bg=BG, wraplength=360, justify="left",
+        anchor="w",
+    ).pack(fill="x", pady=(2, 14))
+
+    card = tk.Frame(outer, bg=CARD, highlightbackground=BORDER, highlightthickness=1, padx=14, pady=12)
+    card.pack(fill="x")
+
+    choice = tk.StringVar(value="skip")
+    threshold_var = tk.StringVar(value="8")
+
+    thresh_row = tk.Frame(card, bg=CARD)
+    err_lbl = tk.Label(outer, text="", font=("Segoe UI", 8), fg="#c53030", bg=BG, anchor="w")
+
+    thresh_entry = tk.Entry(
+        thresh_row, textvariable=threshold_var, width=8,
+        font=("Segoe UI", 10), relief="solid", bd=1,
+    )
+
+    def _sync(*_):
+        enabled = choice.get() == "2"
+        thresh_entry.configure(state="normal" if enabled else "disabled")
+        err_lbl.configure(text="")
+
+    def _radio(text, value, desc):
+        row = tk.Frame(card, bg=CARD)
+        row.pack(fill="x", pady=4)
+        tk.Radiobutton(
+            row, text=text, variable=choice, value=value,
+            font=("Segoe UI", 10), fg=FG, bg=CARD, activebackground=CARD,
+            selectcolor=CARD, anchor="w", command=_sync,
+        ).pack(anchor="w")
+        tk.Label(
+            row, text=desc, font=("Segoe UI", 8), fg=MUTED, bg=CARD,
+            wraplength=320, justify="left", anchor="w",
+        ).pack(anchor="w", padx=(22, 0))
+
+    _radio(
+        "Skip split payment",
+        "skip",
+        "Extract hours only — no SPLIT COUNT column.",
+    )
+    _radio(
+        "Split Payment mode",
+        "1",
+        "Count days with at least two shifts of 0.5 hours or more.",
+    )
+    _radio(
+        "Daily Total Threshold mode",
+        "2",
+        "Count days whose printed daily total meets or exceeds a threshold.",
+    )
+
+    thresh_row.pack(fill="x", pady=(8, 0), padx=(22, 0))
+    tk.Label(
+        thresh_row, text="Daily hours threshold", font=("Segoe UI", 9),
+        fg=FG, bg=CARD,
+    ).pack(side="left")
+    thresh_entry.pack(side="left", padx=(10, 0))
+    err_lbl.pack(fill="x", pady=(8, 0))
+
+    def _ok():
+        c = choice.get()
+        if c == "skip":
+            result.update(ok=True, include_split=False, mode=None, threshold=None)
+            dlg.destroy()
+            return
+        if c == "1":
+            result.update(ok=True, include_split=True, mode=1, threshold=None)
+            dlg.destroy()
+            return
+        try:
+            thr = float(threshold_var.get().strip())
+        except ValueError:
+            err_lbl.configure(text="Enter a valid number for the threshold.")
+            return
+        if thr <= 0:
+            err_lbl.configure(text="Threshold must be greater than 0.")
+            return
+        result.update(ok=True, include_split=True, mode=2, threshold=thr)
+        dlg.destroy()
+
+    def _cancel():
+        result["ok"] = False
+        dlg.destroy()
+
+    btns = tk.Frame(outer, bg=BG)
+    btns.pack(fill="x", pady=(16, 0))
+    tk.Button(
+        btns, text="Cancel", command=_cancel, font=("Segoe UI", 9),
+        bg=CARD, fg=FG, relief="flat", padx=14, pady=6, cursor="hand2",
+        highlightthickness=1, highlightbackground=BORDER,
+    ).pack(side="right")
+    tk.Button(
+        btns, text="Continue", command=_ok, font=("Segoe UI", 9, "bold"),
+        bg=ACCENT, fg="white", activebackground=ACCENT_HOVER, activeforeground="white",
+        relief="flat", padx=16, pady=6, cursor="hand2",
+    ).pack(side="right", padx=(0, 8))
+
+    _sync()
+    dlg.protocol("WM_DELETE_WINDOW", _cancel)
+    dlg.update_idletasks()
+    w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+    x = (dlg.winfo_screenwidth() - w) // 2
+    y = (dlg.winfo_screenheight() - h) // 3
+    dlg.geometry(f"+{x}+{y}")
+    dlg.wait_window()
+
+    if not result.get("ok"):
+        return None
+    return result["include_split"], result["mode"], result["threshold"]
+
+
 # Hide Tkinter root
 root = Tk()
 root.withdraw()
 
-# Ask whether to calculate split payment now
-include_split = messagebox.askyesno(
-    "Split Payment",
-    "Calculate split payment count now?"
-)
+split_opts = ask_split_payment_options(root)
+if split_opts is None:
+    print("[X] Cancelled. Exiting...")
+    sys.exit(0)
 
-mode = None
-threshold_hours = None
-
-# Ask for mode
-if include_split:
-    mode = simpledialog.askinteger(
-        "Select Mode",
-        "Enter 1 for Split Payment mode\nEnter 2 for Daily Total Threshold mode"
-    )
-    if mode not in (1, 2):
-        messagebox.showerror("Invalid Choice", "You must enter 1 or 2.")
-        sys.exit(1)
-
-    if mode == 2:
-        threshold_hours = simpledialog.askfloat(
-            "Threshold",
-            "Enter the daily hours threshold for split payment (inclusive)"
-        )
-        if threshold_hours is None or threshold_hours <= 0:
-            messagebox.showerror("Invalid Threshold", "Must be greater than 0.")
-            sys.exit(1)
+include_split, mode, threshold_hours = split_opts
 
 pdf_path = filedialog.askopenfilename(
     title="Select PDF File",
