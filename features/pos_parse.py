@@ -1,11 +1,10 @@
-import fitz
 import pandas as pd
 import re
 import os
 import sys
 from datetime import datetime
 import tkinter as tk
-from tkinter import Tk, filedialog
+from tkinter import filedialog
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -14,13 +13,12 @@ except Exception:
     pass
 
 
-def ask_split_payment_options(parent):
+def ask_split_payment_options():
     """One dialog for split-payment settings. Returns (include_split, mode, threshold) or None if cancelled."""
-    dlg = tk.Toplevel(parent)
+    # Use Tk itself (not withdrawn+Toplevel) so the window reliably shows when launched as a subprocess.
+    dlg = tk.Tk()
     dlg.title("Split Payment")
     dlg.resizable(False, False)
-    dlg.transient(parent)
-    dlg.grab_set()
 
     result = {"ok": False}
 
@@ -149,34 +147,45 @@ def ask_split_payment_options(parent):
     x = (dlg.winfo_screenwidth() - w) // 2
     y = (dlg.winfo_screenheight() - h) // 3
     dlg.geometry(f"+{x}+{y}")
-    dlg.wait_window()
+    dlg.lift()
+    dlg.attributes("-topmost", True)
+    dlg.after(200, lambda: dlg.attributes("-topmost", False))
+    dlg.focus_force()
+    dlg.mainloop()
 
     if not result.get("ok"):
         return None
     return result["include_split"], result["mode"], result["threshold"]
 
 
-# Hide Tkinter root
-root = Tk()
-root.withdraw()
-
-split_opts = ask_split_payment_options(root)
+print("Waiting for split payment options…", flush=True)
+split_opts = ask_split_payment_options()
 if split_opts is None:
-    print("[X] Cancelled. Exiting...")
+    print("[X] Cancelled. Exiting...", flush=True)
     sys.exit(0)
 
 include_split, mode, threshold_hours = split_opts
 
+# Fresh Tk for the file picker after the options window closed
+root = tk.Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+print("Select a payroll PDF…", flush=True)
 pdf_path = filedialog.askopenfilename(
+    parent=root,
     title="Select PDF File",
     filetypes=[("PDF Files", "*.pdf")]
 )
+root.destroy()
 if not pdf_path:
-    print("[X] No file selected. Exiting...")
+    print("[X] No file selected. Exiting...", flush=True)
     sys.exit(0)
 
+print(f"Reading PDF: {pdf_path}", flush=True)
+import pymupdf  # after UI so the dialog shows immediately
+
 # Load PDF
-doc = fitz.open(pdf_path)
+doc = pymupdf.open(pdf_path)
 
 employee_header_pattern = re.compile(r'\[(.*?)\] (.+)')
 numeric_line_pattern   = re.compile(r'^\d+(?:\.\d{2})?$')

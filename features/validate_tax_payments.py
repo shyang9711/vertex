@@ -1,10 +1,10 @@
 import pandas as pd
-import fitz  # PyMuPDF
 import warnings
 import re
 from io import StringIO
 from collections import Counter
 from datetime import datetime, date
+import tkinter as tk
 from tkinter import Tk, Toplevel, Text, Scrollbar, Button, END, RIGHT, Y, LEFT, BOTH, messagebox, filedialog, StringVar, OptionMenu, Label
 try:
     from colorama import init, Fore, Style
@@ -33,16 +33,18 @@ OK = "OK"
 
 required_packages = [
     "pandas",
-    "PyMuPDF",    # for fitz
+    "PyMuPDF",
     "colorama"
 ]
 
 for package in required_packages:
     try:
-        __import__(package if package != "PyMuPDF" else "fitz")
+        __import__(package if package != "PyMuPDF" else "pymupdf")
     except ImportError:
         print(f"Installing missing package: {package}")
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+import pymupdf
 
 
 # Define colors
@@ -105,55 +107,115 @@ def is_date_like(val: str) -> bool:
         return False
 
 
-# Prompt user for tax year and quarter
-def get_tax_period_input():
-
-    # Get default values
+def ask_tax_check_options():
+    """Period + which source(s) to check. Returns (year, quarter, check_eftps, check_edd) or None."""
     default_year, default_quarter = get_previous_quarter_and_year()
 
+    dlg = tk.Tk()
+    dlg.title("Tax Payment Checker")
+    dlg.resizable(False, False)
 
-    period_root = Toplevel()
-    period_root.title("Tax Period Selection")
-    period_root.geometry("300x180")
+    result = {"ok": False}
+    BG, CARD, FG, MUTED = "#f4f6f9", "#ffffff", "#1a202c", "#718096"
+    ACCENT, ACCENT_HOVER, BORDER = "#3182ce", "#2b6cb0", "#e2e8f0"
+    dlg.configure(bg=BG)
 
-    year_var = StringVar(value=default_year)
-    quarter_var = StringVar(value=default_quarter)
+    outer = tk.Frame(dlg, bg=BG, padx=20, pady=18)
+    outer.pack(fill="both", expand=True)
 
-    Label(period_root, text="Enter Tax Year:").pack(pady=(10, 2))
-    year_entry = Text(period_root, height=1, width=10)
-    year_entry.insert("1.0", default_year)
-    year_entry.pack()
+    tk.Label(outer, text="Tax Payment Checker", font=("Segoe UI", 14, "bold"),
+             fg=FG, bg=BG, anchor="w").pack(fill="x")
+    tk.Label(
+        outer,
+        text="Choose the period and which payment source(s) to validate.",
+        font=("Segoe UI", 9), fg=MUTED, bg=BG, wraplength=380, justify="left", anchor="w",
+    ).pack(fill="x", pady=(2, 14))
 
-    Label(period_root, text="Select Quarter:").pack(pady=(10, 2))
-    quarter_dropdown = OptionMenu(period_root, quarter_var, "Q1", "Q2", "Q3", "Q4")
-    quarter_dropdown.pack()
+    card = tk.Frame(outer, bg=CARD, highlightbackground=BORDER, highlightthickness=1, padx=14, pady=12)
+    card.pack(fill="x")
 
-    def submit():
-        year = year_entry.get("1.0", "end").strip()
+    year_var = tk.StringVar(value=default_year)
+    quarter_var = tk.StringVar(value=default_quarter)
+    source_var = tk.StringVar(value="both")
+
+    period = tk.Frame(card, bg=CARD)
+    period.pack(fill="x", pady=(0, 10))
+    tk.Label(period, text="Tax year", font=("Segoe UI", 9), fg=FG, bg=CARD).grid(row=0, column=0, sticky="w")
+    tk.Entry(period, textvariable=year_var, width=8, font=("Segoe UI", 10), relief="solid", bd=1).grid(
+        row=0, column=1, sticky="w", padx=(10, 20)
+    )
+    tk.Label(period, text="Quarter", font=("Segoe UI", 9), fg=FG, bg=CARD).grid(row=0, column=2, sticky="w")
+    tk.OptionMenu(period, quarter_var, "Q1", "Q2", "Q3", "Q4").grid(row=0, column=3, sticky="w", padx=(10, 0))
+
+    tk.Label(card, text="Check against", font=("Segoe UI", 9, "bold"), fg=FG, bg=CARD, anchor="w").pack(
+        fill="x", pady=(4, 4)
+    )
+
+    def _radio(text, value, desc):
+        row = tk.Frame(card, bg=CARD)
+        row.pack(fill="x", pady=3)
+        tk.Radiobutton(
+            row, text=text, variable=source_var, value=value,
+            font=("Segoe UI", 10), fg=FG, bg=CARD, activebackground=CARD,
+            selectcolor=CARD, anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            row, text=desc, font=("Segoe UI", 8), fg=MUTED, bg=CARD,
+            wraplength=340, justify="left", anchor="w",
+        ).pack(anchor="w", padx=(22, 0))
+
+    _radio("EFTPS only", "eftps", "Federal payments — only need the EFTPS PDF.")
+    _radio("EDD only", "edd", "California EDD payments — only need the EDD PDF.")
+    _radio("Both EFTPS and EDD", "both", "Validate both sources (same as before).")
+
+    err_lbl = tk.Label(outer, text="", font=("Segoe UI", 8), fg="#c53030", bg=BG, anchor="w")
+    err_lbl.pack(fill="x", pady=(8, 0))
+
+    def _ok():
+        year = year_var.get().strip()
         if not year.isdigit():
-            messagebox.showerror("Invalid Input", "Year must be numeric.")
+            err_lbl.configure(text="Tax year must be numeric.")
             return
-        period_root.result = (year, quarter_var.get())
-        period_root.destroy()
+        src = source_var.get()
+        result.update(
+            ok=True,
+            year=year,
+            quarter=quarter_var.get(),
+            check_eftps=src in ("eftps", "both"),
+            check_edd=src in ("edd", "both"),
+        )
+        dlg.destroy()
 
-    def cancel():
-        period_root.result = None
-        period_root.destroy()
+    def _cancel():
+        result["ok"] = False
+        dlg.destroy()
 
-    period_root.protocol("WM_DELETE_WINDOW", cancel)
+    btns = tk.Frame(outer, bg=BG)
+    btns.pack(fill="x", pady=(16, 0))
+    tk.Button(
+        btns, text="Cancel", command=_cancel, font=("Segoe UI", 9),
+        bg=CARD, fg=FG, relief="flat", padx=14, pady=6, cursor="hand2",
+        highlightthickness=1, highlightbackground=BORDER,
+    ).pack(side="right")
+    tk.Button(
+        btns, text="Continue", command=_ok, font=("Segoe UI", 9, "bold"),
+        bg=ACCENT, fg="white", activebackground=ACCENT_HOVER, activeforeground="white",
+        relief="flat", padx=16, pady=6, cursor="hand2",
+    ).pack(side="right", padx=(0, 8))
 
+    dlg.protocol("WM_DELETE_WINDOW", _cancel)
+    dlg.update_idletasks()
+    w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+    dlg.geometry(f"+{(dlg.winfo_screenwidth() - w) // 2}+{(dlg.winfo_screenheight() - h) // 3}")
+    dlg.lift()
+    dlg.attributes("-topmost", True)
+    dlg.after(200, lambda: dlg.attributes("-topmost", False))
+    dlg.focus_force()
+    dlg.mainloop()
 
-    btn_row = Toplevel(period_root)
-    btn_row.overrideredirect(True)
-    btn_row.destroy()
-
-    Button(period_root, text="Submit", command=submit).pack(pady=(10, 2))
-    Button(period_root, text="Cancel", command=cancel).pack()
-
-    period_root.result = None
-    period_root.grab_set()
-    period_root.wait_window()
-    return period_root.result
+    if not result.get("ok"):
+        return None
+    return result["year"], result["quarter"], result["check_eftps"], result["check_edd"]
 
 # --- Step 1: Prompt user for Excel-style text input
 def get_excel_input():
@@ -184,36 +246,50 @@ def get_excel_input():
     window.wait_window()
     return window.input
 
-# Call this instead of simpledialog
-root = Tk()
-root.withdraw()
-
-# Get user-defined tax year and quarter
-res = get_tax_period_input()
+print("Waiting for tax check options…", flush=True)
+res = ask_tax_check_options()
 if not res:
-    print("Tax period selection canceled. Exiting.")
-    root.destroy()
+    print("Tax check canceled. Exiting.", flush=True)
     sys.exit(0)
-tax_year, tax_quarter = res
+tax_year, tax_quarter, check_eftps, check_edd = res
 
 current_year = datetime.now().year
 if int(tax_year) > current_year:
-    print(f"{RED}{BAD} Tax year {tax_year} is in the future. Exiting...{RESET}")
-    root.destroy()
+    print(f"{RED}{BAD} Tax year {tax_year} is in the future. Exiting...{RESET}", flush=True)
     sys.exit(1)
 
+sources = []
+if check_eftps:
+    sources.append("EFTPS")
+if check_edd:
+    sources.append("EDD")
+print(f"Checking: {', '.join(sources)} for {tax_year} {tax_quarter}", flush=True)
+
+root = Tk()
+root.withdraw()
+root.attributes("-topmost", True)
 
 excel_text = get_excel_input()
 
 if not excel_text:
-    print("No input provided. Exiting.")
+    print("No input provided. Exiting.", flush=True)
     sys.exit(0)
 
-# --- Step 2: Load EFTPS and EDD PDFs using a file dialog ---
-print("Select the EFTPS PDF file...")
-eftps_path = filedialog.askopenfilename(title="Select EFTPS PDF")
-print("Select the EDD PDF file...")
-edd_path = filedialog.askopenfilename(title="Select EDD PDF")
+# --- Step 2: Load only the PDF(s) needed for the selected source(s) ---
+eftps_path = None
+edd_path = None
+if check_eftps:
+    print("Select the EFTPS PDF file...", flush=True)
+    eftps_path = filedialog.askopenfilename(parent=root, title="Select EFTPS PDF")
+    if not eftps_path:
+        print(f"{RED}{BAD} No EFTPS PDF selected. Exiting...{RESET}", flush=True)
+        sys.exit(1)
+if check_edd:
+    print("Select the EDD PDF file...", flush=True)
+    edd_path = filedialog.askopenfilename(parent=root, title="Select EDD PDF")
+    if not edd_path:
+        print(f"{RED}{BAD} No EDD PDF selected. Exiting...{RESET}", flush=True)
+        sys.exit(1)
 
 # --- Step 3: Parse Excel text ---
 def parse_excel_dates(series: pd.Series) -> pd.Series:
@@ -319,7 +395,7 @@ if excel_df["Date"].isnull().any():
 
 # --- Step 4: Parse EFTPS PDF ---
 def parse_eftps(pdf_path, tax_year, tax_quarter):
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     text = "\n".join(page.get_text() for page in doc)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
@@ -469,7 +545,7 @@ def parse_edd(pdf_path, tax_year, tax_quarter):
     Parse EDD e-Services 'My Payments' export and return DE88 payment amounts
     whose PAY DATE is within the selected quarter (e.g., Q4 = Oct 1–Dec 31).
     """
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     text = "\n".join(page.get_text() for page in doc)
 
     company_name = ""
@@ -527,34 +603,45 @@ def parse_edd(pdf_path, tax_year, tax_quarter):
     return payments, company_name
 
 
-eftps_raw_df, eftps_company_name = parse_eftps(eftps_path, tax_year, tax_quarter)
-if eftps_raw_df.empty:
-    print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
-    sys.exit(1)
-
-eftps_df, eftps_returned_df, eftps_return_flags = reconcile_eftps_returns(eftps_raw_df)
-
-if eftps_df.empty:
-    print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
-    sys.exit(1)
-
-edd_payments, edd_company_name = parse_edd(edd_path, tax_year, tax_quarter)
-if not edd_payments:
-    print(f"\n{RED}{BAD} No EDD records found for {tax_year} {tax_quarter}.{RESET}")
-    sys.exit(1)
-
-company_name = eftps_company_name or edd_company_name or "(unknown)"
-eftps_loaded_count = int((eftps_raw_df["Status"].isin(["Settled", "Scheduled"])).sum())
-edd_loaded_count = len(edd_payments)
-
-# --- Step 6: Validation ---
+eftps_company_name = ""
+edd_company_name = ""
+eftps_raw_df = pd.DataFrame()
+eftps_df = pd.DataFrame()
+eftps_returned_df = pd.DataFrame()
+eftps_return_flags = []
+edd_payments = []
+eftps_loaded_count = 0
+edd_loaded_count = 0
 eftps_flags = []
-
-# Identify Excel rows that correspond to a payment that was later RETURNED
-# Match rule: Excel Date == CanceledPaymentDate AND Excel Total == Returned Amount
+edd_flags = []
+edd_split_paid_logs = []
 excel_is_returned = pd.Series(False, index=excel_df.index)
 
-if eftps_returned_df is not None and not eftps_returned_df.empty:
+if check_eftps:
+    eftps_raw_df, eftps_company_name = parse_eftps(eftps_path, tax_year, tax_quarter)
+    if eftps_raw_df.empty:
+        print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
+        sys.exit(1)
+
+    eftps_df, eftps_returned_df, eftps_return_flags = reconcile_eftps_returns(eftps_raw_df)
+
+    if eftps_df.empty:
+        print(f"\n{RED}{BAD} No EFTPS records found for {tax_year}/{tax_quarter}.{RESET}")
+        sys.exit(1)
+
+    eftps_loaded_count = int((eftps_raw_df["Status"].isin(["Settled", "Scheduled"])).sum())
+
+if check_edd:
+    edd_payments, edd_company_name = parse_edd(edd_path, tax_year, tax_quarter)
+    if not edd_payments:
+        print(f"\n{RED}{BAD} No EDD records found for {tax_year} {tax_quarter}.{RESET}")
+        sys.exit(1)
+    edd_loaded_count = len(edd_payments)
+
+company_name = eftps_company_name or edd_company_name or "(unknown)"
+
+# --- Step 6: Validation ---
+if check_eftps and eftps_returned_df is not None and not eftps_returned_df.empty:
     r = eftps_returned_df.copy()
 
     # --- Robust column detection (handles small naming differences) ---
@@ -595,295 +682,291 @@ if eftps_returned_df is not None and not eftps_returned_df.empty:
 else:
     r = pd.DataFrame()
 
-# --- Mark Excel rows that correspond to returned/canceled EFTPS payments ---
-if r is not None and not r.empty and "CanceledPaymentDate" in r.columns and "Amount" in r.columns:
-    for i, row in excel_df.iterrows():
-        d = row["Date"]
-        amt = round(float(row["Total"]), 2)
+if check_eftps:
+    # --- Mark Excel rows that correspond to returned/canceled EFTPS payments ---
+    if r is not None and not r.empty and "CanceledPaymentDate" in r.columns and "Amount" in r.columns:
+        for i, row in excel_df.iterrows():
+            d = row["Date"]
+            amt = round(float(row["Total"]), 2)
 
-        hit = r[
-            (r["CanceledPaymentDate"] == d) &
-            (r["Amount"].round(2) == amt)
-        ]
-        if not hit.empty:
-            excel_is_returned.loc[i] = True
+            hit = r[
+                (r["CanceledPaymentDate"] == d) &
+                (r["Amount"].round(2) == amt)
+            ]
+            if not hit.empty:
+                excel_is_returned.loc[i] = True
 
-# --- EFTPS per-date multiset validation (supports multiple payments same date) ---
+    # --- EFTPS per-date multiset validation (supports multiple payments same date) ---
 
-# Build Excel paid amounts grouped by date (exclude returned/canceled rows)
-# Skip 0.0 totals - Excel "-" / empty EFTPS rows are not real payments and won't appear in the PDF.
-excel_paid = excel_df.loc[~excel_is_returned, ["Date", "Total"]].copy()
-excel_paid["Total"] = excel_paid["Total"].astype(float).round(2)
-excel_paid = excel_paid[excel_paid["Total"] != 0.0]
+    # Build Excel paid amounts grouped by date (exclude returned/canceled rows)
+    # Skip 0.0 totals - Excel "-" / empty EFTPS rows are not real payments and won't appear in the PDF.
+    excel_paid = excel_df.loc[~excel_is_returned, ["Date", "Total"]].copy()
+    excel_paid["Total"] = excel_paid["Total"].astype(float).round(2)
+    excel_paid = excel_paid[excel_paid["Total"] != 0.0]
 
-# Build EFTPS paid amounts grouped by date
-eftps_paid = eftps_df[["SettlementDate", "Amount"]].copy()
-eftps_paid["Amount"] = eftps_paid["Amount"].astype(float).round(2)
+    # Build EFTPS paid amounts grouped by date
+    eftps_paid = eftps_df[["SettlementDate", "Amount"]].copy()
+    eftps_paid["Amount"] = eftps_paid["Amount"].astype(float).round(2)
 
-# Compare Counters per date
-all_dates = sorted(set(excel_paid["Date"].unique()) | set(eftps_paid["SettlementDate"].unique()))
+    # Compare Counters per date
+    all_dates = sorted(set(excel_paid["Date"].unique()) | set(eftps_paid["SettlementDate"].unique()))
 
-for d in all_dates:
-    ex_list = excel_paid.loc[excel_paid["Date"] == d, "Total"].tolist()
-    ef_list = eftps_paid.loc[eftps_paid["SettlementDate"] == d, "Amount"].tolist()
+    for d in all_dates:
+        ex_list = excel_paid.loc[excel_paid["Date"] == d, "Total"].tolist()
+        ef_list = eftps_paid.loc[eftps_paid["SettlementDate"] == d, "Amount"].tolist()
 
-    ex_c = Counter(ex_list)
-    ef_c = Counter(ef_list)
+        ex_c = Counter(ex_list)
+        ef_c = Counter(ef_list)
 
-    if ex_c == ef_c:
-        continue
+        if ex_c == ef_c:
+            continue
 
-    # Nice diagnostics: what is missing / extra
-    missing = []
-    extra = []
+        # Nice diagnostics: what is missing / extra
+        missing = []
+        extra = []
 
-    # Missing in EFTPS means Excel has more of that amount than EFTPS
-    for amt, cnt in (ex_c - ef_c).items():
-        missing.append((amt, cnt))
+        # Missing in EFTPS means Excel has more of that amount than EFTPS
+        for amt, cnt in (ex_c - ef_c).items():
+            missing.append((amt, cnt))
 
-    # Extra in EFTPS means EFTPS has more of that amount than Excel
-    for amt, cnt in (ef_c - ex_c).items():
-        extra.append((amt, cnt))
+        # Extra in EFTPS means EFTPS has more of that amount than Excel
+        for amt, cnt in (ef_c - ex_c).items():
+            extra.append((amt, cnt))
 
-    msg_parts = [f"{BAD} EFTPS paid mismatch on {pd.to_datetime(d).date()}"]
-    if missing:
-        msg_parts.append(f"Missing in EFTPS: {missing}")
-    if extra:
-        msg_parts.append(f"Extra in EFTPS: {extra}")
+        msg_parts = [f"{BAD} EFTPS paid mismatch on {pd.to_datetime(d).date()}"]
+        if missing:
+            msg_parts.append(f"Missing in EFTPS: {missing}")
+        if extra:
+            msg_parts.append(f"Extra in EFTPS: {extra}")
 
-    # Also show full lists for quick eyeballing
-    msg_parts.append(f"ExcelPaid={sorted(ex_list)}")
-    msg_parts.append(f"EFTPSPaid={sorted(ef_list)}")
+        # Also show full lists for quick eyeballing
+        msg_parts.append(f"ExcelPaid={sorted(ex_list)}")
+        msg_parts.append(f"EFTPSPaid={sorted(ef_list)}")
 
-    eftps_flags.append(" - ".join(msg_parts))
+        eftps_flags.append(" - ".join(msg_parts))
 
 
-# --- EFTPS Sum Checks (split into Paid vs Returned) ---
+    # --- EFTPS Sum Checks (split into Paid vs Returned) ---
 
-# Paid = Excel excluding rows that match canceled-by-return payments
-sum_excel_paid = round(float(excel_df.loc[~excel_is_returned, "Total"].sum()), 2)
+    # Paid = Excel excluding rows that match canceled-by-return payments
+    sum_excel_paid = round(float(excel_df.loc[~excel_is_returned, "Total"].sum()), 2)
 
-# Returned = Excel rows that match canceled-by-return payments
-sum_excel_returned = round(float(excel_df.loc[excel_is_returned, "Total"].sum()), 2)
+    # Returned = Excel rows that match canceled-by-return payments
+    sum_excel_returned = round(float(excel_df.loc[excel_is_returned, "Total"].sum()), 2)
 
-# EFTPS effective paid (already excludes canceled payments)
-sum_eftps_paid = round(float(eftps_df["Amount"].sum()), 2)
+    # EFTPS effective paid (already excludes canceled payments)
+    sum_eftps_paid = round(float(eftps_df["Amount"].sum()), 2)
 
-# EFTPS returned total (from returned bucket)
-sum_eftps_returned = 0.00
-if eftps_returned_df is not None and not eftps_returned_df.empty:
-    sum_eftps_returned = round(float(eftps_returned_df["Amount"].astype(float).sum()), 2)
+    # EFTPS returned total (from returned bucket)
+    sum_eftps_returned = 0.00
+    if eftps_returned_df is not None and not eftps_returned_df.empty:
+        sum_eftps_returned = round(float(eftps_returned_df["Amount"].astype(float).sum()), 2)
 
-# Compare Paid totals
-if sum_excel_paid != sum_eftps_paid:
-    eftps_flags.append(
-        f"{BAD} EFTPS PAID sum mismatch: ExcelPaid({sum_excel_paid}) vs EFTPSPaid({sum_eftps_paid})"
-    )
-
-# Compare Returned totals (only if either side has returns)
-if (sum_excel_returned != 0.00) or (sum_eftps_returned != 0.00):
-    if sum_excel_returned != sum_eftps_returned:
+    # Compare Paid totals
+    if sum_excel_paid != sum_eftps_paid:
         eftps_flags.append(
-            f"{BAD} EFTPS RETURNED sum mismatch: ExcelReturned({sum_excel_returned}) vs EFTPSReturned({sum_eftps_returned})"
+            f"{BAD} EFTPS PAID sum mismatch: ExcelPaid({sum_excel_paid}) vs EFTPSPaid({sum_eftps_paid})"
         )
-    else:
-        # Optional informational line (no error), if you want it visible in console:
-        # print(f"{GREEN}{OK} Returned totals match: {sum_excel_returned}{RESET}")
-        pass
 
+    # Compare Returned totals (only if either side has returns)
+    if (sum_excel_returned != 0.00) or (sum_eftps_returned != 0.00):
+        if sum_excel_returned != sum_eftps_returned:
+            eftps_flags.append(
+                f"{BAD} EFTPS RETURNED sum mismatch: ExcelReturned({sum_excel_returned}) vs EFTPSReturned({sum_eftps_returned})"
+            )
 
-edd_flags = []
-edd_split_paid_logs = []  # <-- we will print this under EDD Validation
 
 # Tolerance if needed change
 SUM_TOL = 0.00
 AMT_TOL = 0.00  # keep strict unless you want 0.01
 
-# Build Excel EDD rows
-excel_rows = excel_df.copy()
-excel_rows["EDD_Total"] = excel_rows["EDD_Total"].astype(float).round(2)
+if check_edd:
+    # Build Excel EDD rows
+    excel_rows = excel_df.copy()
+    excel_rows["EDD_Total"] = excel_rows["EDD_Total"].astype(float).round(2)
 
-# PDF amounts (keep dated records for mismatch reporting)
-pdf_amounts = [round(float(x["Amount"]), 2) for x in edd_payments]
+    # PDF amounts (keep dated records for mismatch reporting)
+    pdf_amounts = [round(float(x["Amount"]), 2) for x in edd_payments]
 
-sum_edd_excel = round(float(excel_rows["EDD_Total"].sum()), 2)
-sum_edd_pdf   = round(float(sum(pdf_amounts)), 2)
+    sum_edd_excel = round(float(excel_rows["EDD_Total"].sum()), 2)
+    sum_edd_pdf   = round(float(sum(pdf_amounts)), 2)
 
-# If sums match, we’re done (your original rule)
-if abs(sum_edd_excel - sum_edd_pdf) <= SUM_TOL:
-    pass
-else:
-    # ------------------------------------------------------------
-    # Phase 1) Direct match EDD_Total vs PDF amounts (count-aware)
-    # ------------------------------------------------------------
-    pdf_counter = Counter(pdf_amounts)
+    # If sums match, skip detailed matching
+    if abs(sum_edd_excel - sum_edd_pdf) > SUM_TOL:
+        # ------------------------------------------------------------
+        # Phase 1) Direct match EDD_Total vs PDF amounts (count-aware)
+        # ------------------------------------------------------------
+        pdf_counter = Counter(pdf_amounts)
 
-    # Track which Excel rows are matched directly
-    excel_direct_matched = pd.Series(False, index=excel_rows.index)
+        # Track which Excel rows are matched directly
+        excel_direct_matched = pd.Series(False, index=excel_rows.index)
 
-    for i, row in excel_rows.iterrows():
-        amt = round2(row["EDD_Total"])
-        if amt is None:
-            continue
-
-        # strict match (AMT_TOL==0). If you want tolerance: search nearby keys.
-        if AMT_TOL == 0.0:
-            if counter_take(pdf_counter, amt, 1):
-                excel_direct_matched.loc[i] = True
-        else:
-            # tolerant match: find any key within tol
-            hit_key = None
-            for k in list(pdf_counter.keys()):
-                if abs(k - amt) <= AMT_TOL and pdf_counter[k] > 0:
-                    hit_key = k
-                    break
-            if hit_key is not None:
-                counter_take(pdf_counter, hit_key, 1)
-                excel_direct_matched.loc[i] = True
-
-    # Unmatched after direct matching
-    excel_unmatched = excel_rows.loc[~excel_direct_matched].copy()
-
-    # ------------------------------------------------------------
-    # Phase 2) Paid-separately matching using UI+ETT and P+I
-    # Only for rows still unmatched AND only consuming remaining PDF payments
-    # ------------------------------------------------------------
-    can_split = ("UI+ETT" in excel_rows.columns) and ("P+I" in excel_rows.columns)
-
-    if can_split and not excel_unmatched.empty:
-        for i, row in excel_unmatched.iterrows():
-            d = row["Date"]
-            edd_total = round2(row["EDD_Total"])
-            ui_ett = round2(row.get("UI+ETT", None))
-            p_i   = round2(row.get("P+I", None))
-
-            if edd_total is None or ui_ett is None or p_i is None:
+        for i, row in excel_rows.iterrows():
+            amt = round2(row["EDD_Total"])
+            if amt is None:
                 continue
 
-            # require exact row arithmetic match: UI+ETT + P+I == EDD_Total
+            # strict match (AMT_TOL==0). If you want tolerance: search nearby keys.
             if AMT_TOL == 0.0:
-                if round2(ui_ett + p_i) != edd_total:
-                    continue
+                if counter_take(pdf_counter, amt, 1):
+                    excel_direct_matched.loc[i] = True
             else:
-                if abs((ui_ett + p_i) - edd_total) > AMT_TOL:
-                    continue
+                # tolerant match: find any key within tol
+                hit_key = None
+                for k in list(pdf_counter.keys()):
+                    if abs(k - amt) <= AMT_TOL and pdf_counter[k] > 0:
+                        hit_key = k
+                        break
+                if hit_key is not None:
+                    counter_take(pdf_counter, hit_key, 1)
+                    excel_direct_matched.loc[i] = True
 
-            # require BOTH payments exist in remaining PDF unmatched pool
-            # if amounts equal, need two occurrences
-            need_two = (ui_ett == p_i)
-
-            ok_ui = False
-            ok_pi = False
-
-            if AMT_TOL == 0.0:
-                if need_two:
-                    # need two of the same amount
-                    if pdf_counter.get(ui_ett, 0) >= 2:
-                        counter_take(pdf_counter, ui_ett, 2)
-                        ok_ui = True
-                        ok_pi = True
-                else:
-                    if pdf_counter.get(ui_ett, 0) >= 1 and pdf_counter.get(p_i, 0) >= 1:
-                        counter_take(pdf_counter, ui_ett, 1)
-                        counter_take(pdf_counter, p_i, 1)
-                        ok_ui = True
-                        ok_pi = True
-            else:
-                # tolerant: pick matching keys within tol (must not reuse)
-                def find_key_within(counter, target):
-                    for k in list(counter.keys()):
-                        if abs(k - target) <= AMT_TOL and counter[k] > 0:
-                            return k
-                    return None
-
-                if need_two:
-                    k1 = find_key_within(pdf_counter, ui_ett)
-                    if k1 is not None and pdf_counter.get(k1, 0) >= 2:
-                        counter_take(pdf_counter, k1, 2)
-                        ok_ui = True
-                        ok_pi = True
-                else:
-                    k_ui = find_key_within(pdf_counter, ui_ett)
-                    if k_ui is None:
-                        continue
-                    # consume one first so we don't reuse it
-                    counter_take(pdf_counter, k_ui, 1)
-
-                    k_pi = find_key_within(pdf_counter, p_i)
-                    if k_pi is None:
-                        # rollback consumption
-                        pdf_counter[k_ui] = pdf_counter.get(k_ui, 0) + 1
-                        continue
-                    counter_take(pdf_counter, k_pi, 1)
-
-                    ok_ui = True
-                    ok_pi = True
-
-            if ok_ui and ok_pi:
-                # mark row as matched via split
-                excel_direct_matched.loc[i] = True
-
-                # log it as "paid separately"
-                edd_split_paid_logs.append(
-                    f"{OK} EDD paid separately on {pd.to_datetime(d).date()} - "
-                    f"PDF(UI+ETT)={ui_ett} + PDF(P+I)={p_i} - "
-                    f"Excel EDD_Total={edd_total}"
-                )
-
-        # recompute unmatched Excel after split matching
+        # Unmatched after direct matching
         excel_unmatched = excel_rows.loc[~excel_direct_matched].copy()
 
-    # ------------------------------------------------------------
-    # Phase 3) Build mismatch diagnostics AFTER split matching
-    # ------------------------------------------------------------
-    # Map remaining Counter amounts back to dated PDF payments
-    rem_for_dates = Counter(pdf_counter)
-    remaining_pdf_items = []
-    for p in edd_payments:
-        amt = round(float(p["Amount"]), 2)
-        if rem_for_dates.get(amt, 0) > 0:
-            remaining_pdf_items.append(p)
-            rem_for_dates[amt] -= 1
-            if rem_for_dates[amt] <= 0:
-                del rem_for_dates[amt]
-    remaining_pdf_items = sorted(remaining_pdf_items, key=lambda x: (x["PayDate"], x["Amount"]))
-    remaining_pdf = [round(float(x["Amount"]), 2) for x in remaining_pdf_items]
+        # ------------------------------------------------------------
+        # Phase 2) Paid-separately matching using UI+ETT and P+I
+        # Only for rows still unmatched AND only consuming remaining PDF payments
+        # ------------------------------------------------------------
+        can_split = ("UI+ETT" in excel_rows.columns) and ("P+I" in excel_rows.columns)
 
-    remaining_excel = sorted([round2(x) for x in excel_unmatched["EDD_Total"].tolist() if round2(x) is not None])
-    remaining_excel_nonzero = [a for a in remaining_excel if a != 0.0]
+        if can_split and not excel_unmatched.empty:
+            for i, row in excel_unmatched.iterrows():
+                d = row["Date"]
+                edd_total = round2(row["EDD_Total"])
+                ui_ett = round2(row.get("UI+ETT", None))
+                p_i   = round2(row.get("P+I", None))
 
-    # If still mismatched, show only unmatched/missing date + amount (no OK noise)
-    if remaining_excel_nonzero or remaining_pdf:
-        for _, row in excel_unmatched.iterrows():
-            amt = round2(row["EDD_Total"])
-            if amt is None or amt == 0.0:
-                continue  # Excel blank/dash EDD rows are not real payments
-            d = pd.to_datetime(row["Date"]).date()
-            edd_flags.append(f"{BAD} Missing/unmatched in EDD PDF: {d} amount {amt}")
+                if edd_total is None or ui_ett is None or p_i is None:
+                    continue
 
-        for p in remaining_pdf_items:
-            d = pd.to_datetime(p["PayDate"]).date()
+                # require exact row arithmetic match: UI+ETT + P+I == EDD_Total
+                if AMT_TOL == 0.0:
+                    if round2(ui_ett + p_i) != edd_total:
+                        continue
+                else:
+                    if abs((ui_ett + p_i) - edd_total) > AMT_TOL:
+                        continue
+
+                # require BOTH payments exist in remaining PDF unmatched pool
+                # if amounts equal, need two occurrences
+                need_two = (ui_ett == p_i)
+
+                ok_ui = False
+                ok_pi = False
+
+                if AMT_TOL == 0.0:
+                    if need_two:
+                        # need two of the same amount
+                        if pdf_counter.get(ui_ett, 0) >= 2:
+                            counter_take(pdf_counter, ui_ett, 2)
+                            ok_ui = True
+                            ok_pi = True
+                    else:
+                        if pdf_counter.get(ui_ett, 0) >= 1 and pdf_counter.get(p_i, 0) >= 1:
+                            counter_take(pdf_counter, ui_ett, 1)
+                            counter_take(pdf_counter, p_i, 1)
+                            ok_ui = True
+                            ok_pi = True
+                else:
+                    # tolerant: pick matching keys within tol (must not reuse)
+                    def find_key_within(counter, target):
+                        for k in list(counter.keys()):
+                            if abs(k - target) <= AMT_TOL and counter[k] > 0:
+                                return k
+                        return None
+
+                    if need_two:
+                        k1 = find_key_within(pdf_counter, ui_ett)
+                        if k1 is not None and pdf_counter.get(k1, 0) >= 2:
+                            counter_take(pdf_counter, k1, 2)
+                            ok_ui = True
+                            ok_pi = True
+                    else:
+                        k_ui = find_key_within(pdf_counter, ui_ett)
+                        if k_ui is None:
+                            continue
+                        # consume one first so we don't reuse it
+                        counter_take(pdf_counter, k_ui, 1)
+
+                        k_pi = find_key_within(pdf_counter, p_i)
+                        if k_pi is None:
+                            # rollback consumption
+                            pdf_counter[k_ui] = pdf_counter.get(k_ui, 0) + 1
+                            continue
+                        counter_take(pdf_counter, k_pi, 1)
+
+                        ok_ui = True
+                        ok_pi = True
+
+                if ok_ui and ok_pi:
+                    # mark row as matched via split
+                    excel_direct_matched.loc[i] = True
+
+                    # log it as "paid separately"
+                    edd_split_paid_logs.append(
+                        f"{OK} EDD paid separately on {pd.to_datetime(d).date()} - "
+                        f"PDF(UI+ETT)={ui_ett} + PDF(P+I)={p_i} - "
+                        f"Excel EDD_Total={edd_total}"
+                    )
+
+            # recompute unmatched Excel after split matching
+            excel_unmatched = excel_rows.loc[~excel_direct_matched].copy()
+
+        # ------------------------------------------------------------
+        # Phase 3) Build mismatch diagnostics AFTER split matching
+        # ------------------------------------------------------------
+        # Map remaining Counter amounts back to dated PDF payments
+        rem_for_dates = Counter(pdf_counter)
+        remaining_pdf_items = []
+        for p in edd_payments:
             amt = round(float(p["Amount"]), 2)
-            edd_flags.append(f"{BAD} Unexpected EDD PDF payment: {d} amount {amt}")
+            if rem_for_dates.get(amt, 0) > 0:
+                remaining_pdf_items.append(p)
+                rem_for_dates[amt] -= 1
+                if rem_for_dates[amt] <= 0:
+                    del rem_for_dates[amt]
+        remaining_pdf_items = sorted(remaining_pdf_items, key=lambda x: (x["PayDate"], x["Amount"]))
+        remaining_pdf = [round(float(x["Amount"]), 2) for x in remaining_pdf_items]
 
-        sum_excel_unmatched = round(sum(remaining_excel_nonzero), 2)
-        sum_pdf_unmatched   = round(sum(remaining_pdf), 2)
-        edd_flags.append(
-            f"{BAD} EDD unresolved mismatch after split-matching - "
-            f"Excel(unmatched sum): {sum_excel_unmatched}, EDD PDF(unmatched sum): {sum_pdf_unmatched}"
-        )
+        remaining_excel = sorted([round2(x) for x in excel_unmatched["EDD_Total"].tolist() if round2(x) is not None])
+        remaining_excel_nonzero = [a for a in remaining_excel if a != 0.0]
 
-    # also keep the original top-level sum mismatch line (helps quick glance)
-    edd_flags.append(f"{BAD} EDD sum mismatch - Excel: {sum_edd_excel}, EDD PDF: {sum_edd_pdf}")
+        # If still mismatched, show only unmatched/missing date + amount (no OK noise)
+        if remaining_excel_nonzero or remaining_pdf:
+            for _, row in excel_unmatched.iterrows():
+                amt = round2(row["EDD_Total"])
+                if amt is None or amt == 0.0:
+                    continue  # Excel blank/dash EDD rows are not real payments
+                d = pd.to_datetime(row["Date"]).date()
+                edd_flags.append(f"{BAD} Missing/unmatched in EDD PDF: {d} amount {amt}")
+
+            for p in remaining_pdf_items:
+                d = pd.to_datetime(p["PayDate"]).date()
+                amt = round(float(p["Amount"]), 2)
+                edd_flags.append(f"{BAD} Unexpected EDD PDF payment: {d} amount {amt}")
+
+            sum_excel_unmatched = round(sum(remaining_excel_nonzero), 2)
+            sum_pdf_unmatched   = round(sum(remaining_pdf), 2)
+            edd_flags.append(
+                f"{BAD} EDD unresolved mismatch after split-matching - "
+                f"Excel(unmatched sum): {sum_excel_unmatched}, EDD PDF(unmatched sum): {sum_pdf_unmatched}"
+            )
+
+        # also keep the original top-level sum mismatch line (helps quick glance)
+        edd_flags.append(f"{BAD} EDD sum mismatch - Excel: {sum_edd_excel}, EDD PDF: {sum_edd_pdf}")
 
 
 # --- Step 7: Print Results ---
-eftps_flags.extend(eftps_return_flags)
+if check_eftps:
+    eftps_flags.extend(eftps_return_flags)
 
-eftps_pass = not eftps_flags
-edd_pass = not edd_flags
+eftps_pass = (not eftps_flags) if check_eftps else True
+edd_pass = (not edd_flags) if check_edd else True
 
-def _summary_line(label, passed, flags):
+def _summary_line(label, passed, flags, skipped=False):
+    if skipped:
+        return f"{label:<7} [SKIP]  Not selected"
     if passed:
         return f"{label:<7} [PASS]  All payments matched"
     n = len(flags)
@@ -899,39 +982,50 @@ def _summary_line(label, passed, flags):
 
 print(f"\nCompany: {company_name}")
 print(f"Period:  {tax_year} {tax_quarter}")
-print(f"EFTPS PDF loaded: {eftps_loaded_count} settled payments")
-print(f"EDD PDF loaded:   {edd_loaded_count} payments")
+if check_eftps:
+    print(f"EFTPS PDF loaded: {eftps_loaded_count} settled payments")
+if check_edd:
+    print(f"EDD PDF loaded:   {edd_loaded_count} payments")
 
 print("\n" + "-" * 70)
 print("VALIDATION SUMMARY")
 print("-" * 70)
-print(_summary_line("EFTPS", eftps_pass, eftps_flags))
-print(_summary_line("EDD", edd_pass, edd_flags))
+print(_summary_line("EFTPS", eftps_pass, eftps_flags, skipped=not check_eftps))
+print(_summary_line("EDD", edd_pass, edd_flags, skipped=not check_edd))
 print()
-print(f"Overall result: {'PASSED' if (eftps_pass and edd_pass) else 'NEEDS REVIEW'}")
+checked_ok = ((not check_eftps) or eftps_pass) and ((not check_edd) or edd_pass)
+print(f"Overall result: {'PASSED' if checked_ok else 'NEEDS REVIEW'}")
 
-if eftps_returned_df is not None and not eftps_returned_df.empty:
+if check_eftps and eftps_returned_df is not None and not eftps_returned_df.empty:
     print("\nEFTPS Returned Bucket:")
     print(eftps_returned_df)
 
-print("\n--- EFTPS Validation ---")
-if eftps_flags:
-    print(RED + "\n".join(eftps_flags) + RESET)
-else:
-    print(GREEN + f"{OK} All EFTPS records match." + RESET)
+if check_eftps:
+    print("\n--- EFTPS Validation ---")
+    if eftps_flags:
+        print(RED + "\n".join(eftps_flags) + RESET)
+    else:
+        print(GREEN + f"{OK} All EFTPS records match." + RESET)
 
-print("\n--- EDD Validation ---")
-# Only show "paid separately" OK logs when EDD fully passes (no review needed)
-if edd_pass and edd_split_paid_logs:
-    print(GREEN + "\n".join(edd_split_paid_logs) + RESET)
+if check_edd:
+    print("\n--- EDD Validation ---")
+    # Only show "paid separately" OK logs when EDD fully passes (no review needed)
+    if edd_pass and edd_split_paid_logs:
+        print(GREEN + "\n".join(edd_split_paid_logs) + RESET)
 
-if edd_flags:
-    print(RED + "\n".join(edd_flags) + RESET)
-else:
-    print(GREEN + f"{OK} All EDD payments match." + RESET)
+    if edd_flags:
+        print(RED + "\n".join(edd_flags) + RESET)
+    else:
+        print(GREEN + f"{OK} All EDD payments match." + RESET)
 
 print("\n" + "-" * 70)
 print("FINAL RESULT")
 print("-" * 70)
-print(f"EFTPS: {'PASSED' if eftps_pass else 'NEEDS REVIEW'}")
-print(f"EDD:   {'PASSED' if edd_pass else 'NEEDS REVIEW'}")
+if check_eftps:
+    print(f"EFTPS: {'PASSED' if eftps_pass else 'NEEDS REVIEW'}")
+else:
+    print("EFTPS: SKIPPED")
+if check_edd:
+    print(f"EDD:   {'PASSED' if edd_pass else 'NEEDS REVIEW'}")
+else:
+    print("EDD:   SKIPPED")
