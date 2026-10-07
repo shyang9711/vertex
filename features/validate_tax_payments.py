@@ -1,11 +1,10 @@
 import pandas as pd
-import warnings
 import re
 from io import StringIO
 from collections import Counter
 from datetime import datetime, date
 import tkinter as tk
-from tkinter import Tk, Toplevel, Text, Scrollbar, Button, END, RIGHT, Y, LEFT, BOTH, messagebox, filedialog, StringVar, OptionMenu, Label
+from tkinter import Tk, filedialog
 try:
     from colorama import init, Fore, Style
 except Exception:
@@ -99,12 +98,214 @@ def quarter_date_range(tax_year: str, tax_quarter: str):
 
     return pd.Timestamp(start), pd.Timestamp(end)
 
+DATE_FMTS = (
+    "%Y-%m-%d",
+    "%m/%d/%Y",
+    "%m/%d/%y",
+    "%m-%d-%Y",
+    "%m-%d-%y",
+    "%m.%d.%Y",
+    "%m.%d.%y",
+    "%d-%b-%Y",
+    "%d-%b-%y",
+)
+
+
 def is_date_like(val: str) -> bool:
-    try:
-        pd.to_datetime(val, errors="raise")
-        return True
-    except Exception:
+    """True only for explicit date strings — rejects bare numbers / Excel serials."""
+    s = str(val).strip()
+    if not s or s == "-":
         return False
+    if re.fullmatch(r"-?\d+(\.\d+)?", s):
+        return False
+    for fmt in DATE_FMTS:
+        try:
+            datetime.strptime(s, fmt)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _split_excel_line(line: str):
+    """Keep empty cells when tabs are present so columns do not shift."""
+    if "\t" in line:
+        return [c.strip() for c in line.split("\t")]
+    return [c for c in re.split(r"\s+", line.strip()) if c]
+
+
+# Display headers. Optional derived: UI+ETT (=UI+ETT), P+I (=SDI+PIT), EDD Total (=UI+ETT+SDI+PIT).
+OPTIONAL_AMOUNT_HEADERS = frozenset({"UI+ETT", "P+I", "EDD Total"})
+REQUIRED_AMOUNT_HEADERS = frozenset({"941 Total", "UI", "ETT", "SDI", "PIT"})
+
+
+def _excel_headers_for_width(width: int, first_cells):
+    date_like = sum(1 for c in first_cells[:2] if is_date_like(c))
+    if width == 10:
+        return ["Date1", "Date2", "941 Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "P+I", "EDD Total"]
+    if width == 9:
+        return ["Date", "941 Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "P+I", "EDD Total"]
+    if width == 8:
+        if date_like >= 2:
+            return ["Date1", "Date2", "941 Total", "UI", "ETT", "SDI", "PIT", "EDD Total"]
+        return ["Date", "941 Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "EDD Total"]
+    if width == 7:
+        return ["Date", "941 Total", "UI", "ETT", "SDI", "PIT", "EDD Total"]
+    return [f"Col {i+1}" for i in range(width)]
+
+
+def _amount_cell_error(val, *, required: bool):
+    """
+    Return error code or None.
+    - required: empty is missing; '-' means 0
+    - optional: empty or '-' means 0 / calculate later
+    """
+    s = "" if val is None else str(val).strip()
+    if s == "":
+        return "missing" if required else None
+    if s == "-":
+        return None
+    cleaned = s.replace("$", "").replace(",", "").strip()
+    try:
+        n = float(cleaned)
+    except ValueError:
+        return "invalid"
+    if n < 0:
+        return "negative"
+    return None
+
+
+def _parse_amount_cell(val) -> float:
+    """Convert amount cell; empty/'-' -> 0."""
+    s = "" if val is None else str(val).strip()
+    if s == "" or s == "-":
+        return 0.0
+    return float(s.replace("$", "").replace(",", "").strip())
+
+
+def _derived_expected_amounts(row, idx):
+    """UI+ETT, P+I, EDD Total expected from required components."""
+    ui = _parse_amount_cell(row[idx["UI"]])
+    ett = _parse_amount_cell(row[idx["ETT"]])
+    sdi = _parse_amount_cell(row[idx["SDI"]])
+    pit = _parse_amount_cell(row[idx["PIT"]])
+    return {
+        "UI+ETT": round(ui + ett, 2),
+        "P+I": round(sdi + pit, 2),
+        "EDD Total": round(ui + ett + sdi + pit, 2),
+    }
+
+
+def validate_excel_rows(rows, headers, *, check_eftps: bool = True, check_edd: bool = True):
+    """
+    Validate pasted matrix. Mutates rows: empty optional derived cells are filled.
+    Returns (bad_rows, filled_rows, error_msgs, info_msgs).
+    """
+    err_msgs = []
+    info_msgs = []
+    bad_rows = set()
+    filled_rows = set()
+    width = len(headers)
+
+    if width not in (7, 8, 9, 10):
+        return set(range(len(rows))), set(), [f"Unsupported column count: {width} (expected 7–10)."], []
+
+    idx = {h: i for i, h in enumerate(headers)}
+    date_idx = [i for i, h in enumerate(headers) if "Date" in h]
+    can_derive = all(n in idx for n in ("UI", "ETT", "SDI", "PIT"))
+
+    for r_i, row in enumerate(rows):
+        if len(row) != width:
+            bad_rows.add(r_i)
+            err_msgs.append(f"Row {r_i+1}: expected {width} columns, found {len(row)}.")
+            continue
+
+        row_bad = False
+        for c_i in date_idx:
+            cell = row[c_i]
+            if not str(cell).strip() or str(cell).strip() == "-":
+                bad_rows.add(r_i)
+                row_bad = True
+                err_msgs.append(f"Row {r_i+1}: {headers[c_i]} is missing.")
+            elif not is_date_like(cell):
+                bad_rows.add(r_i)
+                row_bad = True
+                err_msgs.append(f"Row {r_i+1}: {headers[c_i]} is not a valid date ({cell!r}).")
+
+        for h in REQUIRED_AMOUNT_HEADERS:
+            if h not in idx:
+                continue
+            c_i = idx[h]
+            err = _amount_cell_error(row[c_i], required=True)
+            if err == "missing":
+                bad_rows.add(r_i)
+                row_bad = True
+                err_msgs.append(f"Row {r_i+1}: {h} is missing (use - for zero).")
+            elif err == "invalid":
+                bad_rows.add(r_i)
+                row_bad = True
+                err_msgs.append(f"Row {r_i+1}: {h} is not a valid amount ({row[c_i]!r}).")
+            elif err == "negative":
+                bad_rows.add(r_i)
+                row_bad = True
+                err_msgs.append(f"Row {r_i+1}: {h} cannot be negative ({row[c_i]!r}).")
+
+        if not can_derive:
+            continue
+
+        expected = _derived_expected_amounts(row, idx) if not row_bad else None
+        for h in OPTIONAL_AMOUNT_HEADERS:
+            if h not in idx:
+                continue
+            c_i = idx[h]
+            s = str(row[c_i]).strip()
+            if s == "":
+                if expected is None:
+                    continue
+                row[c_i] = f"{expected[h]:.2f}"
+                filled_rows.add(r_i)
+                info_msgs.append(f"Row {r_i+1}: {h} was empty — filled with {expected[h]:.2f}.")
+                continue
+
+            err = _amount_cell_error(row[c_i], required=False)
+            if err == "invalid":
+                # Unreadable value — replace with correct sum when we can
+                if expected is None:
+                    bad_rows.add(r_i)
+                    err_msgs.append(f"Row {r_i+1}: {h} is not a valid amount ({row[c_i]!r}).")
+                    continue
+                old = row[c_i]
+                row[c_i] = f"{expected[h]:.2f}"
+                filled_rows.add(r_i)
+                info_msgs.append(
+                    f"Row {r_i+1}: {h} was {old!r} — replaced with {expected[h]:.2f}."
+                )
+                continue
+            if err == "negative":
+                if expected is None:
+                    bad_rows.add(r_i)
+                    err_msgs.append(f"Row {r_i+1}: {h} cannot be negative ({row[c_i]!r}).")
+                    continue
+                old = row[c_i]
+                row[c_i] = f"{expected[h]:.2f}"
+                filled_rows.add(r_i)
+                info_msgs.append(
+                    f"Row {r_i+1}: {h} was {old} — replaced with {expected[h]:.2f}."
+                )
+                continue
+
+            if expected is None:
+                continue
+            given = round(_parse_amount_cell(row[c_i]), 2)
+            exp = expected[h]
+            if given != exp:
+                row[c_i] = f"{exp:.2f}"
+                filled_rows.add(r_i)
+                info_msgs.append(
+                    f"Row {r_i+1}: {h} was {given:.2f} — corrected to {exp:.2f}."
+                )
+
+    return bad_rows, filled_rows, err_msgs, info_msgs
 
 
 def ask_tax_check_options():
@@ -217,36 +418,245 @@ def ask_tax_check_options():
         return None
     return result["year"], result["quarter"], result["check_eftps"], result["check_edd"]
 
-# --- Step 1: Prompt user for Excel-style text input
-def get_excel_input():
-    def on_submit():
-        content = text.get("1.0", END).strip()
-        if content:
-            window.input = content
-            window.destroy()
+def get_excel_input(*, check_eftps: bool = True, check_edd: bool = True):
+    """Paste Excel rows into a readable table. Returns tab-joined text or None if cancelled."""
+    from tkinter import ttk
+
+    dlg = tk.Tk()
+    dlg.title("Paste Excel Data")
+    dlg.geometry("900x520")
+    dlg.minsize(700, 400)
+
+    result = {"ok": False, "text": None}
+    state = {"rows": [], "headers": [], "bad_rows": set(), "filled_rows": set(), "msgs": []}
+    BG, CARD, FG, MUTED = "#f4f6f9", "#ffffff", "#1a202c", "#718096"
+    ACCENT, ACCENT_HOVER, BORDER = "#3182ce", "#2b6cb0", "#e2e8f0"
+    ERR_BG = "#fed7d7"
+    FILL_BG = "#fefcbf"  # amber: auto-filled optional cells
+    dlg.configure(bg=BG)
+
+    style = ttk.Style(dlg)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure(
+        "Excel.Treeview",
+        background=CARD, fieldbackground=CARD, foreground=FG,
+        rowheight=26, font=("Segoe UI", 9), borderwidth=0,
+    )
+    style.configure(
+        "Excel.Treeview.Heading",
+        background="#edf2f7", foreground=FG, font=("Segoe UI", 9, "bold"), relief="flat",
+    )
+    style.map("Excel.Treeview", background=[("selected", "#bee3f8")], foreground=[("selected", FG)])
+
+    outer = tk.Frame(dlg, bg=BG, padx=20, pady=18)
+    outer.pack(fill="both", expand=True)
+    outer.rowconfigure(2, weight=1)
+    outer.columnconfigure(0, weight=1)
+
+    tk.Label(
+        outer, text="Paste Excel Data", font=("Segoe UI", 14, "bold"),
+        fg=FG, bg=BG, anchor="w",
+    ).grid(row=0, column=0, sticky="ew")
+    tk.Label(
+        outer,
+        text="Copy rows from Excel, then Paste (or Ctrl+V). "
+        "Required: dates, 941 Total, UI, ETT, SDI, PIT (use - for zero). "
+        "UI+ETT, P+I, EDD Total: blank or wrong sums are replaced with the correct total (highlighted amber).",
+        font=("Segoe UI", 9), fg=MUTED, bg=BG, wraplength=840, justify="left", anchor="w",
+    ).grid(row=1, column=0, sticky="ew", pady=(2, 12))
+
+    card = tk.Frame(outer, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+    card.grid(row=2, column=0, sticky="nsew")
+    card.rowconfigure(0, weight=1)
+    card.columnconfigure(0, weight=1)
+
+    tree = ttk.Treeview(card, show="headings", style="Excel.Treeview")
+    vsb = ttk.Scrollbar(card, orient="vertical", command=tree.yview)
+    hsb = ttk.Scrollbar(card, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+    tree.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+    vsb.grid(row=0, column=1, sticky="ns")
+    hsb.grid(row=1, column=0, sticky="ew")
+
+    placeholder = tk.Label(
+        card,
+        text="Table is empty\nCopy from Excel, then click Paste or press Ctrl+V",
+        font=("Segoe UI", 10), fg=MUTED, bg=CARD, justify="center",
+    )
+    placeholder.place(relx=0.5, rely=0.5, anchor="center")
+
+    meta = tk.Frame(outer, bg=BG)
+    meta.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+    status_lbl = tk.Label(meta, text="0 rows", font=("Segoe UI", 8), fg=MUTED, bg=BG, anchor="w")
+    status_lbl.pack(side="left")
+    err_lbl = tk.Label(meta, text="", font=("Segoe UI", 8), fg="#c53030", bg=BG, anchor="e")
+    err_lbl.pack(side="right")
+
+    continue_btn = None  # set below
+
+    def _set_continue(enabled: bool):
+        if continue_btn is None:
+            return
+        if enabled:
+            continue_btn.configure(state="normal", bg=ACCENT, fg="white")
         else:
-            messagebox.showwarning("Empty Input", "Please paste the Excel data.")
-    
-    window = Toplevel()
-    window.title("Paste Excel Data")
-    window.geometry("700x400")  # width x height
+            continue_btn.configure(state="disabled", bg="#a0aec0", fg="white")
 
-    scrollbar = Scrollbar(window)
-    scrollbar.pack(side=RIGHT, fill=Y)
+    def _clear_tree():
+        tree.delete(*tree.get_children())
+        tree["columns"] = ()
 
-    text = Text(window, wrap="none", yscrollcommand=scrollbar.set)
-    text.pack(side=LEFT, fill=BOTH, expand=True)
-    scrollbar.config(command=text.yview)
+    def _render(rows, headers, bad_rows, filled_rows, err_msgs, info_msgs):
+        state.update(
+            rows=rows, headers=headers, bad_rows=bad_rows,
+            filled_rows=filled_rows, msgs=err_msgs,
+        )
+        _clear_tree()
+        if not rows:
+            placeholder.place(relx=0.5, rely=0.5, anchor="center")
+            status_lbl.configure(text="0 rows", fg=MUTED)
+            err_lbl.configure(text="")
+            _set_continue(False)
+            return
 
-    submit_btn = Button(window, text="Submit", command=on_submit)
-    submit_btn.pack()
+        tree["columns"] = headers
+        for h in headers:
+            tree.heading(h, text=h, anchor="center")
+            col_w = 88 if "Date" in h else 78
+            if h in ("941 Total", "EDD Total", "UI+ETT", "P+I"):
+                col_w = 92
+            tree.column(h, width=col_w, minwidth=60, anchor="center" if "Date" in h else "e")
 
-    window.input = None
-    window.grab_set()
-    window.wait_window()
-    return window.input
+        tree.tag_configure("even", background=CARD)
+        tree.tag_configure("odd", background="#f7fafc")
+        tree.tag_configure("filled", background=FILL_BG)
+        tree.tag_configure("error", background=ERR_BG)
 
-print("Waiting for tax check options…", flush=True)
+        for i, r in enumerate(rows):
+            if i in bad_rows:
+                tag = "error"
+            elif i in filled_rows:
+                tag = "filled"
+            else:
+                tag = "odd" if i % 2 else "even"
+            tree.insert("", "end", values=r, tags=(tag,))
+
+        placeholder.place_forget()
+        n_bad = len(bad_rows)
+        n_fill = len(filled_rows - bad_rows)
+        bits = [f"{len(rows)} row{'s' if len(rows) != 1 else ''}", f"{len(headers)} columns"]
+        if n_fill:
+            bits.append(f"{n_fill} auto-filled")
+        if n_bad:
+            bits.append(f"{n_bad} with errors")
+        status_lbl.configure(text="  ·  ".join(bits), fg="#c53030" if n_bad else ("#b7791f" if n_fill else MUTED))
+        if err_msgs:
+            err_lbl.configure(
+                text=err_msgs[0] + (f" (+{len(err_msgs)-1} more)" if len(err_msgs) > 1 else ""),
+                fg="#c53030",
+            )
+        elif info_msgs:
+            err_lbl.configure(
+                text=info_msgs[0] + (f" (+{len(info_msgs)-1} more)" if len(info_msgs) > 1 else ""),
+                fg="#b7791f",
+            )
+        else:
+            err_lbl.configure(text="")
+        _set_continue(n_bad == 0)
+
+    def _load_text(content: str):
+        lines = [ln for ln in content.replace("\r\n", "\n").replace("\r", "\n").split("\n") if ln.strip()]
+        if not lines:
+            _render([], [], set(), set(), [], [])
+            return
+
+        rows = [_split_excel_line(ln) for ln in lines]
+        width = max(len(r) for r in rows)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        headers = _excel_headers_for_width(width, rows[0])
+        bad_rows, filled_rows, err_msgs, info_msgs = validate_excel_rows(
+            rows, headers, check_eftps=check_eftps, check_edd=check_edd
+        )
+        _render(rows, headers, bad_rows, filled_rows, err_msgs, info_msgs)
+
+    def _paste_clipboard(_event=None):
+        try:
+            clip = dlg.clipboard_get()
+        except tk.TclError:
+            err_lbl.configure(text="Clipboard is empty.")
+            return "break"
+        _load_text(clip)
+        return "break"
+
+    def _clear():
+        _render([], [], set(), set(), [], [])
+
+    def _ok():
+        if not state["rows"]:
+            err_lbl.configure(text="Paste Excel rows before continuing.")
+            return
+        if state["bad_rows"]:
+            err_lbl.configure(text=state["msgs"][0] if state["msgs"] else "Fix highlighted rows first.")
+            return
+        # Rows already have empty optionals filled by validate_excel_rows
+        text = "\n".join("\t".join(r) for r in state["rows"])
+        result.update(ok=True, text=text)
+        dlg.destroy()
+
+    def _cancel():
+        result["ok"] = False
+        dlg.destroy()
+
+    btns = tk.Frame(outer, bg=BG)
+    btns.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+    tk.Button(
+        btns, text="Paste", command=_paste_clipboard, font=("Segoe UI", 9, "bold"),
+        bg=ACCENT, fg="white", activebackground=ACCENT_HOVER, activeforeground="white",
+        relief="flat", padx=14, pady=6, cursor="hand2",
+    ).pack(side="left")
+    tk.Button(
+        btns, text="Clear", command=_clear, font=("Segoe UI", 9),
+        bg=CARD, fg=FG, relief="flat", padx=12, pady=6, cursor="hand2",
+        highlightthickness=1, highlightbackground=BORDER,
+    ).pack(side="left", padx=(8, 0))
+    tk.Button(
+        btns, text="Cancel", command=_cancel, font=("Segoe UI", 9),
+        bg=CARD, fg=FG, relief="flat", padx=14, pady=6, cursor="hand2",
+        highlightthickness=1, highlightbackground=BORDER,
+    ).pack(side="right")
+    continue_btn = tk.Button(
+        btns, text="Continue", command=_ok, font=("Segoe UI", 9, "bold"),
+        bg="#a0aec0", fg="white", activebackground=ACCENT_HOVER, activeforeground="white",
+        relief="flat", padx=16, pady=6, cursor="hand2", state="disabled",
+    )
+    continue_btn.pack(side="right", padx=(0, 8))
+
+    dlg.bind("<Control-v>", _paste_clipboard)
+    dlg.bind("<Control-V>", _paste_clipboard)
+    tree.bind("<Control-v>", _paste_clipboard)
+    tree.bind("<Control-V>", _paste_clipboard)
+    dlg.bind("<Control-Return>", lambda e: (_ok(), "break"))
+    dlg.bind("<Escape>", lambda e: _cancel())
+    dlg.protocol("WM_DELETE_WINDOW", _cancel)
+
+    dlg.update_idletasks()
+    x = (dlg.winfo_screenwidth() - dlg.winfo_width()) // 2
+    y = (dlg.winfo_screenheight() - dlg.winfo_height()) // 3
+    dlg.geometry(f"+{x}+{y}")
+    dlg.lift()
+    dlg.attributes("-topmost", True)
+    dlg.after(200, lambda: dlg.attributes("-topmost", False))
+    dlg.focus_force()
+    dlg.mainloop()
+
+    if not result.get("ok"):
+        return None
+    return result["text"]
+
+print("Waiting for tax check options...", flush=True)
 res = ask_tax_check_options()
 if not res:
     print("Tax check canceled. Exiting.", flush=True)
@@ -265,15 +675,16 @@ if check_edd:
     sources.append("EDD")
 print(f"Checking: {', '.join(sources)} for {tax_year} {tax_quarter}", flush=True)
 
-root = Tk()
-root.withdraw()
-root.attributes("-topmost", True)
-
-excel_text = get_excel_input()
+print("Waiting for Excel data...", flush=True)
+excel_text = get_excel_input(check_eftps=check_eftps, check_edd=check_edd)
 
 if not excel_text:
     print("No input provided. Exiting.", flush=True)
     sys.exit(0)
+
+root = Tk()
+root.withdraw()
+root.attributes("-topmost", True)
 
 # --- Step 2: Load only the PDF(s) needed for the selected source(s) ---
 eftps_path = None
@@ -293,45 +704,42 @@ if check_edd:
 
 # --- Step 3: Parse Excel text ---
 def parse_excel_dates(series: pd.Series) -> pd.Series:
-    """
-    Parse mixed Excel-like date strings without triggering Pandas 'Could not infer format' warnings.
-    Tries several common formats first; falls back to dateutil (warning-suppressed) only for leftovers.
-    """
+    """Parse only explicit date formats (same rules as is_date_like)."""
     s = series.astype(str).str.strip()
-
-    fmts = [
-        "%Y-%m-%d",   # 2025-10-08
-        "%m/%d/%Y",   # 10/08/2025
-        "%m/%d/%y",   # 10/08/25
-        "%m-%d-%Y",   # 10-08-2025
-        "%m-%d-%y",   # 10-08-25
-        "%m.%d.%Y",   # 10.08.2025
-        "%m.%d.%y",   # 10.08.25
-        "%d-%b-%Y",   # 08-Oct-2025
-        "%d-%b-%y",   # 08-Oct-25
-    ]
-
     out = pd.Series(pd.NaT, index=s.index)
 
-    for fmt in fmts:
+    for fmt in DATE_FMTS:
         m = out.isna()
         if not m.any():
             break
-        parsed = pd.to_datetime(s[m], format=fmt, errors="coerce")
-        out.loc[m] = parsed
-
-    # Fallback for any remaining weird cases (suppress the warning you’re seeing)
-    m = out.isna()
-    if m.any():
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            out.loc[m] = pd.to_datetime(s[m], errors="coerce")
+        # Skip bare numbers so we never treat Excel serials as dates
+        mask = m & ~s.str.fullmatch(r"-?\d+(\.\d+)?", na=False)
+        if not mask.any():
+            continue
+        parsed = pd.to_datetime(s[mask], format=fmt, errors="coerce")
+        out.loc[mask] = parsed
 
     return out
 
-rows = [re.split(r"\s+", line.strip()) for line in excel_text.strip().split("\n") if line.strip()]
-col_count = len(rows[0])
+lines = [ln for ln in excel_text.strip().replace("\r\n", "\n").split("\n") if ln.strip()]
+rows = [_split_excel_line(ln) for ln in lines]
+width = max(len(r) for r in rows)
+rows = [r + [""] * (width - len(r)) for r in rows]
+headers_preview = _excel_headers_for_width(width, rows[0])
+bad_rows, filled_rows, bad_msgs, info_msgs = validate_excel_rows(
+    rows, headers_preview, check_eftps=check_eftps, check_edd=check_edd
+)
+if info_msgs:
+    print(f"Auto-filled {len(filled_rows)} row(s) for empty UI+ETT / P+I / EDD Total.", flush=True)
+if bad_rows:
+    print(f"{RED}{BAD} Excel data has {len(bad_rows)} invalid row(s):{RESET}", flush=True)
+    for m in bad_msgs[:20]:
+        print(f"  {m}", flush=True)
+    if len(bad_msgs) > 20:
+        print(f"  ... +{len(bad_msgs) - 20} more", flush=True)
+    sys.exit(1)
 
+col_count = width
 first_row = rows[0]
 date_cols = [i for i, v in enumerate(first_row) if is_date_like(v)]
 
@@ -346,7 +754,7 @@ if col_count == 10:
 elif col_count == 9:
     excel_df = pd.DataFrame(rows, columns=["Date", "Total", "UI", "ETT", "UI+ETT", "SDI", "PIT", "P+I", "EDD_Total"])
     excel_df["Date"] = parse_excel_dates(excel_df["Date"])
-    
+
 elif col_count == 8:
     if len(date_cols) == 2:
         # Case 1: two dates → NO UI+ETT
@@ -368,25 +776,21 @@ elif col_count == 8:
         excel_df["Date"] = parse_excel_dates(excel_df["Date"])
 
     else:
-        raise ValueError("8-column input but could not determine date columns")
-    
+        print(f"{RED}{BAD} 8-column input but could not determine date columns.{RESET}", flush=True)
+        sys.exit(1)
+
 elif col_count == 7:
     excel_df = pd.DataFrame(rows, columns=["Date", "Total", "UI", "ETT", "SDI", "PIT", "EDD_Total"])
     excel_df["Date"] = parse_excel_dates(excel_df["Date"])
 else:
-    raise ValueError(f"Unexpected column count: {col_count}")
+    print(f"{RED}{BAD} Unexpected column count: {col_count}{RESET}", flush=True)
+    sys.exit(1)
 
-# Clean numeric columns
+# Clean numeric columns (blank/'-' -> 0; no hyphen mangling of negatives — already rejected)
 for col in excel_df.columns:
     if col == "Date":
         continue
-    excel_df[col] = (
-        excel_df[col]
-        .astype(str)
-        .str.replace("-", "0") # Replace "-" with "0"
-        .str.replace(",", "", regex=False)  # Remove commas
-        .astype(float)
-    )
+    excel_df[col] = excel_df[col].map(_parse_amount_cell)
 
 if excel_df["Date"].isnull().any():
     print(f"{BAD} Some dates couldn't be parsed. Please check your input.")
